@@ -21,6 +21,45 @@ CREATE TABLE IF NOT EXISTS source_ingestion_cursor (
     UNIQUE KEY uq_source_cursor (source_system, cursor_type)
 );
 
+CREATE TABLE IF NOT EXISTS workspace_registry (
+    workspace_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    workspace_name VARCHAR(64) NOT NULL,
+    description TEXT DEFAULT NULL,
+    default_model_id BIGINT DEFAULT NULL,
+    default_profile VARCHAR(64) NOT NULL DEFAULT 'base_canada',
+    default_reference_version VARCHAR(64) DEFAULT NULL,
+    default_language VARCHAR(16) NOT NULL DEFAULT 'en',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_workspace_name (workspace_name),
+    KEY idx_workspace_default_model (default_model_id)
+);
+
+CREATE TABLE IF NOT EXISTS model_registry (
+    model_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    workspace_name VARCHAR(64) NOT NULL,
+    model_name VARCHAR(128) NOT NULL,
+    model_version VARCHAR(64) NOT NULL,
+    model_family VARCHAR(64) NOT NULL DEFAULT 'baseline',
+    status ENUM('draft','trained','evaluated','promoted','deprecated') NOT NULL DEFAULT 'draft',
+    is_default TINYINT(1) NOT NULL DEFAULT 0,
+    default_profile VARCHAR(64) NOT NULL DEFAULT 'base_canada',
+    dataset_name VARCHAR(128) DEFAULT NULL,
+    training_run_id BIGINT DEFAULT NULL,
+    evaluation_run_id BIGINT DEFAULT NULL,
+    reference_version VARCHAR(64) DEFAULT NULL,
+    rule_version VARCHAR(64) DEFAULT NULL,
+    artifact_path TEXT DEFAULT NULL,
+    metrics_json JSON DEFAULT NULL,
+    notes TEXT DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    promoted_at TIMESTAMP NULL DEFAULT NULL,
+    UNIQUE KEY uq_model_version (workspace_name, model_name, model_version),
+    KEY idx_model_workspace_status (workspace_name, status, created_at),
+    KEY idx_model_workspace_default (workspace_name, is_default, created_at)
+);
+
 CREATE TABLE IF NOT EXISTS raw_address_record (
     raw_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     source_name VARCHAR(64) NOT NULL,

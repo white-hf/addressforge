@@ -22,6 +22,8 @@ from addressforge.core.common import (
 )
 from addressforge.core.utils import logger
 from addressforge.core.reference import GeoNovaReferenceMatcher
+from addressforge.core.config import ADDRESSFORGE_MODEL_FAMILY, ADDRESSFORGE_WORKSPACE_NAME
+from addressforge.models import bootstrap_default_registry, get_active_model, list_models
 
 
 APP_TITLE = "Address Platform API / 地址平台 API"
@@ -131,15 +133,37 @@ class AddressPlatformService:
             reference_count = int(rows[0]["cnt"]) if rows else 0
         except Exception as exc:  # noqa: BLE001
             logger.warning("Model info reference count unavailable: %s", exc)
+        workspace_name = ADDRESSFORGE_WORKSPACE_NAME
+        workspace = None
+        active_model = None
+        model_count = 0
+        try:
+            snapshot = bootstrap_default_registry()
+            workspace = snapshot.get("workspace")
+            active_model = snapshot.get("model")
+            workspace_name = str(workspace.get("workspace_name") or workspace_name) if workspace else workspace_name
+            model_count = len(list_models(workspace_name))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Model registry unavailable: %s", exc)
+            try:
+                active_model = get_active_model(workspace_name)
+                model_count = len(list_models(workspace_name))
+            except Exception as inner_exc:  # noqa: BLE001
+                logger.warning("Model registry fallback unavailable: %s", inner_exc)
         return {
             "platform_version": PLATFORM_VERSION,
             "api_version": API_VERSION,
             "default_model_profile": DEFAULT_MODEL_PROFILE,
+            "workspace_name": workspace_name,
             "supported_profiles": list(SUPPORTED_PROFILES),
             "default_parsers": list(DEFAULT_PARSERS),
-            "model_version": MODEL_VERSION,
+            "model_name": active_model.get("model_name") if active_model else os.getenv("ADDRESSFORGE_MODEL_NAME", "canada_default"),
+            "model_version": active_model.get("model_version") if active_model else MODEL_VERSION,
+            "model_family": active_model.get("model_family") if active_model else ADDRESSFORGE_MODEL_FAMILY,
             "reference_version": REFERENCE_VERSION,
             "reference_count": reference_count,
+            "model_count": model_count,
+            "active_model": active_model,
             "capabilities": [
                 "normalize",
                 "parse",
@@ -384,6 +408,7 @@ async def root() -> dict[str, Any]:
         "endpoints": [
             "/health",
             "/api/v1/model",
+            "/api/v1/models",
             "/api/v1/normalize",
             "/api/v1/parse",
             "/api/v1/validate",
@@ -395,6 +420,25 @@ async def root() -> dict[str, Any]:
 @app.get("/api/v1/model")
 async def model_info() -> dict[str, Any]:
     return service.model_info()
+
+
+@app.get("/api/v1/models")
+async def models(workspace_name: str | None = None) -> dict[str, Any]:
+    target_workspace = workspace_name or ADDRESSFORGE_WORKSPACE_NAME
+    try:
+        snapshot = bootstrap_default_registry()
+        ws_name = snapshot["workspace"].get("workspace_name", target_workspace)
+        if workspace_name and workspace_name != ws_name:
+            ws_name = workspace_name
+        models_list = list_models(ws_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Model list registry unavailable: %s", exc)
+        ws_name = target_workspace
+        models_list = []
+    return {
+        "workspace_name": ws_name,
+        "models": models_list,
+    }
 
 
 @app.post("/api/v1/normalize")

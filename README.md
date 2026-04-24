@@ -39,6 +39,7 @@ The repository is organized around four runtime roles:
 - Building / unit detection
 - Validation and enrichment
 - Historical user address facts
+- Model registry and version control
 - Gold set review and freezing
 - Training and tuning workflow
 - Public parsing API

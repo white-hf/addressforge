@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from addressforge.core.common import execute_sql_script
+from addressforge.models import bootstrap_default_registry
 
 
 def main() -> None:
@@ -12,6 +13,7 @@ def main() -> None:
     if not schema_path.exists():
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
     execute_sql_script(schema_path)
+    bootstrap_default_registry()
     print({"schema_path": str(schema_path), "status": "completed"})
 
 

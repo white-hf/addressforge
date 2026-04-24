@@ -177,6 +177,25 @@ To avoid ambiguity, the following terms are fixed in this project:
 - **Learning pipeline**: the backend jobs that run freeze gold / train / shadow / evaluate / promote
 - **Ingestion**: the step that brings third-party raw data into the system, without making full cleaning decisions
 
+### 5.1 Model registry
+
+After training, a model should not overwrite the previous version directly. It should first be registered.
+
+The model registry records:
+
+- workspace
+- model_name / model_version
+- model status
+- training dataset version
+- evaluation results
+- the default model pointer
+
+The console uses the registry to:
+
+- inspect the current default model
+- switch between candidate and default models
+- roll back to a previous version
+
 ## 6. What to tune
 
 ### 6.1 Parser ranking
