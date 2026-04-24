@@ -1,34 +1,80 @@
 # AddressForge
 
-AddressForge is an open-source, self-hosted address intelligence platform.
+AddressForge is an open-source, self-hosted address intelligence platform for parsing, cleaning, validating, and serving address APIs.
 
 It ships with a default Canada / North America model and can be adapted to other regions by users who deploy it on their own infrastructure.
 
-## Repository layout
-- `src/addressforge/api/`: public parsing API
-- `src/addressforge/console/`: control console
-- `src/addressforge/core/`: shared parsing, reference, and database helpers
-- `src/addressforge/pipelines/`: offline pipeline entry points
-- `src/addressforge/learning/`: training and evaluation helpers
-- `src/addressforge/models/`: model assets and model metadata
-- `docs/zh/` and `docs/en/`: separate Chinese and English documentation trees
-- `sql/`: minimal schema and bootstrap DDL
-- `assets/`: bundled static assets
-- `examples/`: example request payloads
-- `workspace/`: local runtime workspace, not committed
+## What AddressForge solves
 
-## What it includes
-- address normalization
-- parser candidate generation
-- validation and enrichment
-- canonical building / unit production
-- user historical address facts
-- ingestion adapters for private third-party data
-- control console for long-running jobs
-- public parsing API
+Address data is usually messy:
+
+- the same address appears in many formats
+- apartments, suites, and commercial units are easy to miss
+- historical address data is inconsistent
+- raw input often needs standardization, validation, and enrichment before it is useful
+
+AddressForge gives you a complete workflow for:
+
+- ingesting address data
+- normalizing and parsing it
+- building canonical building / unit records
+- validating and enriching new records
+- collecting review labels and gold data
+- training and tuning models
+- exposing the result through an API
+
+## Core capabilities
+
+- Address normalization
+- Parser candidate generation
+- Building / unit detection
+- Validation and enrichment
+- Historical user address facts
+- Gold set review and freezing
+- Training and tuning workflow
+- Public parsing API
+- Control console
+- Private data ingestion
+
+## Default model and extensibility
+
+AddressForge is designed to be useful out of the box and still remain easy to customize.
+
+- **Default model**
+  - preconfigured Canada / North America baseline
+  - ready for immediate local testing
+
+- **Custom data**
+  - users can connect their own private address sources
+  - private source data stays outside git
+  - ingestion supports API pull and direct database import
+
+- **Custom models**
+  - users can train their own parsing / validation / fusion models
+  - users can run their own evaluation and shadow workflows
+  - users can publish their own API behavior from their own deployment
+
+## Architecture at a glance
+
+```text
+Private source data
+        |
+        v
+   Ingestion service
+        |
+        v
+ Cleaning pipeline -> Review / Gold set -> Training / Evaluation
+        |                                   |
+        v                                   v
+   Canonical data ---------------------> Model tuning
+        |
+        v
+   API + Control console
+```
 
 ## Quick start
-1. Copy the example environment file and fill in your local credentials.
+
+1. Copy the example environment file and fill in local credentials.
 
 ```bash
 cp .env.example src/addressforge/core/.env.local
@@ -43,30 +89,92 @@ pip install -U pip
 pip install -e .
 ```
 
-3. Start the API.
+3. Initialize the schema.
+
+```bash
+./scripts/init_schema.sh
+```
+
+4. Import the sample CSV.
+
+```bash
+export ADDRESSFORGE_IMPORT_CSV_PATH=examples/sample_raw_addresses.csv
+./scripts/import_csv.sh
+```
+
+5. Run the baseline training skeleton.
+
+```bash
+./scripts/run_training.sh
+```
+
+6. Start the API.
 
 ```bash
 ./scripts/run_api.sh
 ```
 
-4. Run ingestion if you want to pull or import private source data.
+7. Start the console.
 
 ```bash
-./scripts/run_ingestion.sh
+./scripts/run_console.sh
 ```
 
-5. For a minimal end-to-end smoke test, use the built-in sample CSV.
+## API example
 
 ```bash
-./scripts/init_schema.sh
-export ADDRESSFORGE_IMPORT_CSV_PATH=examples/sample_raw_addresses.csv
-./scripts/import_csv.sh
-./scripts/run_training.sh
+curl -s http://127.0.0.1:8000/health
 ```
 
-If you run modules directly, make sure `src/` is on `PYTHONPATH` or install the package in editable mode.
+```bash
+curl -s http://127.0.0.1:8000/api/v1/model
+```
 
-## Configuration
+## Documentation
+
+- Chinese docs: `docs/zh/README.md`
+- English docs: `docs/en/README.md`
+- Developer workflow: `docs/zh/addressforge-developer-workflow.md` / `docs/en/addressforge-developer-workflow.md`
+- Quick start: `docs/zh/addressforge-quickstart.md` / `docs/en/addressforge-quickstart.md`
+- Model training and tuning guide: `docs/zh/addressforge-model-training-guide.md` / `docs/en/addressforge-model-training-guide.md`
+
+## Project status
+
+The current repository already includes:
+
+- API skeleton
+- console skeleton
+- ingestion adapters
+- baseline training scaffold
+- schema bootstrap
+- developer workflow docs
+- quick start docs
+- training and tuning docs
+
+This repository is intended as a practical starting point for teams that want to:
+
+- clean their own address data
+- train their own models
+- serve their own address API
+- keep private data outside git
+
+## Project structure
+
+This section is intentionally short. The repository is organized around runtime roles rather than legacy version numbers.
+
+- `src/addressforge/api/`: public parsing API
+- `src/addressforge/console/`: control console
+- `src/addressforge/core/`: shared parsing, reference, and database helpers
+- `src/addressforge/pipelines/`: offline pipeline entry points
+- `src/addressforge/learning/`: training and evaluation helpers
+- `src/addressforge/models/`: model assets and model metadata
+- `docs/zh/` and `docs/en/`: separate Chinese and English documentation trees
+- `sql/`: minimal schema and bootstrap DDL
+- `examples/`: example request payloads
+- `workspace/`: local runtime workspace, not committed
+
+## Configuration and privacy
+
 Sensitive configuration is intentionally not committed.
 
 - Put local database credentials in `src/addressforge/core/.env.local`
@@ -74,28 +182,8 @@ Sensitive configuration is intentionally not committed.
 - Use `.env.example` as the template
 - Keep third-party source files outside git, for example under `workspace/private_sources/`
 
-The default local configuration keys are:
-- `MYSQL_HOST`
-- `MYSQL_USER`
-- `MYSQL_PASSWORD`
-- `MYSQL_DATABASE`
-- `ADDRESSFORGE_DATABASE`
-- `ADDRESS_V2_DATABASE`
-- `ADDRESSFORGE_PORT`
-- `ADDRESSFORGE_CONSOLE_PORT`
-- `ADDRESS_PLATFORM_VERSION`
-- `ADDRESS_PLATFORM_MODEL_VERSION`
-- `ADDRESS_PLATFORM_REFERENCE_VERSION`
-- `ADDRESS_PLATFORM_DEFAULT_PROFILE`
-- `ADDRESSFORGE_REFERENCE_FILE`
-- `ADDRESSFORGE_INGESTION_MODE`
-- `ADDRESSFORGE_INGESTION_API_URL`
-- `ADDRESSFORGE_INGESTION_DB_HOST`
-- `ADDRESSFORGE_INGESTION_DB_NAME`
-- `ADDRESSFORGE_INGESTION_DB_TABLE`
-- `SALT`
-
 ## Ingestion modes
+
 AddressForge supports two private ingestion paths:
 
 1. **API pull**
@@ -110,23 +198,6 @@ AddressForge supports two private ingestion paths:
    - The third party can import rows directly into a table they control
    - AddressForge reads the source table and ingests new rows
 
-## Bundled schema
-The minimal local schema is documented in:
+## License
 
-- `sql/addressforge_schema.sql`
-
-## Minimal developer path
-If you want the shortest path to understand the system:
-
-1. initialize the schema
-2. import the sample CSV
-3. run the baseline training skeleton
-4. start the API
-5. replace the sample data with your own private data
-
-## Documentation
-- Chinese docs: `docs/zh/README.md`
-- English docs: `docs/en/README.md`
-- Developer workflow: `docs/zh/addressforge-developer-workflow.md` / `docs/en/addressforge-developer-workflow.md`
-- Quick start: `docs/zh/addressforge-quickstart.md` / `docs/en/addressforge-quickstart.md`
-- Model training and tuning guide: `docs/zh/addressforge-model-training-guide.md` / `docs/en/addressforge-model-training-guide.md`
+See `LICENSE` in the repository root.
