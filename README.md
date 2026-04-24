@@ -23,6 +23,15 @@ AddressForge gives you a complete workflow for:
 - training and tuning models
 - exposing the result through an API
 
+## Core concepts
+
+The repository is organized around four runtime roles:
+
+- **Ingestion service**: brings private third-party source data into the system
+- **Cleaning pipeline**: normalizes, parses, validates, and materializes canonical records
+- **Learning pipeline**: freezes gold, trains models, runs shadow evaluation, and promotes versions
+- **Control console**: creates and observes jobs, shows status, and lets a human control the system
+
 ## Core capabilities
 
 - Address normalization

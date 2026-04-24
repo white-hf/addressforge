@@ -170,6 +170,13 @@ The console should not:
 - hide all logic inside web requests
 - require scripts for normal operation
 
+To avoid ambiguity, the following terms are fixed in this project:
+
+- **Control console**: the human entry point that creates jobs, checks status, and switches versions
+- **Cleaning pipeline**: the backend jobs that run normalize / parse / validate / publish
+- **Learning pipeline**: the backend jobs that run freeze gold / train / shadow / evaluate / promote
+- **Ingestion**: the step that brings third-party raw data into the system, without making full cleaning decisions
+
 ## 6. What to tune
 
 ### 6.1 Parser ranking
