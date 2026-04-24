@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+mysql-connector-python
+requests
+numpy
+pandas
+scipy
+postal

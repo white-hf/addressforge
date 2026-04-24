@@ -1,0 +1,4 @@
+external_id,raw_address_text,city,province,postal_code,country_code,latitude,longitude
+sample-001,"2060 Quingate Place Apt 1123, Halifax, NS B3L 4P7","Halifax","NS","B3L 4P7","CA",44.64,-63.60
+sample-002,"14 Mullock Road, Rhodes Corner, NS B4V 5N5","Rhodes Corner","NS","B4V 5N5","CA",44.38,-64.28
+sample-003,"40 Jenna Lane, Hammonds Plains, NS B3Z 4P3","Hammonds Plains","NS","B3Z 4P3","CA",44.73,-63.69

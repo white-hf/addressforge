@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+*.log
+.env
+.env.local
+src/addressforge/core/.env
+src/addressforge/core/.env.local
+workspace/
+models/
+*.pid
+.DS_Store
