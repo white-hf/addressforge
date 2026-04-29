@@ -5,11 +5,12 @@ __pycache__/
 *.sqlite3
 *.db
 *.log
+runtime/
 .env
 .env.local
 src/addressforge/core/.env
 src/addressforge/core/.env.local
-/workspace/
-/models/
+workspace/
+models/
 *.pid
 .DS_Store

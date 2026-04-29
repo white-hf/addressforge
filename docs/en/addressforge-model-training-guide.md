@@ -30,6 +30,12 @@ Typical goals:
 - reduce GPS conflict false positives
 - reduce wrong auto-enrichment
 
+After every training run, rule update, or cleaning pipeline change, you should evaluate the candidate with a fixed benchmark before promotion.
+
+Recommended companion document:
+
+- [Release Benchmark Standard](./addressforge-release-benchmark.md)
+
 ## 3. Know what you want to tune first
 
 Before training, identify the problem class.

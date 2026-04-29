@@ -13,6 +13,7 @@ from addressforge.core.config import (
     ADDRESSFORGE_REFERENCE_VERSION,
     ADDRESSFORGE_WORKSPACE_NAME,
 )
+from addressforge.core.utils import logger
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,10 @@ def ensure_default_workspace() -> dict[str, Any]:
         default_reference_version=ADDRESSFORGE_REFERENCE_VERSION,
         default_language="en",
     )
+
+
+def list_workspaces() -> list[dict[str, Any]]:
+    return fetch_all("SELECT * FROM workspace_registry ORDER BY workspace_name ASC, created_at DESC")
 
 
 def get_model(
@@ -246,6 +251,156 @@ def promote_model(
     model_name: str | None = None,
     model_version: str | None = None,
     notes: str | None = None,
+    force: bool = False
+) -> dict[str, Any]:
+    """
+    Promotes a model version to 'active' status while enforcing the consolidated Release Gate.
+    将模型版本提升为“活动 (active)”状态，同时强制执行统一的发布准入。
+    """
+    import json
+    if model_id is not None:
+        rows = fetch_all(
+            "SELECT * FROM model_registry WHERE workspace_name = %s AND model_id = %s LIMIT 1",
+            (workspace_name, model_id),
+        )
+    else:
+        rows = fetch_all(
+            """
+            SELECT *
+            FROM model_registry
+            WHERE workspace_name = %s
+              AND model_name = COALESCE(%s, model_name)
+              AND model_version = COALESCE(%s, model_version)
+            ORDER BY promoted_at DESC, updated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (workspace_name, model_name, model_version),
+        )
+    target = _first_or_none(rows)
+    if not target:
+        raise ValueError("Model version not found in registry.")
+    
+    # --- HARD RELEASE GATE (Iteration 12 hardening) ---
+    # --- 硬核发布准入 (迭代 12 加固) ---
+    final_f1 = 0.0
+    if not force:
+        try:
+            m_str = target.get("metrics_json")
+            if not m_str:
+                return {"status": "blocked", "reason": "Mandatory evaluation metrics missing. 缺少强制评测指标。"}
+            
+            metrics = json.loads(m_str)
+            benchmark = metrics.get("release_benchmark")
+            comparison = metrics.get("release_comparison")
+            replay_m = metrics.get("replay_metrics")
+            shadow_m = metrics.get("shadow")
+
+            # 1. Existence Check
+            # 1. 完整性检查
+            if not isinstance(benchmark, dict) or not isinstance(comparison, dict) or not isinstance(replay_m, dict):
+                return {"status": "blocked", "reason": "Incomplete Release Gate data (benchmark/comparison/replay missing). 准入数据不完整。"}
+            if not isinstance(shadow_m, dict):
+                return {"status": "blocked", "reason": "Mandatory shadow result missing. 缺少 shadow 结果。"}
+
+            required_benchmark_thresholds = {
+                "decision_f1": 0.90,
+                "building_type_f1": 0.85,
+                "unit_number_f1": 0.85,
+                "unit_recall": 0.85,
+                "commercial_f1": 0.85,
+            }
+            required_distribution_caps = {
+                "review_rate": 0.35,
+                "reject_rate": 0.10,
+            }
+            for metric_name, threshold in required_benchmark_thresholds.items():
+                if metric_name not in benchmark:
+                    return {"status": "blocked", "reason": f"Missing required benchmark metric: {metric_name}"}
+                metric_value = float(benchmark.get(metric_name, 0.0))
+                if metric_value < threshold:
+                    return {
+                        "status": "blocked",
+                        "reason": f"Accuracy Gate Failed: {metric_name} ({metric_value}) < {threshold}",
+                    }
+                if metric_name == "decision_f1":
+                    final_f1 = metric_value
+
+            for metric_name, threshold in required_distribution_caps.items():
+                if metric_name not in benchmark:
+                    return {"status": "blocked", "reason": f"Missing required distribution metric: {metric_name}"}
+                metric_value = float(benchmark.get(metric_name, 0.0))
+                if metric_value > threshold:
+                    return {
+                        "status": "blocked",
+                        "reason": f"Distribution Gate Failed: {metric_name} ({metric_value}) > {threshold}",
+                    }
+
+            # 3. Stability Gate (Replay + Comparison)
+            # 3. 稳定性准入 (重放 + 对比)
+            risk = float(comparison.get("regression_risk", 1.0))
+            if risk > 0.02:
+                return {"status": "blocked", "reason": f"Stability Gate Failed: Regression Risk ({risk}) > 0.02"}
+            if int(replay_m.get("failures", 0)) > 0:
+                return {"status": "blocked", "reason": "Reliability Gate Failed: Unhandled failures detected in replay."}
+            if int(replay_m.get("processed_samples", 0)) <= 0:
+                return {"status": "blocked", "reason": "Replay Gate Failed: no replay samples processed."}
+
+            # 4. Shadow Gate must pass together with replay
+            # 4. Shadow 与 replay 必须同时通过
+            if not bool(shadow_m.get("promote_recommended")):
+                return {"status": "blocked", "reason": "Shadow Gate Failed: promote_recommended=false"}
+            if float(shadow_m.get("shadow_advantage", -1.0)) < 0.0:
+                return {"status": "blocked", "reason": "Shadow Gate Failed: shadow_advantage < 0"}
+            if float(shadow_m.get("disagreement_rate", 1.0)) > 0.10:
+                return {"status": "blocked", "reason": "Shadow Gate Failed: disagreement_rate > 0.10"}
+
+        except Exception as e:
+            logger.error("Release gate error for model %s: %s", target.get("model_version"), e)
+            return {"status": "blocked", "reason": f"Gate error: {str(e)}"}
+
+    # --- EXECUTION: Promoting the model ---
+    with db_cursor() as (conn, cursor):
+        # Reset defaults for this workspace
+        cursor.execute("UPDATE model_registry SET is_default = 0 WHERE workspace_name = %s", (workspace_name,))
+        # Promote candidate
+        cursor.execute(
+            """
+            UPDATE model_registry
+            SET is_default = 1, status = 'promoted', promoted_at = NOW(), notes = COALESCE(%s, notes)
+            WHERE model_id = %s
+            """,
+            (notes or f"Promoted via hardened Release Gate. F1={final_f1}", target["model_id"]),
+        )
+        # Synchronize workspace default
+        cursor.execute(
+            """
+            UPDATE workspace_registry
+            SET default_model_id = %s,
+                default_profile = %s,
+                default_reference_version = %s
+            WHERE workspace_name = %s
+            """,
+            (
+                target["model_id"],
+                target.get("default_profile") or ADDRESSFORGE_DEFAULT_PROFILE,
+                target.get("reference_version") or ADDRESSFORGE_REFERENCE_VERSION,
+                workspace_name,
+            ),
+        )
+        conn.commit()
+        
+    logger.info("Hardened Release Gate passed for model %s", target["model_version"])
+    return {"status": "promoted", "model_id": target["model_id"], "final_f1": final_f1}
+
+
+
+
+def deprecate_model(
+    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
+    model_id: int | None = None,
+    model_name: str | None = None,
+    model_version: str | None = None,
+    notes: str | None = None,
 ) -> dict[str, Any]:
     if model_id is not None:
         rows = fetch_all(
@@ -267,13 +422,14 @@ def promote_model(
         )
     target = _first_or_none(rows)
     if not target:
-        raise ValueError("Model not found for promotion")
+        raise ValueError("Model not found for deprecation")
     with db_cursor() as (conn, cursor):
-        cursor.execute("UPDATE model_registry SET is_default = 0 WHERE workspace_name = %s", (workspace_name,))
         cursor.execute(
             """
             UPDATE model_registry
-            SET is_default = 1, status = 'promoted', promoted_at = NOW(), notes = COALESCE(%s, notes)
+            SET status = 'deprecated',
+                is_default = 0,
+                notes = COALESCE(%s, notes)
             WHERE model_id = %s
             """,
             (notes, target["model_id"]),
@@ -281,17 +437,10 @@ def promote_model(
         cursor.execute(
             """
             UPDATE workspace_registry
-            SET default_model_id = %s,
-                default_profile = %s,
-                default_reference_version = %s
-            WHERE workspace_name = %s
+            SET default_model_id = NULL
+            WHERE workspace_name = %s AND default_model_id = %s
             """,
-            (
-                target["model_id"],
-                target.get("default_profile") or ADDRESSFORGE_DEFAULT_PROFILE,
-                target.get("reference_version") or ADDRESSFORGE_REFERENCE_VERSION,
-                workspace_name,
-            ),
+            (workspace_name, target["model_id"]),
         )
         conn.commit()
     return get_model(workspace_name, target["model_name"], target["model_version"]) or target

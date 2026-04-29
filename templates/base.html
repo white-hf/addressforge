@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title|default('AddressForge') }}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/static/js/i18n.js"></script>
+  <style>
+    :root {
+      --bg: #f4f7fb; --panel: #ffffff; --panel-soft: #f8fafc;
+      --line: #d7deea; --line-strong: #bcc7d8; --text: #172033;
+      --muted: #64748b; --brand: #1d4ed8; --brand-2: #0f766e;
+      --warn: #b45309; --good: #166534; --shadow: 0 18px 40px rgba(15,23,42,.08);
+      --radius: 18px;
+    }
+    .app { min-height: 100vh; display: grid; grid-template-rows: 72px 1fr; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 22px; background: rgba(255, 255, 255, .82); backdrop-filter: blur(14px); border-bottom: 1px solid rgba(215, 222, 234, .8); position: sticky; top: 0; z-index: 20; }
+    .layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; padding: 18px; }
+    .sidebar, .content { border: 1px solid rgba(215, 222, 234, .9); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; background: rgba(255, 255, 255, .92); }
+    .sidebar { display: flex; flex-direction: column; min-height: calc(100vh - 110px); }
+    .nav { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .nav-item { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border: 1px solid transparent; border-radius: 14px; background: #fff; cursor: pointer; text-align: left; transition: .15s ease; text-decoration: none; color: inherit; }
+    .nav-item.active { background: linear-gradient(135deg, rgba(29,78,216, .08), rgba(15,118,110, .05)); border-color: rgba(29,78,216, .20); box-shadow: 0 8px 18px rgba(29,78,216, .06); }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 10px 24px rgba(15,23,42,.05); overflow: hidden; }
+    .btn { border: none; border-radius: 14px; padding: 13px 12px; font-size: 14px; font-weight: 750; cursor: pointer; transition: .15s ease; }
+    .btn.good { background: var(--good); color: #fff; }
+    .btn.primary { background: var(--brand); color: #fff; }
+    .btn.warn { background: var(--warn); color: #fff; }
+  </style>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">A</div>
+        <div class="brand-copy">
+          <h1 data-i18n="app_title">地址审核系统</h1>
+          <p data-i18n="app_subtitle">面向业务专家的全流程治理平台</p>
+        </div>
+      </div>
+      <div class="top-meta">
+        <span class="chip"><span data-i18n="pending">待审核</span> <span id="meta-pending">-</span></span>
+        <span class="chip"><span data-i18n="processed">已处理</span> <span id="meta-processed">-</span></span>
+        <div class="flex gap-2 ml-4">
+          <button class="chip" onclick="setLanguage('en')">EN</button>
+          <button class="chip" onclick="setLanguage('zh')">中</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <div class="title" data-i18n="nav_menu">导航菜单</div>
+          <div class="sub" data-i18n="nav_sub">从数据入库到资产发布的闭环管理。</div>
+        </div>
+
+        <nav class="nav">
+          <a href="/" class="nav-item {% if active == 'dashboard' %}active{% endif %}">
+            <div class="nav-icon">▣</div>
+            <div class="nav-copy">
+              <div class="name" data-i18n="dashboard">业务看板</div>
+              <div class="desc" data-i18n="dashboard_desc">全流程水位监控</div>
+            </div>
+          </a>
+
+          <a href="/review" class="nav-item {% if active == 'review' %}active{% endif %}">
+            <div class="nav-icon">✎</div>
+            <div class="nav-copy">
+              <div class="name" data-i18n="review">专家审核</div>
+              <div class="desc" data-i18n="review_desc">人工纠错与金标沉淀</div>
+            </div>
+            <div class="nav-badge" id="nav-badge-review">-</div>
+          </a>
+
+          <a href="/batch" class="nav-item {% if active == 'batch' %}active{% endif %}">
+            <div class="nav-icon">▤</div>
+            <div class="nav-copy">
+              <div class="name" data-i18n="batch">批次管理</div>
+              <div class="desc" data-i18n="batch_desc">生成批次与版本冻结</div>
+            </div>
+          </a>
+
+          <a href="/reports" class="nav-item {% if active == 'reports' %}active{% endif %}">
+            <div class="nav-icon">▣</div>
+            <div class="nav-copy">
+              <div class="name" data-i18n="reports">报表中心</div>
+              <div class="desc" data-i18n="reports_desc">质量与评测分析</div>
+            </div>
+          </a>
+        </nav>
+
+        <div class="sidebar-foot" data-i18n="sidebar_foot">
+          AddressForge 业务专家版
+        </div>
+      </aside>
+
+      <main class="content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+  <div id="toast-container" class="fixed top-6 right-6 z-50 flex flex-col gap-3"></div>
+
+  <script src="/static/js/app.js"></script>
+  <script>
+    // 现代化吐司提示函数
+    function showToast(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        
+        // 根据类型设置颜色
+        const colors = {
+            success: 'bg-emerald-600',
+            error: 'bg-rose-600',
+            warn: 'bg-amber-500',
+            info: 'bg-slate-800'
+        };
+        
+        const icons = {
+            success: '✓',
+            error: '✕',
+            warn: '⚠',
+            info: 'ℹ'
+        };
+
+        toast.className = `${colors[type]} text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 transform transition-all duration-300 translate-x-full opacity-0`;
+        toast.innerHTML = `
+            <span class="flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-full bg-white/20 font-bold">${icons[type]}</span>
+            <span class="font-medium">${message}</span>
+        `;
+
+        container.appendChild(toast);
+
+        // 进场动画
+        setTimeout(() => {
+            toast.classList.remove('translate-x-full', 'opacity-0');
+        }, 10);
+
+        // 自动移除
+        setTimeout(() => {
+            toast.classList.add('translate-x-full', 'opacity-0');
+            setTimeout(() => toast.remove(), 300);
+        }, 4000);
+    }
+
+    // Initialize language on load
+    window.addEventListener('load', () => {
+        const lang = localStorage.getItem('addressforge_lang') || 'zh';
+        setLanguage(lang);
+    });
+  </script>
+</body>
+</html>

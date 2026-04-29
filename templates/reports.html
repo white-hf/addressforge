@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="panel">
+    <div class="panel-head">
+        <h2 data-i18n="reports">报表中心</h2>
+        <p data-i18n="reports_desc">查看数据质量、模型评测以及金标治理的深度分析报表。</p>
+    </div>
+    
+    <div class="panel-body">
+        <!-- Release Gate Status Panel -->
+        <div class="card p-6 mb-8 border-l-4 border-l-slate-800 bg-slate-50/50" id="release-gate-card">
+            <div class="flex justify-between items-center mb-6">
+                <div>
+                    <h3 class="text-lg font-bold" data-i18n="release_gate_title">发布准入检查 (Release Gate Check)</h3>
+                    <p class="text-xs text-slate-500" data-i18n="release_gate_sub">基于最新评测与基准对比。</p>
+                </div>
+                <div id="gate-overall-status">
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4" id="gate-metrics-grid">
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Quality Report -->
+            <div class="card p-6 flex flex-col">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-12 h-12 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center text-2xl">📊</div>
+                    <span class="badge good">Latest</span>
+                </div>
+                <h3 class="font-bold text-lg mb-2" data-i18n="report_quality_title">质量汇总报表</h3>
+                <p class="text-sm text-slate-500 mb-6 flex-grow" data-i18n="report_quality_desc">包含地址清洗的全量统计、成功率分析及常见的错误聚类分布。</p>
+                <div class="mt-auto pt-4 border-t flex justify-between items-center">
+                    <span class="text-xs text-slate-400" id="report-quality-date">Updating...</span>
+                    <button class="btn soft py-2 px-4" onclick="viewReport('quality')" data-i18n="view_now">立即查看</button>
+                </div>
+            </div>
+
+            <!-- Eval Report -->
+            <div class="card p-6 flex flex-col">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-12 h-12 bg-teal-100 text-teal-600 rounded-xl flex items-center justify-center text-2xl">🎯</div>
+                    <span class="badge">Benchmark</span>
+                </div>
+                <h3 class="font-bold text-lg mb-2" data-i18n="report_eval_title">模型评测报表</h3>
+                <p class="text-sm text-slate-500 mb-6 flex-grow" data-i18n="report_eval_desc">通过金标集对当前模型进行的精度、召回率及 F1 分数评测。</p>
+                <div class="mt-auto pt-4 border-t flex justify-between items-center">
+                    <span class="text-xs text-slate-400" id="report-eval-date">Updating...</span>
+                    <button class="btn soft py-2 px-4" onclick="viewReport('evaluation')" data-i18n="view_eval">查看评测</button>
+                </div>
+            </div>
+
+            <!-- Gold Governance -->
+            <div class="card p-6 flex flex-col">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-12 h-12 bg-amber-100 text-amber-600 rounded-xl flex items-center justify-center text-2xl">🏆</div>
+                    <span class="badge warn">Governance</span>
+                </div>
+                <h3 class="font-bold text-lg mb-2" data-i18n="report_gold_title">金标治理报表</h3>
+                <p class="text-sm text-slate-500 mb-6 flex-grow" data-i18n="report_gold_desc">监控黄金数据集的版本演进、覆盖度以及人工审核的修正分布情况。</p>
+                <div class="mt-auto pt-4 border-t flex justify-between items-center">
+                    <span class="text-xs text-slate-400" id="report-gold-date">Updating...</span>
+                    <button class="btn soft py-2 px-4" onclick="viewReport('gold_governance')" data-i18n="gov_analysis">治理分析</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Records -->
+        <div class="card mt-10">
+            <div class="p-4 border-bottom bg-slate-50 font-bold text-sm" data-i18n="latest_records">最新生成记录</div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-slate-50 text-slate-400 uppercase text-xs">
+                        <tr>
+                            <th class="p-4" data-i18n="report_name_col">报表名称</th>
+                            <th class="p-4" data-i18n="gen_time_col">生成时间</th>
+                            <th class="p-4" data-i18n="file_size_col">文件大小</th>
+                            <th class="p-4" data-i18n="action_col">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="report-list-table">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function loadReportList() {
+    const gateRes = await fetch('/api/v1/business/release-readiness');
+    const gateData = await gateRes.json();
+    
+    const overallStatusBox = document.getElementById('gate-overall-status');
+    const metricsGrid = document.getElementById('gate-metrics-grid');
+
+    if (gateData.ready) {
+        overallStatusBox.innerHTML = `<span class="pill good px-6 py-2 text-sm font-bold animate-pulse" data-i18n="promote_recommended">✓ 建议发布 (Promote Recommended)</span>`;
+    } else {
+        overallStatusBox.innerHTML = `<span class="pill bad px-6 py-2 text-sm font-bold" data-i18n="gate_blocked">✕ 准入受限 (Gate Blocked)</span>`;
+    }
+
+    metricsGrid.innerHTML = (gateData.gate_checks || []).map(m => `
+        <div class="p-4 rounded-xl border ${m.passed ? 'bg-emerald-50/50 border-emerald-100' : 'bg-rose-50/50 border-rose-100'}">
+            <div class="text-[10px] uppercase font-bold text-slate-400 mb-1">${m.metric}</div>
+            <div class="flex justify-between items-end">
+                <div class="text-lg font-bold ${m.passed ? 'text-emerald-700' : 'text-rose-700'}">${(m.candidate * 100).toFixed(1)}%</div>
+                <div class="text-[10px] ${m.delta >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${m.delta >= 0 ? '+' : ''}${(m.delta * 100).toFixed(2)}%</div>
+            </div>
+        </div>
+    `).join('') || '<div class="col-span-4 text-center text-slate-400 py-4 text-xs italic" data-i18n="no_metrics">No comparative metrics available.</div>';
+
+    const res = await fetch('/api/v1/business/reports');
+    const data = await res.json();
+    
+    if (data.summaries) {
+        document.getElementById('report-quality-date').textContent = data.summaries.quality || '-';
+        document.getElementById('report-eval-date').textContent = data.summaries.evaluation || '-';
+        document.getElementById('report-gold-date').textContent = data.summaries.gold || '-';
+    }
+
+    const tbody = document.getElementById('report-list-table');
+    if (!data.files || data.files.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-slate-400" data-i18n="no_reports">暂无报表记录</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.files.map(f => `
+        <tr class="border-t">
+            <td class="p-4 font-medium">${f.name}</td>
+            <td class="p-4 text-slate-500">${f.created_at}</td>
+            <td class="p-4">${f.size}</td>
+            <td class="p-4"><a href="/api/v1/business/reports/download?path=${encodeURIComponent(f.path)}" class="text-blue-600 hover:underline" data-i18n="download">下载</a></td>
+        </tr>
+    `).join('');
+    translatePage();
+}
+
+function viewReport(type) {
+    const url = `/api/v1/business/reports/view/${type}`;
+    fetch(url).then(res => {
+        if (res.ok) {
+            window.location = url;
+        } else {
+            showToast("Report not ready or missing.", "warn");
+        }
+    });
+}
+
+function translatePage() {
+    if (typeof setLanguage === 'function') {
+        const lang = localStorage.getItem('addressforge_lang') || 'zh';
+        setLanguage(lang);
+    }
+}
+
+window.addEventListener('load', loadReportList);
+</script>
+{% endblock %}

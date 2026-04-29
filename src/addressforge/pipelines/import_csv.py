@@ -6,18 +6,20 @@ from pathlib import Path
 from typing import Any
 
 from addressforge.core.common import db_cursor, dumps_payload, executemany_chunked, create_run, finish_run
+from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
 from addressforge.core.utils import logger
 
 
 RAW_INGEST_TABLE = "raw_address_record"
 
 
-def _normalize_row(row: dict[str, Any], source_name: str) -> tuple[Any, ...] | None:
+def _normalize_row(row: dict[str, Any], source_name: str, workspace_name: str) -> tuple[Any, ...] | None:
     external_id = str(row.get("external_id") or row.get("id") or "").strip()
     raw_address_text = str(row.get("raw_address_text") or row.get("address_text") or row.get("address") or "").strip()
     if not external_id or not raw_address_text:
         return None
     return (
+        workspace_name,
         source_name,
         external_id,
         raw_address_text,
@@ -37,25 +39,27 @@ def import_csv(csv_path: str, source_name: str | None = None, batch_size: int = 
     if not path.exists():
         raise FileNotFoundError(f"CSV file not found: {path}")
     resolved_source = source_name or os.getenv("ADDRESSFORGE_INGESTION_SOURCE_NAME", "local_csv")
+    workspace_name = os.getenv("ADDRESSFORGE_WORKSPACE_NAME", ADDRESSFORGE_WORKSPACE_NAME)
     run_id = create_run("ingestion", notes=f"csv_import path={path} batch_size={batch_size}")
     rows_seen = 0
     rows_ingested = 0
     payload: list[tuple[Any, ...]] = []
     query = f"""
         INSERT INTO {RAW_INGEST_TABLE} (
-            source_name, external_id, raw_address_text, city, province, postal_code,
+            workspace_name, source_name, external_id, raw_address_text, city, province, postal_code,
             country_code, latitude, longitude, source_cursor, source_payload, is_active
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1) AS new_row
         ON DUPLICATE KEY UPDATE
-            raw_address_text = VALUES(raw_address_text),
-            city = VALUES(city),
-            province = VALUES(province),
-            postal_code = VALUES(postal_code),
-            country_code = VALUES(country_code),
-            latitude = VALUES(latitude),
-            longitude = VALUES(longitude),
-            source_cursor = VALUES(source_cursor),
-            source_payload = VALUES(source_payload),
+            workspace_name = new_row.workspace_name,
+            raw_address_text = new_row.raw_address_text,
+            city = new_row.city,
+            province = new_row.province,
+            postal_code = new_row.postal_code,
+            country_code = new_row.country_code,
+            latitude = new_row.latitude,
+            longitude = new_row.longitude,
+            source_cursor = new_row.source_cursor,
+            source_payload = new_row.source_payload,
             is_active = 1,
             updated_at = CURRENT_TIMESTAMP
     """
@@ -63,7 +67,7 @@ def import_csv(csv_path: str, source_name: str | None = None, batch_size: int = 
         reader = csv.DictReader(handle)
         for row in reader:
             rows_seen += 1
-            normalized = _normalize_row(row, resolved_source)
+            normalized = _normalize_row(row, resolved_source, workspace_name)
             if normalized is None:
                 continue
             payload.append(normalized)

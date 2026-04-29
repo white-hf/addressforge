@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="panel">
+    <div class="panel-head">
+        <h2 data-i18n="dashboard">控制中心</h2>
+        <p data-i18n="dashboard_desc">驱动地址治理全流水线：从摄入、清洗到模型演进。</p>
+    </div>
+    
+    <div class="panel-body">
+        <!-- Core KPIs -->
+        <div class="stats-row mb-8">
+            <div class="stat">
+                <div class="k" data-i18n="accuracy_trend">清洗准确率</div>
+                <div class="v text-emerald-600" id="metric-accuracy">-%</div>
+            </div>
+            <div class="stat">
+                <div class="k" data-i18n="daily_volume">待处理样本</div>
+                <div class="v text-amber-600" id="metric-volume">-</div>
+            </div>
+            <div class="stat">
+                <div class="k" data-i18n="system_status_label">系统状态</div>
+                <div class="v" id="status-pill">Ready</div>
+            </div>
+            <div class="stat">
+                <div class="k" data-i18n="gold_growth">金标总量</div>
+                <div class="v" id="metric-gold-growth">-</div>
+            </div>
+        </div>
+
+        <h3 class="text-lg font-bold mb-4" data-i18n="governance_pipeline">治理流水线 (Pipelines)</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Stage 1: Ingestion -->
+            <div class="card p-6 border-l-4 border-l-blue-500">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="text-2xl">📥</div>
+                    <span class="badge" id="ingestion-status">IDLE</span>
+                </div>
+                <h4 class="font-bold mb-1" data-i18n="ingestion">数据摄入 (Ingestion)</h4>
+                <p class="text-xs text-slate-500 mb-6" data-i18n="ingestion_desc">同步上游业务系统的原始地址数据。</p>
+                <div class="flex gap-2">
+                    <button class="btn primary flex-grow py-2" onclick="triggerJob('ingestion_once')" data-i18n="start_sync">开始同步</button>
+                    <button class="btn soft py-2" onclick="showLogs('ingestion')" data-i18n="logs">日志</button>
+                </div>
+            </div>
+
+            <!-- Stage 2: Cleaning -->
+            <div class="card p-6 border-l-4 border-l-teal-500">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="text-2xl">🧹</div>
+                    <span class="badge good" id="cleaning-status">READY</span>
+                </div>
+                <h4 class="font-bold mb-1" data-i18n="cleaning">地址治理 (Cleaning)</h4>
+                <p class="text-xs text-slate-500 mb-6" data-i18n="cleaning_desc">运行解析与验证模型，识别高风险地址。</p>
+                <div class="flex gap-2">
+                    <button class="btn primary flex-grow py-2" onclick="triggerJob('cleaning_once')" data-i18n="run_cleaning">运行清洗</button>
+                    <button class="btn soft py-2" onclick="showLogs('cleaning')" data-i18n="logs">日志</button>
+                </div>
+            </div>
+
+            <!-- Stage 3: Review -->
+            <div class="card p-6 border-l-4 border-l-indigo-500">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="text-2xl">🧠</div>
+                    <span class="badge" id="review-status">ACTIVE</span>
+                </div>
+                <h4 class="font-bold mb-1" data-i18n="review_lab">人工校验 (Review)</h4>
+                <p class="text-xs text-slate-500 mb-6" data-i18n="review_desc">对机器难以判定的样本进行专家裁决。</p>
+                <div class="flex gap-2">
+                    <a href="/batch" class="btn soft flex-grow py-2 text-center" data-i18n="generate_batch">生成批次</a>
+                    <a href="/review" class="btn primary py-2 px-4" data-i18n="go_review">去审核</a>
+                </div>
+            </div>
+
+            <!-- Stage 4: Retrain -->
+            <div class="card p-6 border-l-4 border-l-orange-500">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="text-2xl">🏗️</div>
+                    <span class="badge" id="train-status">IDLE</span>
+                </div>
+                <h4 class="font-bold mb-1" data-i18n="retrain_model">模型再训练 (Retrain)</h4>
+                <p class="text-xs text-slate-500 mb-6" data-i18n="retrain_desc">基于最新金标集重新训练地址解析模型。</p>
+                <div class="flex gap-2">
+                    <button class="btn primary flex-grow py-2" onclick="triggerJob('training_once')" data-i18n="start_training">开始训练</button>
+                    <button class="btn soft py-2" onclick="showLogs('training')" data-i18n="config">配置</button>
+                </div>
+            </div>
+
+            <!-- Stage 5: Shadow -->
+            <div class="card p-6 border-l-4 border-l-purple-500">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="text-2xl">⚖️</div>
+                    <span class="badge" id="eval-status">READY</span>
+                </div>
+                <h4 class="font-bold mb-1" data-i18n="shadow_eval">影子评测 (Shadow)</h4>
+                <p class="text-xs text-slate-500 mb-6" data-i18n="shadow_desc">在灰度环境运行新模型，比对准确率提升。</p>
+                <div class="flex gap-2">
+                    <button class="btn primary flex-grow py-2" onclick="triggerJob('evaluation_once')" data-i18n="run_eval">运行评测</button>
+                    <a href="/reports" class="btn soft py-2 px-4" data-i18n="compare">对比</a>
+                </div>
+            </div>
+
+            <!-- Stage 6: Assets -->
+            <div class="card p-6 border-l-4 border-l-amber-600 bg-amber-50/30">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="text-2xl">💎</div>
+                    <span class="pill good" id="asset-count">0 Assets</span>
+                </div>
+                <h4 class="font-bold mb-1" data-i18n="canonical_assets">地址资产 (Assets)</h4>
+                <p class="text-xs text-slate-500 mb-6" data-i18n="assets_desc">将清洗结果收敛并固化为唯一的标准资产。</p>
+                <div class="flex gap-2">
+                    <button class="btn good flex-grow py-2" onclick="triggerJob('promote_assets')" data-i18n="asset_promotion">资产提升</button>
+                    <button class="btn soft py-2" onclick="showAssets()" data-i18n="view_lib">查看库</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Jobs -->
+        <div class="card mt-10">
+            <div class="p-4 border-b bg-slate-50 flex justify-between items-center">
+                <span class="font-bold text-sm" data-i18n="recent_jobs">任务队列状态 (Recent Jobs)</span>
+                <button class="text-xs text-blue-600" onclick="refreshStatus()" data-i18n="refresh">刷新状态</button>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-slate-50 text-slate-400 uppercase text-xs">
+                        <tr>
+                            <th class="p-4" data-i18n="job_type">任务类型</th>
+                            <th class="p-4" data-i18n="status">状态</th>
+                            <th class="p-4" data-i18n="create_time">创建时间</th>
+                            <th class="p-4" data-i18n="summary">结果摘要</th>
+                        </tr>
+                    </thead>
+                    <tbody id="job-status-table">
+                        <!-- JS Rendered -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function triggerJob(action) {
+    showToast(`Dispatching job: ${action}...`, "info");
+    const res = await fetch('/api/v1/jobs/trigger', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            job_action: action,
+            payload: {}
+        })
+    });
+    
+    if (res.ok) {
+        showToast("Job successfully dispatched", "success");
+        refreshStatus();
+    } else {
+        showToast("Failed to dispatch job", "error");
+    }
+}
+
+async function refreshStatus() {
+    const metricRes = await fetch('/api/v1/business/dashboard-metrics');
+    const metrics = await metricRes.json();
+    document.getElementById('metric-accuracy').textContent = metrics.accuracy_trend.slice(-1) + '%';
+    document.getElementById('metric-volume').textContent = metrics.daily_processing_volume;
+    document.getElementById('metric-gold-growth').textContent = metrics.gold_set_growth;
+
+    const assetRes = await fetch('/api/v1/business/asset-stats');
+    const assetData = await assetRes.json();
+    document.getElementById('asset-count').textContent = `${assetData.total_buildings + assetData.total_units} Assets`;
+
+    const statusRes = await fetch('/api/v1/control/status');
+    const status = await statusRes.json();
+    
+    const tbody = document.getElementById('job-status-table');
+    const recentJobs = status.recent_jobs || [];
+    
+    if (recentJobs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-slate-400" data-i18n="no_jobs">暂无任务记录</td></tr>';
+    } else {
+        tbody.innerHTML = recentJobs.map(j => `
+            <tr class="border-t">
+                <td class="p-4 font-bold">${j.job_kind}</td>
+                <td class="p-4"><span class="pill ${j.status === 'succeeded' ? 'good' : (j.status === 'failed' ? 'bad' : 'warn')}">${j.status}</span></td>
+                <td class="p-4 text-slate-500">${j.created_at}</td>
+                <td class="p-4 text-xs font-mono">${j.result_summary || '-'}</td>
+            </tr>
+        `).join('');
+    }
+    // Re-apply translation after dynamic render
+    if (typeof setLanguage === 'function') {
+        const lang = localStorage.getItem('addressforge_lang') || 'zh';
+        setLanguage(lang);
+    }
+}
+
+function showAssets() {
+    showToast("Opening Canonical Asset Explorer...", "info");
+}
+
+function showLogs(module) {
+    showToast(`Accessing logs for: ${module}`, "info");
+}
+
+window.addEventListener('load', refreshStatus);
+setInterval(refreshStatus, 10000);
+</script>
+{% endblock %}

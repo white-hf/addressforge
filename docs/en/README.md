@@ -9,6 +9,7 @@ If you are new to the project, read in this order:
 - [Quick Start](./addressforge-quickstart.md)
 - [Developer Workflow](./addressforge-developer-workflow.md)
 - [Model Training and Tuning Guide](./addressforge-model-training-guide.md)
+- [Release Benchmark Standard](./addressforge-release-benchmark.md)
 - [API Documentation](./addressforge-api.md)
 
 ## Project overview
@@ -28,10 +29,10 @@ If you are new to the project, read in this order:
 - To get the system running quickly, start with `Quick Start`
 - To understand the end-to-end workflow from import to training to API, read `Developer Workflow`
 - To train and tune models, read `Model Training and Tuning Guide`
+- To decide whether a model or rule update is safe to release, read `Release Benchmark Standard`
 - To understand why the system is designed this way, read `Requirements` and `Design`
 - To understand future development stages, read `Roadmap`, `Task Breakdown`, and `Version Plan`
 
 ## Language switch
 
 - [Chinese Docs](../README.md)
-

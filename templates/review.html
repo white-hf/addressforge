@@ -1,0 +1,362 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    /* Review Layout Variables */
+    :root {
+      --panel-bg: #ffffff;
+      --panel-soft: #f8fafc;
+      --border-color: #dbe2ea;
+      --accent-color: #1d4ed8;
+      --success-color: #0f766e;
+      --radius-lg: 18px;
+    }
+
+    .review-layout {
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr) 340px;
+      gap: 18px;
+      height: calc(100vh - 110px);
+      overflow: hidden;
+    }
+
+    .sub-panel {
+      background: var(--panel-bg);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.03);
+    }
+
+    .sub-panel-head {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border-color);
+      background: linear-gradient(180deg, #fff, #f9fafb);
+      flex-shrink: 0;
+    }
+
+    .sub-panel-head h2 { font-size: 16px; margin: 0; font-weight: 700; }
+    .sub-panel-head .desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    .sub-panel-body {
+      padding: 16px;
+      overflow-y: auto;
+      flex-grow: 1;
+    }
+
+    /* Task Items */
+    .task-item {
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .task-item:hover { border-color: var(--accent-color); background: var(--panel-soft); }
+    .task-item.active { 
+      border-color: var(--accent-color); 
+      background: #eff6ff;
+      box-shadow: 0 0 0 3px rgba(29,78,216,.08);
+    }
+    .task-title { font-size: 13px; font-weight: 600; line-height: 1.4; }
+    .task-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    .address-display {
+      font-size: 24px;
+      font-weight: 800;
+      line-height: 1.2;
+      margin-bottom: 20px;
+      letter-spacing: -0.01em;
+    }
+
+    .decision-box {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-top: 20px;
+    }
+
+    .evidence-card {
+      background: #fff;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .evidence-label { font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 4px; }
+    .evidence-value { font-size: 13px; line-height: 1.5; }
+
+    .badge {
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 11px;
+        background: #f1f5f9;
+        color: #475569;
+    }
+    .badge-warn { background: #fffbeb; color: #92400e; border: 1px solid #fef3c7; }
+
+    .review-footer {
+        position: absolute;
+        bottom: 24px;
+        right: 24px;
+        left: 310px;
+        background: rgba(255,255,255,0.8);
+        backdrop-filter: blur(8px);
+        padding: 12px 24px;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+        border-radius: 14px;
+        z-index: 10;
+    }
+
+    @media (max-width: 1200px) {
+      .review-layout { grid-template-columns: 1fr; height: auto; }
+      .review-footer { position: static; margin-top: 20px; }
+    }
+</style>
+
+<div class="review-layout">
+    <!-- Left: Task Queue -->
+    <section class="sub-panel">
+        <div class="sub-panel-head">
+            <h2 data-i18n="task_queue">任务队列</h2>
+            <div class="desc" data-i18n="task_queue_desc">按优先级处理待审核项</div>
+        </div>
+        <div class="sub-panel-body" id="task-list">
+            <div class="text-center py-8 text-slate-400" data-i18n="loading_queue">Loading queue...</div>
+        </div>
+    </section>
+
+    <!-- Center: Current Review -->
+    <section class="sub-panel">
+        <div class="sub-panel-head">
+            <h2 data-i18n="current_review">当前审核</h2>
+            <div class="desc" data-i18n="current_review_desc">基于建议做出最终判断</div>
+        </div>
+        <div class="sub-panel-body">
+            <div id="no-task-placeholder" class="py-20 text-center">
+                <div class="text-4xl mb-4">☕</div>
+                <h3 class="text-lg font-bold" data-i18n="no_pending_tasks">暂无待审核任务</h3>
+                <p class="text-slate-500" data-i18n="no_pending_tasks_desc">您可以去“批次管理”生成新的任务包。</p>
+            </div>
+
+            <div id="active-review-container" style="display: none;">
+                <div class="address-display" id="curr-address">-</div>
+                
+                <div class="grid grid-cols-2 gap-4 mb-6">
+                    <div class="p-4 rounded-xl bg-slate-50 border border-slate-100">
+                        <div class="evidence-label" data-i18n="system_suggestion">系统建议</div>
+                        <div class="text-lg font-bold text-blue-700" id="curr-suggestion">-</div>
+                        <div class="text-xs text-slate-500 mt-1" id="curr-suggestion-reason">-</div>
+                    </div>
+                    <div class="p-4 rounded-xl bg-teal-50 border border-teal-100">
+                        <div class="evidence-label" data-i18n="audit_tip_label">审核建议</div>
+                        <div class="text-lg font-bold text-teal-700" id="curr-audit-tip">-</div>
+                    </div>
+                </div>
+
+                <div class="decision-box">
+                    <button class="btn good w-full py-4" onclick="handleDecision('accept')" data-i18n="confirm_correct">确认正确</button>
+                    <button class="btn primary w-full py-4" onclick="handleDecision('correct')" data-i18n="correct_save">修正并保存</button>
+                    <button class="btn warn w-full py-4" onclick="handleDecision('review')" data-i18n="mark_review">标记复核</button>
+                    <button class="btn border border-slate-200 w-full py-4" onclick="skipTask()" data-i18n="skip">跳过</button>
+                </div>
+
+                <div class="mt-8 grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="evidence-label">Building Type</label>
+                        <select id="review-building-type" class="w-full p-3 rounded-xl border border-slate-200 mt-2">
+                            <option value="">Use system value</option>
+                            <option value="single_unit">House / Single Unit</option>
+                            <option value="multi_unit">Apartment / Multi Unit</option>
+                            <option value="commercial">Commercial</option>
+                            <option value="unknown">Unknown</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="evidence-label">Unit Number</label>
+                        <input id="review-unit-number" class="w-full p-3 rounded-xl border border-slate-200 mt-2" placeholder="Optional unit correction" />
+                    </div>
+                </div>
+
+                <div class="mt-6">
+                    <label class="evidence-label" data-i18n="review_notes_label">审核备注 (可选)</label>
+                    <textarea id="review-notes" class="w-full p-3 rounded-xl border border-slate-200 mt-2" data-i18n-placeholder="review_notes_placeholder" placeholder="填写发现的问题或备注..."></textarea>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Right: AI Insights -->
+    <aside class="sub-panel">
+        <div class="sub-panel-head">
+            <h2 data-i18n="evidence">AI 智能洞察</h2>
+            <div class="desc" data-i18n="evidence_desc">多源验证与模型逻辑解释</div>
+        </div>
+        <div class="sub-panel-body">
+            <div class="p-4 mb-4 rounded-xl bg-orange-50 border border-orange-100">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-xs font-bold text-orange-700 uppercase" data-i18n="risk_label">风险标记</span>
+                    <span class="badge badge-warn" id="curr-risk-level">MEDIUM</span>
+                </div>
+                <ul class="text-xs text-orange-800 space-y-1 list-disc list-inside" id="curr-risk-points">
+                </ul>
+            </div>
+
+            <div id="evidence-container">
+            </div>
+
+            <div class="mt-6 p-4 rounded-xl bg-indigo-50 border border-indigo-100">
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="text-lg">🤖</span>
+                    <span class="text-xs font-bold text-indigo-700 uppercase" data-i18n="llm_advice_label">LLM 修正建议</span>
+                </div>
+                <div class="text-xs text-indigo-800 italic leading-relaxed" id="curr-llm-advice">
+                </div>
+            </div>
+        </div>
+    </aside>
+</div>
+
+<div class="review-footer">
+    <button class="btn px-8" onclick="saveOnly()" data-i18n="save_only">仅保存</button>
+    <button class="btn primary px-8" onclick="saveAndNext()" data-i18n="save_next">保存并下一条</button>
+</div>
+
+<script>
+let tasks = [];
+let currentTaskIndex = -1;
+
+async function loadQueue() {
+    const res = await fetch('/api/v1/review/queue?limit=20');
+    tasks = await res.json();
+    renderQueue();
+    if (tasks && tasks.length > 0) {
+        selectTask(0);
+    } else {
+        showEmpty();
+        if (typeof showToast === 'function') {
+            showToast("Review queue is empty. Please ensure cleaning jobs are run.", "warn");
+        }
+    }
+}
+
+function renderQueue() {
+    const container = document.getElementById('task-list');
+    if (tasks.length === 0) {
+        container.innerHTML = '<div class="text-center py-8 text-slate-400" data-i18n="empty_queue">队列为空</div>';
+        return;
+    }
+    container.innerHTML = tasks.map((t, i) => `
+        <div class="task-item ${i === currentTaskIndex ? 'active' : ''}" onclick="selectTask(${i})">
+            <div class="task-title">${t.task_title || t.raw_address_text || 'Unknown'}</div>
+            <div class="task-meta">
+                <span class="badge">${t.task_type || 'review'}</span>
+                <span class="badge badge-warn">${t.priority > 5 ? 'High' : 'Normal'}</span>
+            </div>
+        </div>
+    `).join('');
+    translatePage();
+}
+
+function selectTask(index) {
+    currentTaskIndex = index;
+    const task = tasks[index];
+    
+    document.getElementById('no-task-placeholder').style.display = 'none';
+    document.getElementById('active-review-container').style.display = 'block';
+    
+    document.getElementById('curr-address').textContent = task.task_title || task.raw_address_text;
+    document.getElementById('curr-suggestion').textContent = task.task_summary || 'No suggestion';
+    const llmPrescreen = task.llm_prescreen || null;
+    const effectiveBuildingType = task.building_type || (llmPrescreen ? llmPrescreen.building_type : '') || '';
+    const effectiveUnitNumber = task.suggested_unit_number || (llmPrescreen ? llmPrescreen.unit_number : '') || '';
+    document.getElementById('review-building-type').value = effectiveBuildingType;
+    document.getElementById('review-unit-number').value = effectiveUnitNumber;
+    document.getElementById('review-notes').value = '';
+    document.getElementById('curr-audit-tip').textContent = task.audit_tip || 'Review the core address fact first.';
+    
+    document.getElementById('curr-risk-level').textContent = task.confidence < 0.3 ? 'HIGH' : (task.confidence < 0.6 ? 'MEDIUM' : 'LOW');
+    document.getElementById('curr-llm-advice').textContent = task.llm_advice || "AI Insight: Data points are consistent, suggestion: Accept.";
+    
+    const riskPoints = task.risk_points || ["Uncertainty Sampling"];
+    document.getElementById('curr-risk-points').innerHTML = riskPoints.map(p => `<li>${p}</li>`).join('');
+
+    const evidenceContainer = document.getElementById('evidence-container');
+    const evidences = task.evidence || [];
+    evidenceContainer.innerHTML = evidences.map(e => `
+        <div class="evidence-card">
+            <div class="evidence-label">${e.label}</div>
+            <div class="evidence-value">${e.value}</div>
+        </div>
+    `).join('');
+
+    renderQueue();
+}
+
+function showEmpty() {
+    document.getElementById('no-task-placeholder').style.display = 'block';
+    document.getElementById('active-review-container').style.display = 'none';
+    document.getElementById('evidence-container').innerHTML = '';
+}
+
+async function handleDecision(decision) {
+    const task = tasks[currentTaskIndex];
+    if (!task) return;
+    
+    const notes = document.getElementById('review-notes').value;
+    const buildingType = document.getElementById('review-building-type').value || null;
+    const unitNumberRaw = document.getElementById('review-unit-number').value;
+    const unitNumber = unitNumberRaw.trim() ? unitNumberRaw.trim() : null;
+    
+    try {
+        const res = await fetch('/api/v1/review/submit', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                task_id: task.task_id,
+                decision: decision,
+                notes: notes,
+                building_type: buildingType,
+                unit_number: unitNumber
+            })
+        });
+        
+        if (res.ok) {
+            showToast("Review submitted successfully", "success");
+            saveAndNext();
+        } else {
+            showToast("Failed to submit review", "error");
+        }
+    } catch (e) {
+        showToast("Network error", "error");
+    }
+}
+
+function saveAndNext() {
+    if (currentTaskIndex < tasks.length - 1) {
+        selectTask(currentTaskIndex + 1);
+    } else {
+        loadQueue();
+    }
+}
+
+function skipTask() {
+    saveAndNext();
+}
+
+function translatePage() {
+    if (typeof setLanguage === 'function') {
+        const lang = localStorage.getItem('addressforge_lang') || 'zh';
+        setLanguage(lang);
+    }
+}
+
+window.addEventListener('load', loadQueue);
+</script>
+{% endblock %}

@@ -18,12 +18,25 @@ from .config import (
     POSTAL_CODE_PATTERN,
     SALT,
 )
+from .profiles.base import BaseCountryProfile
+from .profiles.factory import get_profile
 
 # 设置日志
 Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()])
 logger = logging.getLogger(__name__)
+
+def _resolve_profile(
+    profile: BaseCountryProfile | str | None = None,
+    *,
+    country_code: str = "CA",
+) -> BaseCountryProfile:
+    if isinstance(profile, BaseCountryProfile):
+        return profile
+    if isinstance(profile, str) and profile.strip():
+        return get_profile(profile.strip())
+    return get_profile(country_code)
 
 # 数据库连接
 def get_db_connection():
@@ -36,23 +49,32 @@ def get_db_connection():
         raise
 
 # 验证 GPS
-def is_valid_gps(lat, lon):
-    """验证 GPS 是否在 Nova Scotia 范围内"""
+def is_valid_gps(lat, lon, profile: BaseCountryProfile | str | None = None, *, country_code: str = "CA"):
+    """
+    Validates if GPS coordinates are within the bounds of the active profile.
+    验证 GPS 坐标是否在活动配置文件的边界内。
+    """
+    bounds = _resolve_profile(profile, country_code=country_code).gps_bounds
     try:
         lat = float(lat)
         lon = float(lon)
-        return (NS_GPS_BOUNDS['lat_min'] <= lat <= NS_GPS_BOUNDS['lat_max'] and
-                NS_GPS_BOUNDS['lon_min'] <= lon <= NS_GPS_BOUNDS['lon_max'] and
+        return (bounds['lat_min'] <= lat <= bounds['lat_max'] and
+                bounds['lon_min'] <= lon <= bounds['lon_max'] and
                 not (np.isnan(lat) or np.isnan(lon)))
     except (ValueError, TypeError):
         return False
 
 # 验证邮编
-def is_valid_postal_code(postal_code):
-    """验证加拿大邮编格式"""
+def is_valid_postal_code(postal_code, profile: BaseCountryProfile | str | None = None, *, country_code: str = "CA"):
+    """
+    Validates the postal code format against the active profile's pattern.
+    根据活动配置文件的模式验证邮政编码格式。
+    """
     if not postal_code:
         return False
-    return bool(re.match(POSTAL_CODE_PATTERN, postal_code.strip()))
+    pattern = _resolve_profile(profile, country_code=country_code).postal_code_pattern
+    return bool(re.match(pattern, postal_code.strip()))
+
 
 # 生成用户脱敏哈希
 def generate_user_hash(user_name, user_phone):

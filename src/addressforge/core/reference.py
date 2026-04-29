@@ -20,6 +20,7 @@ from .common import (
     normalize_space,
     normalize_street_name,
 )
+from .config import ADDRESSFORGE_WORKSPACE_NAME
 
 
 REFERENCE_FILE_ENV = "ADDRESSFORGE_REFERENCE_FILE"
@@ -27,6 +28,7 @@ REFERENCE_FILE_ENV = "ADDRESSFORGE_REFERENCE_FILE"
 
 @dataclass(frozen=True)
 class ExternalBuildingReferenceRow:
+    workspace_name: str
     source_name: str
     external_id: str
     segment_id: str | None
@@ -82,7 +84,8 @@ def _resolve_geonova_source(csv_path: str | None = None) -> tuple[Iterable[dict[
 
 
 class GeoNovaReferenceMatcher:
-    def __init__(self) -> None:
+    def __init__(self, workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME) -> None:
+        self._workspace_name = workspace_name
         self._reference_map: dict[str, list[dict[str, object]]] | None = None
 
     def _coarse_reference_key(self, row: dict[str, object]) -> str:
@@ -97,29 +100,56 @@ class GeoNovaReferenceMatcher:
     def _load_reference_map(self) -> dict[str, list[dict[str, object]]]:
         if self._reference_map is not None:
             return self._reference_map
-        rows = fetch_all(
-            """
-            SELECT
-                reference_id,
-                source_name,
-                external_id,
-                street_number,
-                street_name,
-                unit_number,
-                city,
-                municipality,
-                county,
-                province,
-                postal_code,
-                reference_lat,
-                reference_lon,
-                reference_tier,
-                quality_score,
-                is_active
-            FROM external_building_reference
-            WHERE is_active = 1
-            """
-        )
+        try:
+            rows = fetch_all(
+                """
+                SELECT
+                    reference_id,
+                    workspace_name,
+                    source_name,
+                    external_id,
+                    street_number,
+                    street_name,
+                    unit_number,
+                    city,
+                    municipality,
+                    county,
+                    province,
+                    postal_code,
+                    reference_lat,
+                    reference_lon,
+                    reference_tier,
+                    quality_score,
+                    is_active
+                FROM external_building_reference
+                WHERE is_active = 1 AND workspace_name = %s
+                """,
+                (self._workspace_name,),
+            )
+        except Exception:
+            rows = fetch_all(
+                """
+                SELECT
+                    reference_id,
+                    source_name,
+                    external_id,
+                    street_number,
+                    street_name,
+                    unit_number,
+                    city,
+                    municipality,
+                    county,
+                    province,
+                    postal_code,
+                    reference_lat,
+                    reference_lon,
+                    reference_tier,
+                    quality_score,
+                    is_active
+                FROM external_building_reference
+                WHERE is_active = 1
+                """
+            )
         reference_map: dict[str, list[dict[str, object]]] = {}
         for row in rows:
             key = self._coarse_reference_key(row)
@@ -212,7 +242,7 @@ class GeoNovaReferenceMatcher:
         )
 
 
-def _to_reference_row(row: dict[str, str]) -> ExternalBuildingReferenceRow | None:
+def _to_reference_row(row: dict[str, str], workspace_name: str) -> ExternalBuildingReferenceRow | None:
     street_number = normalize_space(row.get("CIVICNUM")).upper()
     street_name = normalize_street_name(
         " ".join(
@@ -234,6 +264,7 @@ def _to_reference_row(row: dict[str, str]) -> ExternalBuildingReferenceRow | Non
     lat = float(row["LAT"]) if _is_valid_ns_coordinate(row.get("LAT"), row.get("LONG")) else None
     lon = float(row["LONG"]) if _is_valid_ns_coordinate(row.get("LAT"), row.get("LONG")) else None
     return ExternalBuildingReferenceRow(
+        workspace_name=workspace_name,
         source_name="geonova",
         external_id=str(row.get("PNTID") or ""),
         segment_id=normalize_space(row.get("SEGID")) or None,
@@ -267,30 +298,31 @@ class ExternalReferenceImportService:
             return 0
         query = """
             INSERT INTO external_building_reference (
-                source_name, external_id, segment_id, street_number, street_name, unit_number,
+                workspace_name, source_name, external_id, segment_id, street_number, street_name, unit_number,
                 city, municipality, county, province, postal_code, reference_lat, reference_lon,
                 reference_tier, quality_score, raw_payload, is_active
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1) AS new_row
             ON DUPLICATE KEY UPDATE
-                segment_id = VALUES(segment_id),
-                street_number = VALUES(street_number),
-                street_name = VALUES(street_name),
-                unit_number = VALUES(unit_number),
-                city = VALUES(city),
-                municipality = VALUES(municipality),
-                county = VALUES(county),
-                province = VALUES(province),
-                postal_code = VALUES(postal_code),
-                reference_lat = VALUES(reference_lat),
-                reference_lon = VALUES(reference_lon),
-                reference_tier = VALUES(reference_tier),
-                quality_score = VALUES(quality_score),
-                raw_payload = VALUES(raw_payload),
+                segment_id = new_row.segment_id,
+                street_number = new_row.street_number,
+                street_name = new_row.street_name,
+                unit_number = new_row.unit_number,
+                city = new_row.city,
+                municipality = new_row.municipality,
+                county = new_row.county,
+                province = new_row.province,
+                postal_code = new_row.postal_code,
+                reference_lat = new_row.reference_lat,
+                reference_lon = new_row.reference_lon,
+                reference_tier = new_row.reference_tier,
+                quality_score = new_row.quality_score,
+                raw_payload = new_row.raw_payload,
                 is_active = 1,
                 updated_at = CURRENT_TIMESTAMP
         """
         payload = [
             (
+                item.workspace_name,
                 item.source_name,
                 item.external_id,
                 item.segment_id,
@@ -316,7 +348,12 @@ class ExternalReferenceImportService:
             conn.commit()
             return len(payload)
 
-    def run(self, csv_path: str | None = None, batch_size: int = 5000) -> dict[str, int | str]:
+    def run(
+        self,
+        csv_path: str | None = None,
+        batch_size: int = 5000,
+        workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
+    ) -> dict[str, int | str]:
         run_id = create_run("evidence_aggregate", notes=f"geonova_import batch_size={batch_size}")
         try:
             reader, source = _resolve_geonova_source(csv_path)
@@ -325,7 +362,7 @@ class ExternalReferenceImportService:
             invalid = 0
             batch: list[ExternalBuildingReferenceRow] = []
             for raw_row in reader:
-                reference_row = _to_reference_row(raw_row)
+                reference_row = _to_reference_row(raw_row, workspace_name)
                 if reference_row is None:
                     invalid += 1
                     continue

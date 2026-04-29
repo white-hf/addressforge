@@ -46,7 +46,15 @@ This writes the sample addresses into `raw_address_record`.
 
 This generates a minimal training artifact and proves the training loop works.
 
-## 5. Start the API
+## 5. Start the control worker
+
+The control worker executes queued backend jobs such as incremental ingestion, training, and continuous-mode tasks.
+
+```bash
+./scripts/run_control_worker.sh
+```
+
+## 6. Start the API
 
 ```bash
 ./scripts/run_api.sh
@@ -61,7 +69,7 @@ Then you can call:
 - `POST /api/v1/validate`
 - `POST /api/v1/explain`
 
-## 6. If you have your own private data
+## 7. If you have your own private data
 
 There are two supported ingestion paths.
 
@@ -110,15 +118,16 @@ Then run:
 ./scripts/run_ingestion.sh
 ```
 
-## 7. Shortest path summary
+## 8. Shortest path summary
 
 1. Initialize the schema
 2. Import the sample CSV
 3. Run the baseline training skeleton
-4. Start the API
-5. Replace the sample data with your own private data
+4. Start the control worker
+5. Start the API
+6. Replace the sample data with your own private data
 
-## 8. Conclusion
+## 9. Conclusion
 
 If you only want to confirm that the system works, follow this guide first.  
 Then replace the sample inputs with your own private data and custom model.

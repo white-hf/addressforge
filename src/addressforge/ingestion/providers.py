@@ -6,6 +6,7 @@ import mysql.connector
 import requests
 
 from addressforge.core.config import (
+    ADDRESSFORGE_INGESTION_API_ADAPTER,
     ADDRESSFORGE_INGESTION_API_BATCH_SIZE,
     ADDRESSFORGE_INGESTION_API_TIMEOUT,
     ADDRESSFORGE_INGESTION_API_TOKEN,
@@ -15,6 +16,7 @@ from addressforge.core.config import (
     ADDRESSFORGE_INGESTION_DB_CURSOR_COLUMN,
     ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN,
     ADDRESSFORGE_INGESTION_DB_HOST,
+    ADDRESSFORGE_INGESTION_DB_LATITUDE_COLUMN,
     ADDRESSFORGE_INGESTION_DB_LONGITUDE_COLUMN,
     ADDRESSFORGE_INGESTION_DB_NAME,
     ADDRESSFORGE_INGESTION_DB_PASSWORD,
@@ -26,9 +28,9 @@ from addressforge.core.config import (
     ADDRESSFORGE_INGESTION_MODE,
     ADDRESSFORGE_INGESTION_SOURCE_NAME,
 )
-from addressforge.core.common import normalize_space
 
-from .models import IngestionPage, IngestionRecord
+from .adapters import ApiAdapterContext, _row_to_record, resolve_api_source_adapter
+from .models import IngestionPage
 
 
 class BaseIngestionProvider:
@@ -39,41 +41,6 @@ class BaseIngestionProvider:
         raise NotImplementedError
 
 
-def _record_from_mapping(source_name: str, row: dict[str, Any], cursor_field: str | None = None) -> IngestionRecord:
-    external_id = normalize_space(str(row.get("external_id") or row.get("id") or row.get("record_id") or ""))
-    raw_address_text = normalize_space(
-        str(row.get("raw_address_text") or row.get("address_text") or row.get("address") or "")
-    )
-    source_payload = dict(row)
-    cursor_value = None
-    if cursor_field:
-        value = row.get(cursor_field)
-        cursor_value = None if value is None else str(value)
-    latitude = row.get("latitude") or row.get("lat") or row.get("gps_lat")
-    longitude = row.get("longitude") or row.get("lon") or row.get("gps_lon")
-    try:
-        latitude_value = float(latitude) if latitude not in (None, "") else None
-    except (TypeError, ValueError):
-        latitude_value = None
-    try:
-        longitude_value = float(longitude) if longitude not in (None, "") else None
-    except (TypeError, ValueError):
-        longitude_value = None
-    return IngestionRecord(
-        external_id=external_id,
-        raw_address_text=raw_address_text,
-        source_name=source_name,
-        cursor_value=cursor_value,
-        city=normalize_space(str(row.get("city") or row.get("COMM") or row.get("municipality") or "")) or None,
-        province=normalize_space(str(row.get("province") or row.get("PROVINCE") or row.get("state") or "")) or None,
-        postal_code=normalize_space(str(row.get("postal_code") or row.get("postcode") or row.get("zip") or "")) or None,
-        country_code=normalize_space(str(row.get("country_code") or row.get("country") or "CA")) or "CA",
-        latitude=latitude_value,
-        longitude=longitude_value,
-        source_payload=source_payload,
-    )
-
-
 class ApiIngestionProvider(BaseIngestionProvider):
     def __init__(
         self,
@@ -81,36 +48,37 @@ class ApiIngestionProvider(BaseIngestionProvider):
         token: str = ADDRESSFORGE_INGESTION_API_TOKEN,
         timeout: int = ADDRESSFORGE_INGESTION_API_TIMEOUT,
         source_name: str = ADDRESSFORGE_INGESTION_SOURCE_NAME,
+        adapter_name: str = "legacy_batch_orders",
     ) -> None:
         super().__init__(source_name=source_name)
         self.api_url = api_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.adapter = resolve_api_source_adapter(adapter_name)
 
     def fetch_page(self, cursor_value: str | None, batch_size: int) -> IngestionPage:
         if not self.api_url:
             raise ValueError("ADDRESSFORGE_INGESTION_API_URL is not configured")
-        payload = {
-            "cursor": cursor_value,
-            "batch_size": batch_size or ADDRESSFORGE_INGESTION_API_BATCH_SIZE,
-            "source_name": self.source_name,
-        }
-        headers = {"Accept": "application/json"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
-        response = requests.post(self.api_url, json=payload, headers=headers, timeout=self.timeout)
-        response.raise_for_status()
-        body = response.json()
-        if isinstance(body, list):
-            records_payload = body
-            next_cursor = None
-            has_more = False
-        else:
-            records_payload = body.get("records") or body.get("data") or []
-            next_cursor = body.get("next_cursor") or body.get("cursor")
-            has_more = bool(body.get("has_more") or body.get("more"))
-        records = [_record_from_mapping(self.source_name, dict(item)) for item in records_payload]
-        return IngestionPage(records=records, next_cursor=next_cursor, has_more=has_more, source_name=self.source_name)
+        
+        import logging
+        logger = logging.getLogger("addressforge")
+        logger.info(f"ApiIngestionProvider: Adapter={type(self.adapter).__name__}, URL={self.api_url}")
+        
+        session = requests.Session()
+        try:
+            return self.adapter.fetch_page(
+                session,
+                ApiAdapterContext(
+                    base_url=self.api_url,
+                    source_name=self.source_name,
+                    timeout=self.timeout,
+                    token=self.token,
+                ),
+                cursor_value,
+                batch_size or ADDRESSFORGE_INGESTION_API_BATCH_SIZE,
+            )
+        finally:
+            session.close()
 
 
 class DatabaseIngestionProvider(BaseIngestionProvider):
@@ -131,14 +99,15 @@ class DatabaseIngestionProvider(BaseIngestionProvider):
         self.database = database
         self.table = table
         self.cursor_column = cursor_column
-        self._source_column_names = {
+        self.field_mapping = {
             "external_id": ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN,
             "raw_address_text": ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN,
             "city": ADDRESSFORGE_INGESTION_DB_CITY_COLUMN,
             "province": ADDRESSFORGE_INGESTION_DB_PROVINCE_COLUMN,
             "postal_code": ADDRESSFORGE_INGESTION_DB_POSTAL_CODE_COLUMN,
-            "latitude": "latitude",
+            "latitude": ADDRESSFORGE_INGESTION_DB_LATITUDE_COLUMN,
             "longitude": ADDRESSFORGE_INGESTION_DB_LONGITUDE_COLUMN,
+            "cursor_value": self.cursor_column,
         }
 
     def _connect(self):
@@ -172,8 +141,16 @@ class DatabaseIngestionProvider(BaseIngestionProvider):
         next_cursor = None
         for row in rows:
             normalized_row = dict(row)
-            records.append(_record_from_mapping(self.source_name, normalized_row, cursor_field=self.cursor_column))
-            next_cursor = str(row.get(self.cursor_column)) if row.get(self.cursor_column) is not None else next_cursor
+            records.append(
+                _row_to_record(
+                    self.source_name,
+                    normalized_row,
+                    field_mapping=self.field_mapping,
+                    cursor_field=self.cursor_column,
+                )
+            )
+            if row.get(self.cursor_column) is not None:
+                next_cursor = str(row.get(self.cursor_column))
         has_more = len(rows) >= batch_limit
         return IngestionPage(records=records, next_cursor=next_cursor, has_more=has_more, source_name=self.source_name)
 
@@ -185,3 +162,4 @@ def resolve_ingestion_provider(mode: str | None = None) -> BaseIngestionProvider
     if normalized_mode in {"db", "database", "direct"}:
         return DatabaseIngestionProvider()
     raise ValueError(f"Unsupported ingestion mode: {mode}")
+

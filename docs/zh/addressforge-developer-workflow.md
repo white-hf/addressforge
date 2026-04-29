@@ -68,6 +68,10 @@ cp .env.example src/addressforge/core/.env.local
 
 - `ADDRESSFORGE_INGESTION_API_URL`
 - `ADDRESSFORGE_INGESTION_API_TOKEN`（如果对方接口需要）
+- `ADDRESSFORGE_INGESTION_API_ADAPTER`
+  - `generic`：标准 cursor 风格接口
+  - `legacy_batch_orders`：兼容旧项目里的 `getbatchlist -> getdriverordercountmerged -> getdriverordersinbatchlist` 三段式流程
+- `ADDRESSFORGE_INGESTION_API_FIELD_MAPPING_JSON`：本地字段映射，不进 git
 
 如果你用数据库直导，还需要：
 

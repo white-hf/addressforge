@@ -46,7 +46,15 @@ export ADDRESSFORGE_IMPORT_CSV_PATH=examples/sample_raw_addresses.csv
 
 这一步会生成一个最小训练产物，先把训练闭环跑通。
 
-## 5. 启动 API
+## 5. 启动控制 worker
+
+控制 worker 负责执行控制台排队的后台任务，例如增量导入、训练和后续的持续模式任务。
+
+```bash
+./scripts/run_control_worker.sh
+```
+
+## 6. 启动 API
 
 ```bash
 ./scripts/run_api.sh
@@ -61,7 +69,7 @@ export ADDRESSFORGE_IMPORT_CSV_PATH=examples/sample_raw_addresses.csv
 - `POST /api/v1/validate`
 - `POST /api/v1/explain`
 
-## 6. 如果你有自己的私有数据
+## 7. 如果你有自己的私有数据
 
 你有两种接入方式。
 
@@ -110,15 +118,16 @@ CREATE TABLE source_raw_address (
 ./scripts/run_ingestion.sh
 ```
 
-## 7. 最短路径总结
+## 8. 最短路径总结
 
 1. 初始化 schema
 2. 导入示例 CSV
 3. 跑 baseline 训练
-4. 启动 API
-5. 用自己的私有数据替换示例数据
+4. 启动控制 worker
+5. 启动 API
+6. 用自己的私有数据替换示例数据
 
-## 8. 结论
+## 9. 结论
 
 如果你只想先确认系统能跑起来，就按这份文档执行即可。  
 先跑通最小闭环，再逐步替换成你自己的私有数据和自定义模型。

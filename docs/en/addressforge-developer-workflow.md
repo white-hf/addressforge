@@ -68,6 +68,10 @@ If you want API pull ingestion, also set:
 
 - `ADDRESSFORGE_INGESTION_API_URL`
 - `ADDRESSFORGE_INGESTION_API_TOKEN` if the source requires auth
+- `ADDRESSFORGE_INGESTION_API_ADAPTER`
+  - `generic`: standard cursor-style API
+  - `legacy_batch_orders`: compatible with the older `getbatchlist -> getdriverordercountmerged -> getdriverordersinbatchlist` flow
+- `ADDRESSFORGE_INGESTION_API_FIELD_MAPPING_JSON`: local field mapping that stays outside git
 
 If you want database direct import, also set:
 

@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="panel">
+    <div class="panel-head">
+        <h2 data-i18n="batch_title">批次管理</h2>
+        <p data-i18n="batch_desc">从候选池中生成审核批次，并将审核结果冻结为版本快照。</p>
+    </div>
+    
+    <div class="panel-body">
+        <!-- Batch Stats -->
+        <div class="stats-row mb-6">
+            <div class="stat">
+                <div class="k" data-i18n="pending_total_label">待审核总数</div>
+                <div class="v text-blue-600" id="batch-pending-total">0</div>
+            </div>
+            <div class="stat">
+                <div class="k" data-i18n="finished_unfrozen_label">已完成（未冻结）</div>
+                <div class="v text-teal-600" id="batch-finished-unfrozen">0</div>
+            </div>
+            <div class="stat">
+                <div class="k" data-i18n="active_batch_label">当前活动批次</div>
+                <div class="v" id="active-batch-id">#0</div>
+            </div>
+            <div class="stat">
+                <div class="k" data-i18n="gold_version_label">黄金集版本</div>
+                <div class="v" id="gold-version">v1.0</div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-6">
+            <!-- Task Distribution -->
+            <div class="card p-6">
+                <h3 class="text-lg font-bold mb-4" data-i18n="generate_batch_title">生成审核批次</h3>
+                <p class="text-sm text-slate-500 mb-6" data-i18n="generate_batch_desc">从系统自动判定的低置信度或随机抽样池中提取新批次进入人工队列。</p>
+                
+                <div class="space-y-4">
+                    <div>
+                        <label class="text-xs font-bold text-slate-400 uppercase" data-i18n="sampling_scale">抽样规模</label>
+                        <select id="batch-size" class="w-full p-2 border rounded-xl mt-1">
+                            <option value="24" data-i18n="scale_24">24 条 (快速批次)</option>
+                            <option value="50" data-i18n="scale_50">50 条 (标准批次)</option>
+                            <option value="100" data-i18n="scale_100">100 条 (大批次)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="text-xs font-bold text-slate-400 uppercase" data-i18n="sampling_strategy">抽样策略</label>
+                        <select id="batch-strategy" class="w-full p-2 border rounded-xl mt-1">
+                            <option value="uncertainty" data-i18n="strategy_uncertainty">置信度优先 (推荐)</option>
+                            <option value="random" data-i18n="strategy_random">随机抽样</option>
+                        </select>
+                    </div>
+                    <button class="btn primary w-full" onclick="generateBatch()" data-i18n="generate_batch">立即生成新批次</button>
+                </div>
+            </div>
+
+            <!-- Version Freezing -->
+            <div class="card p-6">
+                <h3 class="text-lg font-bold mb-4" data-i18n="freeze_version_title">版本冻结与沉淀</h3>
+                <p class="text-sm text-slate-500 mb-6" data-i18n="freeze_version_desc">将当前所有已确认的人工结果打包，冻结为新的金标版本，用于后续模型训练。</p>
+                
+                <div class="space-y-4">
+                    <div>
+                        <label class="text-xs font-bold text-slate-400 uppercase" data-i18n="version_name_label">新版本号</label>
+                        <input type="text" id="new-version-name" class="w-full p-2 border rounded-xl mt-1" data-i18n-placeholder="version_name_placeholder" placeholder="e.g. human_gold_20240427">
+                    </div>
+                    <div>
+                        <label class="text-xs font-bold text-slate-400 uppercase" data-i18n="notes_label">备注</label>
+                        <textarea id="freeze-notes" class="w-full p-2 border rounded-xl mt-1" rows="2" data-i18n-placeholder="notes_placeholder" placeholder="版本变更说明..."></textarea>
+                    </div>
+                    <button class="btn good w-full" onclick="freezeVersion()" data-i18n="freeze_version">完成本阶段并冻结版本</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- History Table -->
+        <div class="card mt-6">
+            <div class="p-4 border-bottom bg-slate-50 font-bold text-sm" data-i18n="history_batches">历史审核批次</div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-slate-50 text-slate-400 uppercase text-xs">
+                        <tr>
+                            <th class="p-4" data-i18n="batch_id_col">批次 ID</th>
+                            <th class="p-4" data-i18n="create_time_col">创建时间</th>
+                            <th class="p-4" data-i18n="scale_col">规模</th>
+                            <th class="p-4" data-i18n="status_col">状态</th>
+                            <th class="p-4" data-i18n="action_col">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-batch-table">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function loadBatchStats() {
+    const res = await fetch('/api/v1/business/batch-stats');
+    const data = await res.json();
+    document.getElementById('batch-pending-total').textContent = data.pending_total;
+    document.getElementById('batch-finished-unfrozen').textContent = data.finished_unfrozen;
+    document.getElementById('active-batch-id').textContent = '#' + (data.active_batch_id || 0);
+    document.getElementById('gold-version').textContent = data.current_gold_version || 'v1.0';
+    
+    renderHistory(data.history || []);
+}
+
+function renderHistory(history) {
+    const tbody = document.getElementById('history-batch-table');
+    if (history.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="p-8 text-center text-slate-400" data-i18n="no_records">暂无批次记录</td></tr>';
+        return;
+    }
+    tbody.innerHTML = history.map(h => `
+        <tr class="border-t">
+            <td class="p-4 font-mono">#${h.batch_id}</td>
+            <td class="p-4 text-slate-500">${h.created_at}</td>
+            <td class="p-4">${h.size}</td>
+            <td class="p-4"><span class="pill ${h.status === 'completed' ? 'good' : ''}">${h.status}</span></td>
+            <td class="p-4"><button class="text-blue-600 hover:underline" onclick="viewBatchDetail(${h.batch_id}, '${h.status}', ${h.size})" data-i18n="view_details">查看详情</button></td>
+        </tr>
+    `).join('');
+    translatePage();
+}
+
+function viewBatchDetail(id, status, size) {
+    if (typeof showToast === 'function') {
+        showToast(`Batch #${id} Details: Status [${status}], contains ${size} samples.`, "info");
+    }
+}
+
+async function generateBatch() {
+    const size = document.getElementById('batch-size').value;
+    const strategy = document.getElementById('batch-strategy').value;
+    
+    const res = await fetch('/api/v1/jobs/trigger', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            job_action: 'seed_review_batch',
+            payload: { limit: parseInt(size), strategy: strategy }
+        })
+    });
+    
+    if (res.ok) {
+        const result = await res.json();
+        if (result.inserted > 0) {
+            showToast(`Generated ${result.inserted} samples! <a href="/review" class="underline ml-2 font-bold text-white hover:text-emerald-100">Go to Review →</a>`, "success");
+        } else {
+            showToast("Failed to generate batch: No pending samples found in data pool.", "warn");
+        }
+        loadBatchStats();
+    } else {
+        showToast("Error generating batch.", "error");
+    }
+}
+
+async function freezeVersion() {
+    const versionName = document.getElementById('new-version-name').value;
+    if (!versionName) { 
+        showToast("Please enter a version name.", "warn");
+        return; 
+    }
+    
+    const res = await fetch('/api/v1/jobs/trigger', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            job_action: 'freeze_human_gold',
+            payload: { version: versionName, notes: document.getElementById('freeze-notes').value }
+        })
+    });
+    
+    if (res.ok) {
+        showToast("Version freeze task submitted.", "success");
+        loadBatchStats();
+    } else {
+        showToast("Failed to freeze version.", "error");
+    }
+}
+
+function translatePage() {
+    if (typeof setLanguage === 'function') {
+        const lang = localStorage.getItem('addressforge_lang') || 'zh';
+        setLanguage(lang);
+    }
+}
+
+window.addEventListener('load', loadBatchStats);
+</script>
+{% endblock %}
