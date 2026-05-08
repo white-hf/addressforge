@@ -1,9 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="panel">
-    <div class="panel-head">
-        <h2 data-i18n="dashboard">控制中心</h2>
-        <p data-i18n="dashboard_desc">驱动地址治理全流水线：从摄入、清洗到模型演进。</p>
+    <div class="panel-head flex justify-between items-center">
+        <div>
+            <h2 data-i18n="dashboard">控制中心</h2>
+            <p data-i18n="dashboard_desc">驱动地址治理全流水线：从摄入、清洗到模型演进。</p>
+        </div>
+        <div id="worker-status-badge" class="px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 bg-slate-100 text-slate-500">
+            <span class="w-2 h-2 rounded-full bg-slate-400"></span>
+            <span data-i18n="checking_status">Checking Status...</span>
+        </div>
     </div>
     
     <div class="panel-body">
@@ -14,12 +20,12 @@
                 <div class="v text-emerald-600" id="metric-accuracy">-%</div>
             </div>
             <div class="stat">
-                <div class="k" data-i18n="daily_volume">待处理样本</div>
-                <div class="v text-amber-600" id="metric-volume">-</div>
+                <div class="k" data-i18n="review_suggested">待审核 (Review)</div>
+                <div class="v text-amber-600" id="metric-review-needed">-</div>
             </div>
             <div class="stat">
-                <div class="k" data-i18n="system_status_label">系统状态</div>
-                <div class="v" id="status-pill">Ready</div>
+                <div class="k" data-i18n="ai_accepted">已接受 (AI)</div>
+                <div class="v" id="metric-accepted">-</div>
             </div>
             <div class="stat">
                 <div class="k" data-i18n="gold_growth">金标总量</div>
@@ -28,110 +34,190 @@
         </div>
 
         <h3 class="text-lg font-bold mb-4" data-i18n="governance_pipeline">治理流水线 (Pipelines)</h3>
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <!-- Stage 1: Ingestion -->
-            <div class="card p-6 border-l-4 border-l-blue-500">
-                <div class="flex justify-between items-start mb-4">
-                    <div class="text-2xl">📥</div>
-                    <span class="badge" id="ingestion-status">IDLE</span>
+        
+        <!-- Smart Nudge Area -->
+        <div id="smart-nudge-container" class="mb-6 hidden">
+            <div class="p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <span class="text-2xl">💡</span>
+                    <div>
+                        <h4 class="font-bold text-emerald-800" data-i18n="nudge_title">Milestone Reached!</h4>
+                        <p class="text-sm text-emerald-700" id="nudge-message">You have new un-frozen gold labels. Ready for the next model evolution.</p>
+                    </div>
                 </div>
-                <h4 class="font-bold mb-1" data-i18n="ingestion">数据摄入 (Ingestion)</h4>
-                <p class="text-xs text-slate-500 mb-6" data-i18n="ingestion_desc">同步上游业务系统的原始地址数据。</p>
-                <div class="flex gap-2">
-                    <button class="btn primary flex-grow py-2" onclick="triggerJob('ingestion_once')" data-i18n="start_sync">开始同步</button>
-                    <button class="btn soft py-2" onclick="showLogs('ingestion')" data-i18n="logs">日志</button>
+                <button class="btn good px-6" onclick="triggerAutoEvolve()" data-i18n="auto_evolve">Auto Evolve</button>
+            </div>
+        </div>
+
+        <div class="flex flex-col gap-6 relative">
+            <!-- Connecting Line -->
+            <div class="hidden lg:block absolute left-8 top-10 bottom-10 w-1 bg-slate-200 z-0"></div>
+
+            <!-- Step 1: Data Prep -->
+            <div class="card p-6 flex flex-col lg:flex-row gap-6 relative z-10 bg-white">
+                <div class="flex-shrink-0 w-16 h-16 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-2xl font-bold border-4 border-white shadow-sm">1</div>
+                <div class="flex-grow">
+                    <h4 class="text-xl font-bold mb-2" data-i18n="step_data_prep">Data Preparation</h4>
+                    <p class="text-sm text-slate-500 mb-6" data-i18n="step_data_prep_desc">Sync raw data and run automated parsing to identify high-risk addresses.</p>
+                    <div class="flex gap-3">
+                        <button class="btn primary px-8" onclick="triggerJob('ingestion_once')" data-i18n="start_sync">Start Sync</button>
+                        <button class="btn primary px-8" onclick="triggerJob('cleaning_once')" data-i18n="run_cleaning">Run Cleaning</button>
+                    </div>
+                    <div class="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                        <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                            <div>
+                                <div class="text-xs font-bold uppercase text-slate-500">Ingestion Source Config</div>
+                                <div class="text-sm text-slate-600">Switch between API incremental intake and DB historical backfill.</div>
+                            </div>
+                            <div id="ingestion-config-badge" class="pill warn">Loading...</div>
+                        </div>
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Mode</div>
+                                <select id="ingestion-mode" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" onchange="toggleIngestionConfigFields()">
+                                    <option value="api">API</option>
+                                    <option value="db">DB</option>
+                                </select>
+                            </label>
+                            <label class="text-sm lg:col-span-2">
+                                <div class="text-xs text-slate-500 mb-1">Source Name</div>
+                                <input id="ingestion-source-name" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                        </div>
+                        <div id="ingestion-api-fields" class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">API Batch Size</div>
+                                <input id="ingestion-api-batch-size" type="number" min="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                        </div>
+                        <div id="ingestion-db-fields" class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3 hidden">
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">DB Batch Size</div>
+                                <input id="ingestion-db-batch-size" type="number" min="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Table</div>
+                                <input id="ingestion-db-table" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Cursor Column</div>
+                                <input id="ingestion-db-cursor-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Tie-breaker Column</div>
+                                <input id="ingestion-db-tiebreaker-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">External ID Column</div>
+                                <input id="ingestion-db-external-id-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Raw Address Column</div>
+                                <input id="ingestion-db-raw-address-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Postal Code Column</div>
+                                <input id="ingestion-db-postal-code-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Latitude Column</div>
+                                <input id="ingestion-db-latitude-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Longitude Column</div>
+                                <input id="ingestion-db-longitude-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">City Column</div>
+                                <input id="ingestion-db-city-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                            <label class="text-sm">
+                                <div class="text-xs text-slate-500 mb-1">Province Column</div>
+                                <input id="ingestion-db-province-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
+                            </label>
+                        </div>
+                        <div class="flex gap-3">
+                            <button class="btn soft px-6" onclick="saveIngestionConfig()">Save Ingestion Config</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex-shrink-0 w-48 border-l pl-6 hidden lg:block">
+                    <div class="text-xs text-slate-400 font-bold mb-2 uppercase" data-i18n="status">Status</div>
+                    <div class="text-sm font-mono" id="status-cleaning">READY</div>
                 </div>
             </div>
 
-            <!-- Stage 2: Cleaning -->
-            <div class="card p-6 border-l-4 border-l-teal-500">
-                <div class="flex justify-between items-start mb-4">
-                    <div class="text-2xl">🧹</div>
-                    <span class="badge good" id="cleaning-status">READY</span>
+            <!-- Step 2: Review -->
+            <div class="card p-6 flex flex-col lg:flex-row gap-6 relative z-10 bg-white">
+                <div class="flex-shrink-0 w-16 h-16 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-2xl font-bold border-4 border-white shadow-sm">2</div>
+                <div class="flex-grow">
+                    <h4 class="text-xl font-bold mb-2" data-i18n="step_review">Human Verification</h4>
+                    <p class="text-sm text-slate-500 mb-6" data-i18n="step_review_desc">Expert adjudication on low-confidence samples to build the Gold Set.</p>
+                    <div class="flex gap-3">
+                        <a href="/review" class="btn primary px-8" data-i18n="go_review">Go Review</a>
+                        <a href="/batch" class="btn soft px-8" data-i18n="batch_management">Batch Mgt</a>
+                    </div>
                 </div>
-                <h4 class="font-bold mb-1" data-i18n="cleaning">地址治理 (Cleaning)</h4>
-                <p class="text-xs text-slate-500 mb-6" data-i18n="cleaning_desc">运行解析与验证模型，识别高风险地址。</p>
-                <div class="flex gap-2">
-                    <button class="btn primary flex-grow py-2" onclick="triggerJob('cleaning_once')" data-i18n="run_cleaning">运行清洗</button>
-                    <button class="btn soft py-2" onclick="showLogs('cleaning')" data-i18n="logs">日志</button>
-                </div>
-            </div>
-
-            <!-- Stage 3: Review -->
-            <div class="card p-6 border-l-4 border-l-indigo-500">
-                <div class="flex justify-between items-start mb-4">
-                    <div class="text-2xl">🧠</div>
-                    <span class="badge" id="review-status">ACTIVE</span>
-                </div>
-                <h4 class="font-bold mb-1" data-i18n="review_lab">人工校验 (Review)</h4>
-                <p class="text-xs text-slate-500 mb-6" data-i18n="review_desc">对机器难以判定的样本进行专家裁决。</p>
-                <div class="flex gap-2">
-                    <a href="/batch" class="btn soft flex-grow py-2 text-center" data-i18n="generate_batch">生成批次</a>
-                    <a href="/review" class="btn primary py-2 px-4" data-i18n="go_review">去审核</a>
+                <div class="flex-shrink-0 w-48 border-l pl-6 hidden lg:block">
+                    <div class="text-xs text-slate-400 font-bold mb-2 uppercase" data-i18n="queue_status">Queue</div>
+                    <div class="text-sm font-mono text-indigo-600" id="status-review">ACTIVE</div>
                 </div>
             </div>
 
-            <!-- Stage 4: Retrain -->
-            <div class="card p-6 border-l-4 border-l-orange-500">
-                <div class="flex justify-between items-start mb-4">
-                    <div class="text-2xl">🏗️</div>
-                    <span class="badge" id="train-status">IDLE</span>
+            <!-- Step 3: Model Evolution -->
+            <div class="card p-6 flex flex-col lg:flex-row gap-6 relative z-10 bg-white border-2 border-orange-100">
+                <div class="flex-shrink-0 w-16 h-16 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center text-2xl font-bold border-4 border-white shadow-sm">3</div>
+                <div class="flex-grow">
+                    <h4 class="text-xl font-bold mb-2" data-i18n="step_evolution">Model Evolution</h4>
+                    <p class="text-sm text-slate-500 mb-6" data-i18n="step_evolution_desc">Freeze gold, retrain models, and evaluate release readiness.</p>
+                    <div class="flex flex-wrap gap-3">
+                        <button class="btn soft px-6" onclick="freezeVersionModal()" data-i18n="freeze_version">Freeze Gold</button>
+                        <button class="btn primary px-6" onclick="triggerJob('training_once')" data-i18n="start_training">Start Training</button>
+                        <button class="btn primary px-6" onclick="triggerJob('evaluation_once')" data-i18n="run_eval">Run Eval & Shadow</button>
+                        <a href="/reports" class="btn soft px-6" data-i18n="view_reports">View Reports</a>
+                    </div>
                 </div>
-                <h4 class="font-bold mb-1" data-i18n="retrain_model">模型再训练 (Retrain)</h4>
-                <p class="text-xs text-slate-500 mb-6" data-i18n="retrain_desc">基于最新金标集重新训练地址解析模型。</p>
-                <div class="flex gap-2">
-                    <button class="btn primary flex-grow py-2" onclick="triggerJob('training_once')" data-i18n="start_training">开始训练</button>
-                    <button class="btn soft py-2" onclick="showLogs('training')" data-i18n="config">配置</button>
-                </div>
-            </div>
-
-            <!-- Stage 5: Shadow -->
-            <div class="card p-6 border-l-4 border-l-purple-500">
-                <div class="flex justify-between items-start mb-4">
-                    <div class="text-2xl">⚖️</div>
-                    <span class="badge" id="eval-status">READY</span>
-                </div>
-                <h4 class="font-bold mb-1" data-i18n="shadow_eval">影子评测 (Shadow)</h4>
-                <p class="text-xs text-slate-500 mb-6" data-i18n="shadow_desc">在灰度环境运行新模型，比对准确率提升。</p>
-                <div class="flex gap-2">
-                    <button class="btn primary flex-grow py-2" onclick="triggerJob('evaluation_once')" data-i18n="run_eval">运行评测</button>
-                    <a href="/reports" class="btn soft py-2 px-4" data-i18n="compare">对比</a>
+                <div class="flex-shrink-0 w-48 border-l pl-6 hidden lg:block">
+                    <div class="text-xs text-slate-400 font-bold mb-2 uppercase" data-i18n="model_status">Model</div>
+                    <div class="text-sm font-mono text-orange-600" id="status-model">IDLE</div>
                 </div>
             </div>
 
-            <!-- Stage 6: Assets -->
-            <div class="card p-6 border-l-4 border-l-amber-600 bg-amber-50/30">
-                <div class="flex justify-between items-start mb-4">
-                    <div class="text-2xl">💎</div>
-                    <span class="pill good" id="asset-count">0 Assets</span>
+            <!-- Step 4: Assetization -->
+            <div class="card p-6 flex flex-col lg:flex-row gap-6 relative z-10 bg-amber-50">
+                <div class="flex-shrink-0 w-16 h-16 rounded-full bg-amber-200 text-amber-700 flex items-center justify-center text-2xl font-bold border-4 border-white shadow-sm">4</div>
+                <div class="flex-grow">
+                    <h4 class="text-xl font-bold mb-2" data-i18n="step_assets">Canonical Assetization</h4>
+                    <p class="text-sm text-slate-500 mb-6" data-i18n="step_assets_desc">Consolidate accepted results into the master asset library.</p>
+                    <div class="flex gap-3">
+                        <button class="btn good px-8" onclick="triggerJob('promote_assets')" data-i18n="asset_promotion">Promote Assets</button>
+                    </div>
                 </div>
-                <h4 class="font-bold mb-1" data-i18n="canonical_assets">地址资产 (Assets)</h4>
-                <p class="text-xs text-slate-500 mb-6" data-i18n="assets_desc">将清洗结果收敛并固化为唯一的标准资产。</p>
-                <div class="flex gap-2">
-                    <button class="btn good flex-grow py-2" onclick="triggerJob('promote_assets')" data-i18n="asset_promotion">资产提升</button>
-                    <button class="btn soft py-2" onclick="showAssets()" data-i18n="view_lib">查看库</button>
+                <div class="flex-shrink-0 w-48 border-l border-amber-200 pl-6 hidden lg:block">
+                    <div class="text-xs text-amber-600 font-bold mb-2 uppercase" data-i18n="library">Library</div>
+                    <div class="text-sm font-bold text-amber-700" id="status-assets">0 Assets</div>
                 </div>
             </div>
         </div>
 
         <!-- Recent Jobs -->
         <div class="card mt-10">
-            <div class="p-4 border-b bg-slate-50 flex justify-between items-center">
-                <span class="font-bold text-sm" data-i18n="recent_jobs">任务队列状态 (Recent Jobs)</span>
-                <button class="text-xs text-blue-600" onclick="refreshStatus()" data-i18n="refresh">刷新状态</button>
+            <div class="p-6 border-b flex justify-between items-center">
+                <h4 class="font-bold" data-i18n="recent_jobs">最近任务记录</h4>
+                <button class="btn soft py-1 text-xs" onclick="refreshStatus()" data-i18n="refresh">刷新</button>
             </div>
             <div class="overflow-x-auto">
-                <table class="w-full text-sm text-left">
-                    <thead class="bg-slate-50 text-slate-400 uppercase text-xs">
-                        <tr>
-                            <th class="p-4" data-i18n="job_type">任务类型</th>
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="text-slate-400 text-xs uppercase font-bold">
+                            <th class="p-4" data-i18n="job_type">类型</th>
                             <th class="p-4" data-i18n="status">状态</th>
-                            <th class="p-4" data-i18n="create_time">创建时间</th>
-                            <th class="p-4" data-i18n="summary">结果摘要</th>
+                            <th class="p-4" data-i18n="created_at">提交时间</th>
+                            <th class="p-4" data-i18n="summary">摘要</th>
                         </tr>
                     </thead>
                     <tbody id="job-status-table">
-                        <!-- JS Rendered -->
+                        <tr><td colspan="4" class="p-8 text-center text-slate-400" data-i18n="loading">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -140,7 +226,31 @@
 </div>
 
 <script>
+let isWorkerOnline = false;
+let currentIngestionConfig = null;
+
 async function triggerJob(action) {
+    // PRE-FLIGHT CHECK: Automated Worker Recovery
+    // 事前检查：自动化 Worker 恢复
+    if (!isWorkerOnline) {
+        const shouldStart = confirm("🤖 BACKGROUND WORKER OFFLINE\n\nNo active worker detected. Would you like the system to automatically start the background service for you?\n\n------------------\n\n🤖 后台执行器离线\n\n检测到当前无人干活。是否需要系统为您自动拉起后台服务并继续下达任务？");
+        
+        if (shouldStart) {
+            showToast("System: Spawning worker process...", "info");
+            const startRes = await fetch('/api/v1/control/worker/start', { method: 'POST' });
+            if (startRes.ok) {
+                showToast("Service started! Waiting for heartbeat...", "success");
+                // Wait briefly for process to initialize before dispatching
+                await new Promise(r => setTimeout(r, 1500));
+            } else {
+                showToast("Automation failed. Please check server permissions.", "error");
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+
     showToast(`Dispatching job: ${action}...`, "info");
     const res = await fetch('/api/v1/jobs/trigger', {
         method: 'POST',
@@ -153,6 +263,9 @@ async function triggerJob(action) {
     
     if (res.ok) {
         showToast("Job successfully dispatched", "success");
+        if (action === 'evaluation_once') {
+            showToast(`Stability & evaluation run started. <a href="/reports" class="underline ml-2 font-bold text-white hover:text-emerald-100" data-i18n="check_reports">Check Reports →</a>`, "info");
+        }
         refreshStatus();
     } else {
         showToast("Failed to dispatch job", "error");
@@ -160,39 +273,175 @@ async function triggerJob(action) {
 }
 
 async function refreshStatus() {
-    const metricRes = await fetch('/api/v1/business/dashboard-metrics');
-    const metrics = await metricRes.json();
-    document.getElementById('metric-accuracy').textContent = metrics.accuracy_trend.slice(-1) + '%';
-    document.getElementById('metric-volume').textContent = metrics.daily_processing_volume;
-    document.getElementById('metric-gold-growth').textContent = metrics.gold_set_growth;
-
-    const assetRes = await fetch('/api/v1/business/asset-stats');
-    const assetData = await assetRes.json();
-    document.getElementById('asset-count').textContent = `${assetData.total_buildings + assetData.total_units} Assets`;
-
     const statusRes = await fetch('/api/v1/control/status');
     const status = await statusRes.json();
     
+    // Sync global worker liveness state
+    isWorkerOnline = status.is_worker_active;
+    
+    // Update Global Badge
+    const badge = document.getElementById('worker-status-badge');
+    if (isWorkerOnline) {
+        badge.className = "px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 bg-emerald-50 text-emerald-600 border border-emerald-100";
+        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> <span data-i18n="worker_online">Worker Active</span>`;
+    } else {
+        badge.className = "px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 bg-rose-50 text-rose-600 border border-rose-100";
+        badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500"></span> <span data-i18n="worker_offline">Worker Offline</span>`;
+    }
+    
+    // Update main KPIs
+    const metrics = status.metrics || { accuracy_trend: [0] };
+    const goldLabels = status.gold_labels || {};
+    const activeLearning = status.active_learning || {};
+    const assets = status.assets || { total_buildings: 0, total_units: 0 };
+
+    document.getElementById('metric-accuracy').textContent = ((metrics.accuracy_trend.slice(-1)[0] || 0) * 100).toFixed(2) + '%';
+    document.getElementById('metric-review-needed').textContent = activeLearning.available_total || '0';
+    document.getElementById('metric-accepted').textContent = activeLearning.accepted_total || '0';
+    document.getElementById('metric-gold-growth').textContent = goldLabels.accepted_human || '0';
+
+    // Update Step Status
+    document.getElementById('status-cleaning').textContent = (status.job_kind_counts.cleaning_once || 0) > 0 ? "ACTIVE" : "READY";
+    document.getElementById('status-review').textContent = (activeLearning.queued || 0) > 0 ? `${activeLearning.queued} PENDING` : "CLEAR";
+    document.getElementById('status-model').textContent = (status.job_kind_counts.training_once || 0) > 0 ? "EVOLVING" : "IDLE";
+    document.getElementById('status-assets').textContent = `${assets.total_buildings + assets.total_units} Assets`;
+
+    currentIngestionConfig = status.ingestion_config || null;
+    if (currentIngestionConfig) {
+        populateIngestionConfig(currentIngestionConfig);
+    }
+
+    // Smart Nudge Logic
+    const nudgeContainer = document.getElementById('smart-nudge-container');
+    if ((goldLabels.accepted_human || 0) >= 50) { 
+        nudgeContainer.classList.remove('hidden');
+        document.getElementById('nudge-message').textContent = `Detected ${goldLabels.accepted_human} new gold labels. Time to evolve the model!`;
+    } else {
+        nudgeContainer.classList.add('hidden');
+    }
+
     const tbody = document.getElementById('job-status-table');
     const recentJobs = status.recent_jobs || [];
     
     if (recentJobs.length === 0) {
         tbody.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-slate-400" data-i18n="no_jobs">暂无任务记录</td></tr>';
     } else {
-        tbody.innerHTML = recentJobs.map(j => `
-            <tr class="border-t">
-                <td class="p-4 font-bold">${j.job_kind}</td>
-                <td class="p-4"><span class="pill ${j.status === 'succeeded' ? 'good' : (j.status === 'failed' ? 'bad' : 'warn')}">${j.status}</span></td>
-                <td class="p-4 text-slate-500">${j.created_at}</td>
-                <td class="p-4 text-xs font-mono">${j.result_summary || '-'}</td>
-            </tr>
-        `).join('');
+        tbody.innerHTML = recentJobs.map(j => {
+            const isFailed = j.status === 'failed';
+            const displaySummary = isFailed ? (j.error_text || 'Unknown Error') : (j.result_summary || '-');
+            return `
+                <tr class="border-t">
+                    <td class="p-4 font-bold">${j.job_kind}</td>
+                    <td class="p-4">
+                        <span class="pill ${j.status === 'succeeded' ? 'good' : (isFailed ? 'bad' : 'warn')}">${j.status}</span>
+                    </td>
+                    <td class="p-4 text-slate-500">${j.created_at}</td>
+                    <td class="p-4 text-xs font-mono ${isFailed ? 'text-rose-600' : ''}" title="${displaySummary}">
+                        ${displaySummary.length > 60 ? displaySummary.substring(0, 60) + '...' : displaySummary}
+                    </td>
+                </tr>
+            `;
+        }).join('');
     }
-    // Re-apply translation after dynamic render
-    if (typeof setLanguage === 'function') {
-        const lang = localStorage.getItem('addressforge_lang') || 'zh';
-        setLanguage(lang);
+    
+    // Final application of i18n
+    if (typeof translatePage === 'function') {
+        translatePage();
     }
+}
+
+function toggleIngestionConfigFields() {
+    const mode = document.getElementById('ingestion-mode').value;
+    document.getElementById('ingestion-api-fields').classList.toggle('hidden', mode !== 'api');
+    document.getElementById('ingestion-db-fields').classList.toggle('hidden', mode !== 'db');
+}
+
+function populateIngestionConfig(config) {
+    document.getElementById('ingestion-mode').value = config.mode || 'api';
+    document.getElementById('ingestion-source-name').value = config.source_name || '';
+    document.getElementById('ingestion-api-batch-size').value = (config.api && config.api.batch_size) || 1000;
+    document.getElementById('ingestion-db-batch-size').value = (config.db && config.db.batch_size) || 1000;
+    document.getElementById('ingestion-db-table').value = (config.db && config.db.table) || '';
+    document.getElementById('ingestion-db-cursor-column').value = (config.db && config.db.cursor_column) || '';
+    document.getElementById('ingestion-db-tiebreaker-column').value = (config.db && config.db.tiebreaker_column) || '';
+    document.getElementById('ingestion-db-external-id-column').value = (config.db && config.db.external_id_column) || '';
+    document.getElementById('ingestion-db-raw-address-column').value = (config.db && config.db.raw_address_column) || '';
+    document.getElementById('ingestion-db-postal-code-column').value = (config.db && config.db.postal_code_column) || '';
+    document.getElementById('ingestion-db-latitude-column').value = (config.db && config.db.latitude_column) || '';
+    document.getElementById('ingestion-db-longitude-column').value = (config.db && config.db.longitude_column) || '';
+    document.getElementById('ingestion-db-city-column').value = (config.db && config.db.city_column) || '';
+    document.getElementById('ingestion-db-province-column').value = (config.db && config.db.province_column) || '';
+    const badge = document.getElementById('ingestion-config-badge');
+    badge.className = `pill ${config.mode === 'db' ? 'warn' : 'good'}`;
+    badge.textContent = config.mode === 'db' ? 'DB Backfill Mode' : 'API Incremental Mode';
+    toggleIngestionConfigFields();
+}
+
+async function saveIngestionConfig() {
+    const mode = document.getElementById('ingestion-mode').value;
+    const payload = {
+        mode: mode,
+        source_name: document.getElementById('ingestion-source-name').value.trim(),
+        api: {
+            batch_size: Number(document.getElementById('ingestion-api-batch-size').value || 1000),
+        },
+        db: {
+            batch_size: Number(document.getElementById('ingestion-db-batch-size').value || 1000),
+            table: document.getElementById('ingestion-db-table').value.trim(),
+            cursor_column: document.getElementById('ingestion-db-cursor-column').value.trim(),
+            tiebreaker_column: document.getElementById('ingestion-db-tiebreaker-column').value.trim(),
+            external_id_column: document.getElementById('ingestion-db-external-id-column').value.trim(),
+            raw_address_column: document.getElementById('ingestion-db-raw-address-column').value.trim(),
+            postal_code_column: document.getElementById('ingestion-db-postal-code-column').value.trim(),
+            latitude_column: document.getElementById('ingestion-db-latitude-column').value.trim(),
+            longitude_column: document.getElementById('ingestion-db-longitude-column').value.trim(),
+            city_column: document.getElementById('ingestion-db-city-column').value.trim(),
+            province_column: document.getElementById('ingestion-db-province-column').value.trim(),
+        }
+    };
+    showToast("Saving ingestion config...", "info");
+    const res = await fetch('/api/v1/control/ingestion-config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        const detail = await res.text();
+        showToast(`Failed to save ingestion config: ${detail}`, "error");
+        return;
+    }
+    const data = await res.json();
+    populateIngestionConfig(data.ingestion_config);
+    showToast("Ingestion config updated", "success");
+}
+
+async function freezeVersionModal() {
+    const version = prompt("Enter new Gold version name (e.g., gold_v2_2024):", "v_after_review_" + new Date().toISOString().slice(0,10).replace(/-/g,""));
+    if (!version) return;
+    
+    showToast("Freezing gold version...", "info");
+    const res = await fetch('/api/v1/jobs/trigger', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            job_action: 'freeze_human_gold',
+            payload: { version: version, notes: "Frozen from Governance Pipeline" }
+        })
+    });
+    
+    if (res.ok) {
+        showToast("Version freeze successful!", "success");
+        refreshStatus();
+    } else {
+        showToast("Failed to freeze version", "error");
+    }
+}
+
+async function triggerAutoEvolve() {
+    showToast("Starting Auto Evolution...", "info");
+    await freezeVersionModal();
+    // After freeze, trigger training
+    triggerJob('training_once');
 }
 
 function showAssets() {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,13 +16,16 @@ from addressforge.core.common import (
     build_full_address_key,
     canonicalize_unit_number,
     fetch_all,
+    has_numbered_road_signal,
     hybrid_canadian_parse_address,
     infer_structure_type,
+    looks_like_bare_trailing_unit_city_pattern,
     libpostal_parse_address,
     normalize_city,
     normalize_province,
     normalize_space,
     normalize_street_name,
+    normalize_unit_signal_text,
     simple_parse_address,
 )
 from addressforge.core.utils import logger
@@ -104,11 +108,160 @@ class CandidateView:
     match_rules: list[str]
 
 
-def _score_candidate(parsed: dict[str, Any], *, parser_name: str | None = None, parser_weights: dict[str, Any] | None = None) -> float:
+def _ensure_candidate_feature_vector(parsed: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    feature_vector = parsed.get("feature_vector")
+    if not isinstance(feature_vector, dict):
+        feature_vector = {}
+    normalized_raw_text = normalize_unit_signal_text(raw_text).upper()
+    normalized_street_name = normalize_street_name(parsed.get("street_name")) or ""
+    feature_vector.setdefault("pattern", parsed.get("unit_source"))
+    feature_vector.setdefault("unit_present", bool(canonicalize_unit_number(parsed.get("unit_number"))))
+    feature_vector.setdefault(
+        "has_explicit_unit_hint",
+        bool(re.search(r"\b(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|FLOOR|FL|#)\b", normalized_raw_text)),
+    )
+    feature_vector.setdefault(
+        "has_residential_unit_hint",
+        bool(re.search(r"\b(?:BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE|PH|MAIN FLOOR|GROUND FLOOR|GF)\b", normalized_raw_text)),
+    )
+    feature_vector.setdefault(
+        "has_geographic_modifier_only",
+        bool(
+            re.search(r"\b(?:UPPER|LOWER)\s+[A-Z][A-Z' -]{2,}\b", normalized_raw_text)
+            and not re.search(r"\b(?:APT|UNIT|SUITE|STE|ROOM|RM|#)\b", normalized_raw_text)
+        ),
+    )
+    feature_vector.setdefault(
+        "has_commercial_unit_hint",
+        bool(re.search(r"\b(?:KIOSK|OFFICE|MALL|PLAZA|SQUARE|CENTRE|CENTER|SHOPPING)\b", normalized_raw_text)),
+    )
+    normalized_without_postal = re.sub(r"\b[A-Z]\d[A-Z]\s*\d[A-Z]\d\b", " ", normalized_raw_text)
+    feature_vector.setdefault(
+        "has_double_number_pattern",
+        bool(
+            re.search(
+                r"^\s*\d+[A-Z]?\s+.+(?:,|\s)\s*\d+[A-Z]?\s+[A-Z][A-Z .'-]+\s+(?:NS|NB|ON|QC|PE|NL|MB|SK|AB|BC|YT|NT|NU)\b",
+                normalized_without_postal,
+            )
+        ),
+    )
+    feature_vector.setdefault(
+        "is_numbered_road_name",
+        bool(
+            has_numbered_road_signal(normalized_street_name)
+            or has_numbered_road_signal(normalized_raw_text)
+        ),
+    )
+    feature_vector.setdefault(
+        "has_bare_trailing_unit_city_pattern",
+        bool(
+            looks_like_bare_trailing_unit_city_pattern(
+                normalized_raw_text,
+                street_number=parsed.get("street_number"),
+                street_name=normalized_street_name,
+                unit_number=parsed.get("unit_number"),
+                city=parsed.get("city"),
+                province=parsed.get("province"),
+            )
+        ),
+    )
+    feature_vector.setdefault("is_commercial", bool(feature_vector.get("has_commercial_unit_hint")))
+    feature_vector.setdefault("regex_hit", int(bool(feature_vector.get("has_explicit_unit_hint"))))
+    parsed["feature_vector"] = feature_vector
+    return feature_vector
+
+
+def _recover_candidate_unit_from_text(
+    raw_text: str,
+    parsed: dict[str, Any],
+    *,
+    fallback_city: str | None,
+    fallback_province: str | None,
+) -> None:
+    if canonicalize_unit_number(parsed.get("unit_number")):
+        return
+    street_number = str(parsed.get("street_number") or "").strip()
+    street_name = normalize_street_name(parsed.get("street_name"))
+    if not street_number or not street_name:
+        return
+    normalized_raw_text = normalize_unit_signal_text(raw_text).upper()
+    normalized_city = normalize_city(parsed.get("city") or fallback_city)
+    normalized_province = normalize_province(parsed.get("province") or fallback_province, get_profile("CA"))
+    recovered_unit = None
+    residential_prefix_match = re.match(
+        r"^\s*(BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR)\s+\d+[A-Z]?\s+",
+        normalized_raw_text,
+    )
+    if residential_prefix_match:
+        recovered_unit = canonicalize_unit_number(residential_prefix_match.group(1))
+    explicit_unit_match = re.search(
+        r"(?:\b(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|FLOOR|FL)\b\s*([A-Z0-9-]+)|#\s*([A-Z0-9-]+))\b",
+        normalized_raw_text,
+    )
+    if not recovered_unit and explicit_unit_match:
+        recovered_unit = canonicalize_unit_number(explicit_unit_match.group(1) or explicit_unit_match.group(2))
+    if not recovered_unit and normalized_city and normalized_province:
+        trailing_bare_unit_match = re.search(
+            rf",\s*(\d{{1,5}}[A-Z]?)\s*,?\s*{re.escape(normalized_city.upper())}\s*,?\s*{re.escape(normalized_province.upper())}\b",
+            normalized_raw_text,
+        )
+        if trailing_bare_unit_match:
+            recovered_unit = canonicalize_unit_number(trailing_bare_unit_match.group(1))
+    if not recovered_unit and normalized_city and normalized_province:
+        no_comma_bare_unit_match = re.search(
+            rf"^\s*{re.escape(street_number)}\s+.+\s+(\d{{1,5}}[A-Z]?)\s+{re.escape(normalized_city.upper())}\s+{re.escape(normalized_province.upper())}(?:\b.*)?$",
+            normalized_raw_text,
+        )
+        if no_comma_bare_unit_match:
+            candidate_unit = canonicalize_unit_number(no_comma_bare_unit_match.group(1))
+            if looks_like_bare_trailing_unit_city_pattern(
+                normalized_raw_text,
+                street_number=street_number,
+                street_name=street_name,
+                unit_number=candidate_unit,
+                city=normalized_city,
+                province=normalized_province,
+            ):
+                recovered_unit = candidate_unit
+    if not recovered_unit and normalized_city:
+        trailing_bare_unit_city_only_match = re.search(
+            rf",\s*(\d{{1,5}}[A-Z]?)\s*,?\s*{re.escape(normalized_city.upper())}\b(?:\s*,?\s*{re.escape((normalized_province or '').upper())})?$",
+            normalized_raw_text,
+        )
+        if trailing_bare_unit_city_only_match:
+            recovered_unit = canonicalize_unit_number(trailing_bare_unit_city_only_match.group(1))
+    if recovered_unit:
+        parsed["unit_number"] = recovered_unit
+        if not parsed.get("unit_source"):
+            parsed["unit_source"] = "candidate_text_fallback"
+
+
+def _score_candidate(
+    parsed: dict[str, Any],
+    *,
+    raw_text: str | None = None,
+    parser_name: str | None = None,
+    parser_weights: dict[str, Any] | None = None,
+    match_rule_weights: dict[str, Any] | None = None,
+    candidate_feature_weights: dict[str, Any] | None = None,
+    candidate_pair_weights: dict[str, Any] | None = None,
+) -> float:
     parse_confidence = float(parsed.get("parse_confidence") or 0.0)
     unit_confidence = float(parsed.get("unit_confidence") or 0.0)
     postal_confidence = float(parsed.get("postal_confidence") or 0.0)
     base_score = 0.70 * parse_confidence + 0.20 * unit_confidence + 0.10 * postal_confidence
+    normalized_raw_text = normalize_unit_signal_text(raw_text).upper() if raw_text else ""
+    normalized_street_name = normalize_street_name(parsed.get("street_name"))
+    if (
+        parser_name == "libpostal"
+        and str(parsed.get("street_number") or "").strip() == "123"
+        and normalized_street_name == "MAIN ST"
+        and not parsed.get("city")
+        and not parsed.get("province")
+        and "MAIN ST" not in normalized_raw_text
+    ):
+        # Suppress placeholder libpostal fallbacks that otherwise outrank real local parsers.
+        base_score -= 0.45
     if parsed.get("street_number") and parsed.get("street_name"):
         base_score += 0.05
     if parsed.get("postal_code"):
@@ -119,12 +272,212 @@ def _score_candidate(parsed: dict[str, Any], *, parser_name: str | None = None, 
             base_score += min(max(parser_weight, 0.0), 1.0) * 0.03
         except (TypeError, ValueError):
             pass
+    if isinstance(match_rule_weights, dict):
+        feature_vector = parsed.get("feature_vector") or {}
+        rule_keys = []
+        pattern = feature_vector.get("pattern")
+        if pattern:
+            rule_keys.append(str(pattern))
+        unit_source = parsed.get("unit_source")
+        if unit_source:
+            rule_keys.append(str(unit_source))
+        if parsed.get("unit_number"):
+            unit_bonus = match_rule_weights.get("__unit_present__")
+            try:
+                if unit_bonus is not None:
+                    base_score += (float(unit_bonus) - 0.5) * 0.08
+            except (TypeError, ValueError):
+                pass
+        if feature_vector.get("has_explicit_unit_hint"):
+            unit_keyword_weight = match_rule_weights.get("__unit_keyword_present__")
+            try:
+                if unit_keyword_weight is not None:
+                    adjustment = (float(unit_keyword_weight) - 0.5) * 0.06
+                    base_score += adjustment if parsed.get("unit_number") else adjustment * -0.5
+            except (TypeError, ValueError):
+                pass
+        if feature_vector.get("has_residential_unit_hint"):
+            residential_hint_weight = match_rule_weights.get("__residential_unit_hint__")
+            try:
+                if residential_hint_weight is not None:
+                    adjustment = (float(residential_hint_weight) - 0.5) * 0.06
+                    if feature_vector.get("has_geographic_modifier_only") and not parsed.get("unit_number"):
+                        base_score += adjustment * -0.6
+                    else:
+                        base_score += adjustment if parsed.get("unit_number") else adjustment * -0.4
+            except (TypeError, ValueError):
+                pass
+        if feature_vector.get("has_commercial_unit_hint") or feature_vector.get("is_commercial"):
+            commercial_hint_weight = match_rule_weights.get("__commercial_hint__")
+            try:
+                if commercial_hint_weight is not None:
+                    base_score += (float(commercial_hint_weight) - 0.5) * 0.04
+            except (TypeError, ValueError):
+                pass
+        seen: set[str] = set()
+        for rule_key in rule_keys:
+            if rule_key in seen:
+                continue
+            seen.add(rule_key)
+            try:
+                weight = match_rule_weights.get(rule_key)
+                if weight is not None:
+                    base_score += (float(weight) - 0.5) * 0.08
+            except (TypeError, ValueError):
+                continue
+    if isinstance(candidate_feature_weights, dict):
+        feature_vector = parsed.get("feature_vector") or {}
+        candidate_unit = canonicalize_unit_number(parsed.get("unit_number"))
+        unit_text_aligned = bool(
+            candidate_unit
+            and normalized_raw_text
+            and (
+                re.search(
+                    rf"\b(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|FLOOR|FL|#)\s*{re.escape(candidate_unit)}\b",
+                    normalized_raw_text,
+                )
+                or re.search(rf"\b{re.escape(candidate_unit)}\b", normalized_raw_text)
+            )
+        )
+        candidate_feature_keys: list[tuple[str, bool]] = [
+            ("__candidate_complete_street__", bool(parsed.get("street_number") and parsed.get("street_name"))),
+            ("__candidate_has_unit__", bool(parsed.get("unit_number"))),
+            (
+                "__candidate_street_text_alignment__",
+                bool(normalized_street_name and normalized_raw_text and normalized_street_name.upper() in normalized_raw_text),
+            ),
+            (
+                "__candidate_unit_with_hint__",
+                bool(parsed.get("unit_number"))
+                and bool(feature_vector.get("has_explicit_unit_hint") or feature_vector.get("has_residential_unit_hint")),
+            ),
+            (
+                "__candidate_missing_unit_with_hint__",
+                not bool(parsed.get("unit_number"))
+                and bool(feature_vector.get("has_explicit_unit_hint") or feature_vector.get("has_residential_unit_hint")),
+            ),
+            (
+                "__candidate_residential_alignment__",
+                bool(feature_vector.get("has_residential_unit_hint") and not feature_vector.get("has_geographic_modifier_only")),
+            ),
+            ("__candidate_geographic_modifier_only__", bool(feature_vector.get("has_geographic_modifier_only"))),
+            (
+                "__candidate_bare_number_without_unit_hint__",
+                bool(
+                    parsed.get("unit_number")
+                    and feature_vector.get("has_double_number_pattern")
+                    and not feature_vector.get("has_explicit_unit_hint")
+                    and not feature_vector.get("has_bare_trailing_unit_city_pattern")
+                ),
+            ),
+            (
+                "__candidate_bare_trailing_unit_city__",
+                bool(parsed.get("unit_number") and feature_vector.get("has_bare_trailing_unit_city_pattern")),
+            ),
+            ("__candidate_numbered_road_name__", bool(feature_vector.get("is_numbered_road_name"))),
+            (
+                "__candidate_commercial_alignment__",
+                bool(feature_vector.get("has_commercial_unit_hint") or feature_vector.get("is_commercial")),
+            ),
+            ("__candidate_unit_text_alignment__", unit_text_aligned),
+        ]
+        for feature_key, enabled in candidate_feature_keys:
+            weight = candidate_feature_weights.get(feature_key)
+            if weight is None:
+                continue
+            try:
+                adjustment = (float(weight) - 0.5) * 0.08
+            except (TypeError, ValueError):
+                continue
+            if enabled and feature_key in {
+                "__candidate_geographic_modifier_only__",
+                "__candidate_bare_number_without_unit_hint__",
+                "__candidate_numbered_road_name__",
+            }:
+                base_score -= max(adjustment, 0.0) * 0.8
+                continue
+            if enabled:
+                base_score += adjustment
+            elif feature_key == "__candidate_missing_unit_with_hint__":
+                base_score -= max(adjustment, 0.0) * 0.6
+            elif feature_key in {"__candidate_geographic_modifier_only__", "__candidate_bare_number_without_unit_hint__", "__candidate_numbered_road_name__"}:
+                base_score -= max(adjustment, 0.0) * 0.5
+    if isinstance(candidate_pair_weights, dict):
+        feature_vector = parsed.get("feature_vector") or {}
+        candidate_unit = canonicalize_unit_number(parsed.get("unit_number"))
+        normalized_raw_text = normalize_unit_signal_text(raw_text).upper() if raw_text else ""
+        pair_features: list[tuple[str, bool]] = [
+            ("__prefer_unit_candidate__", bool(candidate_unit)),
+            (
+                "__prefer_text_aligned_unit__",
+                bool(candidate_unit and normalized_raw_text and re.search(rf"\b{re.escape(candidate_unit)}\b", normalized_raw_text)),
+            ),
+            (
+                "__prefer_complete_street_candidate__",
+                bool(parsed.get("street_number") and parsed.get("street_name")),
+            ),
+            (
+                "__prefer_residential_unit_candidate__",
+                bool(candidate_unit and feature_vector.get("has_residential_unit_hint") and not feature_vector.get("has_geographic_modifier_only")),
+            ),
+            (
+                "__penalize_missing_unit_candidate__",
+                not bool(candidate_unit)
+                and bool(feature_vector.get("has_explicit_unit_hint") or feature_vector.get("has_residential_unit_hint")),
+            ),
+            (
+                "__penalize_geographic_modifier_candidate__",
+                bool(feature_vector.get("has_geographic_modifier_only") and not candidate_unit),
+            ),
+            (
+                "__penalize_bare_number_unit_candidate__",
+                bool(
+                    candidate_unit
+                    and feature_vector.get("has_double_number_pattern")
+                    and not feature_vector.get("has_explicit_unit_hint")
+                    and not feature_vector.get("has_bare_trailing_unit_city_pattern")
+                ),
+            ),
+            (
+                "__prefer_bare_trailing_unit_city_candidate__",
+                bool(candidate_unit and feature_vector.get("has_bare_trailing_unit_city_pattern")),
+            ),
+            (
+                "__penalize_numbered_road_unit_candidate__",
+                bool(candidate_unit and feature_vector.get("is_numbered_road_name")),
+            ),
+        ]
+        for feature_key, enabled in pair_features:
+            weight = candidate_pair_weights.get(feature_key)
+            if weight is None:
+                continue
+            try:
+                adjustment = (float(weight) - 0.5) * 0.1
+            except (TypeError, ValueError):
+                continue
+            if enabled and feature_key in {
+                "__penalize_missing_unit_candidate__",
+                "__penalize_geographic_modifier_candidate__",
+                "__penalize_bare_number_unit_candidate__",
+                "__penalize_numbered_road_unit_candidate__",
+            }:
+                base_score -= max(adjustment, 0.0)
+                continue
+            if enabled:
+                base_score += adjustment
+            elif feature_key in {
+                "__penalize_missing_unit_candidate__",
+                "__penalize_geographic_modifier_candidate__",
+                "__penalize_bare_number_unit_candidate__",
+                "__penalize_numbered_road_unit_candidate__",
+            }:
+                base_score -= max(adjustment, 0.0) * 0.7
     return round(min(base_score, 0.99), 4)
 
 
 class RerankerArtifactLoader:
     @staticmethod
-    def load_weights(workspace_name: str, *, version: str | None = None) -> dict[str, Any]:
+    def _load_artifact(workspace_name: str, *, version: str | None = None) -> dict[str, Any]:
         model_row: dict[str, Any] | None = None
         if version:
             rows = fetch_all(
@@ -149,11 +502,30 @@ class RerankerArtifactLoader:
         if not artifact_file.exists():
             return {}
         try:
-            artifact = json.loads(artifact_file.read_text(encoding="utf-8"))
+            return json.loads(artifact_file.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to load reranker artifact from %s: %s", artifact_path, exc)
             return {}
+
+    @staticmethod
+    def load_decision_policy(workspace_name: str, *, version: str | None = None) -> dict[str, Any]:
+        """
+        Loads the entire decision policy artifact (weights and bonuses).
+        加载整个决策策略产物 (权重和加成)。
+        """
+        artifact = RerankerArtifactLoader._load_artifact(workspace_name, version=version)
+        if not isinstance(artifact, dict):
+            return {}
         decision_policy = artifact.get("decision_policy")
+        if isinstance(decision_policy, dict):
+            return decision_policy
+        if "parser_weights" in artifact or "match_rule_weights" in artifact:
+            return artifact
+        return {}
+
+    @staticmethod
+    def load_weights(workspace_name: str, *, version: str | None = None) -> dict[str, Any]:
+        decision_policy = RerankerArtifactLoader.load_decision_policy(workspace_name, version=version)
         if not isinstance(decision_policy, dict):
             return {}
         weights = decision_policy.get("parser_weights")
@@ -165,6 +537,9 @@ def _parser_candidates(
     default_profile: str | None = None,
     default_parsers: tuple[str, ...] = DEFAULT_PARSERS,
     parser_weights: dict[str, Any] | None = None,
+    match_rule_weights: dict[str, Any] | None = None,
+    candidate_feature_weights: dict[str, Any] | None = None,
+    candidate_pair_weights: dict[str, Any] | None = None,
 ) -> list[CandidateView]:
     raw_text = normalize_space(request.raw_address_text)
     parser_names = tuple(request.parsers or default_parsers)
@@ -201,7 +576,22 @@ def _parser_candidates(
         parsed.setdefault("city", normalize_city(request.city))
         parsed.setdefault("province", normalize_province(request.province, profile))
         parsed.setdefault("postal_code", request.postal_code)
-        score = _score_candidate(parsed, parser_name=parser_name, parser_weights=parser_weights)
+        _recover_candidate_unit_from_text(
+            raw_text,
+            parsed,
+            fallback_city=request.city,
+            fallback_province=request.province,
+        )
+        _ensure_candidate_feature_vector(parsed, raw_text)
+        score = _score_candidate(
+            parsed,
+            raw_text=raw_text,
+            parser_name=parser_name,
+            parser_weights=parser_weights,
+            match_rule_weights=match_rule_weights,
+            candidate_feature_weights=candidate_feature_weights,
+            candidate_pair_weights=candidate_pair_weights,
+        )
         rules = [parser_name]
         if parsed.get("unit_source"):
             rules.append(str(parsed["unit_source"]))
@@ -240,6 +630,18 @@ class AddressPlatformService:
 
     def _parser_weights(self) -> dict[str, Any]:
         value = self._decision_policy.get("parser_weights") or {}
+        return value if isinstance(value, dict) else {}
+
+    def _match_rule_weights(self) -> dict[str, Any]:
+        value = self._decision_policy.get("match_rule_weights") or {}
+        return value if isinstance(value, dict) else {}
+
+    def _candidate_feature_weights(self) -> dict[str, Any]:
+        value = self._decision_policy.get("candidate_feature_weights") or {}
+        return value if isinstance(value, dict) else {}
+
+    def _candidate_pair_weights(self) -> dict[str, Any]:
+        value = self._decision_policy.get("candidate_pair_weights") or {}
         return value if isinstance(value, dict) else {}
 
     def model_info(self) -> dict[str, Any]:
@@ -343,21 +745,36 @@ class AddressPlatformService:
         """
         # Load weights from specific model version or active version
         # 从特定模型版本或活动版本加载权重
-        dynamic_weights = RerankerArtifactLoader.load_weights(
+        dynamic_policy = RerankerArtifactLoader.load_decision_policy(
             ADDRESSFORGE_WORKSPACE_NAME, 
             version=request.reranker_version
         )
-        
-        # Merge static policy weights with dynamic training weights
-        # 将静态策略权重与动态训练权重合并
-        effective_weights = self._parser_weights()
-        effective_weights.update(dynamic_weights)
+        dynamic_weights = dynamic_policy.get("parser_weights") if isinstance(dynamic_policy, dict) else {}
+        dynamic_match_rule_weights = dynamic_policy.get("match_rule_weights") if isinstance(dynamic_policy, dict) else {}
+
+        effective_weights = dict(self._parser_weights())
+        if isinstance(dynamic_weights, dict):
+            effective_weights.update(dynamic_weights)
+        effective_match_rule_weights = dict(self._match_rule_weights())
+        if isinstance(dynamic_match_rule_weights, dict):
+            effective_match_rule_weights.update(dynamic_match_rule_weights)
+        dynamic_candidate_feature_weights = dynamic_policy.get("candidate_feature_weights") if isinstance(dynamic_policy, dict) else {}
+        effective_candidate_feature_weights = dict(self._candidate_feature_weights())
+        if isinstance(dynamic_candidate_feature_weights, dict):
+            effective_candidate_feature_weights.update(dynamic_candidate_feature_weights)
+        dynamic_candidate_pair_weights = dynamic_policy.get("candidate_pair_weights") if isinstance(dynamic_policy, dict) else {}
+        effective_candidate_pair_weights = dict(self._candidate_pair_weights())
+        if isinstance(dynamic_candidate_pair_weights, dict):
+            effective_candidate_pair_weights.update(dynamic_candidate_pair_weights)
 
         candidates = _parser_candidates(
             request,
             default_profile=self._default_profile,
             default_parsers=self._default_parsers,
             parser_weights=effective_weights,
+            match_rule_weights=effective_match_rule_weights,
+            candidate_feature_weights=effective_candidate_feature_weights,
+            candidate_pair_weights=effective_candidate_pair_weights,
         )
         best = candidates[0] if candidates else None
 
@@ -411,9 +828,38 @@ class AddressPlatformService:
         candidates = parsed_result.get("candidates") or []
         best = parsed_result["best_candidate"] or {}
         parsed = best.get("parsed") or {}
+        normalized_raw_text = normalize_unit_signal_text(request.raw_address_text)
         normalized_city = normalize_city(parsed.get("city") or request.city)
         normalized_province = normalize_province(parsed.get("province") or request.province, profile)
         normalized_unit = canonicalize_unit_number(parsed.get("unit_number"))
+        if not normalized_unit:
+            residential_prefix_match = re.match(
+                r"^\s*(BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR)\s+\d+[A-Z]?\s+",
+                normalized_raw_text.upper(),
+            )
+            if residential_prefix_match:
+                normalized_unit = canonicalize_unit_number(residential_prefix_match.group(1))
+        if not normalized_unit:
+            explicit_unit_match = re.search(
+                r"(?:\b(?:SUITE|STE|UNIT|APT|APARTMENT|ROOM|RM|FLOOR|FL)\b\s*([A-Z0-9-]+)|#\s*([A-Z0-9-]+))\b",
+                normalized_raw_text,
+            )
+            if explicit_unit_match:
+                normalized_unit = canonicalize_unit_number(explicit_unit_match.group(1) or explicit_unit_match.group(2))
+        if not normalized_unit and normalized_city and normalized_province:
+            trailing_bare_unit_match = re.search(
+                rf",\s*(\d{{1,5}}[A-Z]?)\s*,?\s*{re.escape(normalized_city.upper())}\s*,?\s*{re.escape(normalized_province.upper())}\b",
+                normalized_raw_text,
+            )
+            if trailing_bare_unit_match:
+                normalized_unit = canonicalize_unit_number(trailing_bare_unit_match.group(1))
+        if not normalized_unit and normalized_city:
+            trailing_bare_unit_city_only_match = re.search(
+                rf",\s*(\d{{1,5}}[A-Z]?)\s*,?\s*{re.escape(normalized_city.upper())}\b(?:\s*,?\s*{re.escape(normalized_province.upper())})?$",
+                normalized_raw_text,
+            )
+            if trailing_bare_unit_city_only_match:
+                normalized_unit = canonicalize_unit_number(trailing_bare_unit_city_only_match.group(1))
         street_number = parsed.get("street_number")
         street_name = normalize_street_name(parsed.get("street_name"))
         postal_code = parsed.get("postal_code") or request.postal_code
@@ -451,6 +897,7 @@ class AddressPlatformService:
             parsed_unit_number=normalized_unit,
             reference_unit_count_hint=int(reference.get("reference_unit_count_hint") or 0) if reference else None,
             reference_payload=reference,
+            unit_source=best.get("parsed", {}).get("unit_source") if best else None,
         )
 
         parse_score = float(best.get("score") or 0.0)
@@ -500,6 +947,16 @@ class AddressPlatformService:
         elif not normalized_unit and close_unit_candidates and building_type in {"multi_unit", "commercial"}:
             decision = "enrich"
             reason = "Another strong parser candidate found a likely unit."
+        elif (
+            parser_disagreement
+            and building_type == "single_unit"
+            and not normalized_unit
+            and not reference
+            and not close_unit_candidates
+            and parse_score >= self._policy_float("single_unit_disagreement_accept_threshold", 0.68)
+        ):
+            decision = "accept"
+            reason = "Single-unit structure is complete enough to accept despite weaker parser disagreement."
         elif parser_disagreement and parse_score >= self._policy_float("parser_disagreement_review_threshold", 0.72):
             decision = "review"
             reason = "Strong parser candidates disagree on the structured address."
@@ -513,8 +970,8 @@ class AddressPlatformService:
             decision = "review"
             reason = "Parser confidence is moderate; review is safer."
         else:
-            decision = "reject"
-            reason = "Parser confidence is too low."
+            decision = "review"
+            reason = "Parser confidence is low; review is safer than rejection."
 
         if reference and request.latitude is not None and request.longitude is not None and ref_score < self._policy_float("gps_weak_match_threshold", 0.62):
             reason = f"{reason} GPS weakly matches the external reference."

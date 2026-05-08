@@ -38,16 +38,38 @@ class CanadaProfile(BaseCountryProfile):
 
     @property
     def parsing_patterns(self) -> List[Tuple[Pattern, str, float, float]]:
-        # Encapsulated patterns previously in common.py
-        # 封装之前位于 common.py 中的模式
+        # Encapsulated patterns for Canada
+        # 封装加拿大的模式
         unit_kw = r"(?:UNIT|APT|SUITE|STE|RM|ROOM|BSMT|BASEMENT|PH|PENTHOUSE|FL|FLOOR)"
         
         return [
-            (re.compile(rf"^\s*(BSMT|BASEMENT|SUITE|STE|UNIT|APT)\s*([A-Za-z0-9-]+)\s+(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "comm_prefix_label", 0.90, 0.95),
-            (re.compile(rf"^\s*([A-Za-z0-9-]+)\s*-\s*(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "leading_hyphen", 0.95, 0.98),
-            (re.compile(rf"^\s*#\s*([A-Za-z0-9-]+)\s+(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "hash_prefix", 0.92, 0.95),
-            (re.compile(rf"^\s*(LEVEL|FLOOR|FL)\s*(\d+)\s+(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "level_prefix", 0.95, 0.98),
-            (re.compile(rf"^\s*(?:{unit_kw}\s*[\w-]+\s+)?(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "street_standard", 0.85, 0.80)
+            # 1. Glued keyword and number (e.g. APT308 123 MAIN ST)
+            # 1. 紧凑的关键字和数字 (例如 APT308 123 MAIN ST)
+            (re.compile(rf"^\s*(BSMT|BASEMENT|SUITE|STE|UNIT|APT|RM|ROOM)([A-Za-z0-9/-]+)\s+(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "glued_comm_prefix", 0.91, 0.96),
+            
+            # 2. Standard commercial/unit prefix with space (e.g. UNIT 1302 123 MAIN ST) or sub-units (A/B, A-5)
+            # 2. 带有空格的标准商业/单元前缀或子单元
+            (re.compile(rf"^\s*(BSMT|BASEMENT|SUITE|STE|UNIT|APT|RM|ROOM)\s*([A-Za-z0-9/-]+)\s+(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "comm_prefix_label", 0.90, 0.95),
+            
+            # 3. Leading hyphen (e.g. 101-123 MAIN ST)
+            # 3. 前导连字符 (例如 101-123 MAIN ST)
+            (re.compile(rf"^\s*([A-Za-z0-9/-]+)\s*-\s*(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "leading_hyphen", 0.95, 0.98),
+            
+            # 4. Hash prefix (e.g. #203B 123 MAIN ST)
+            # 4. 井号前缀 (例如 #203B 123 MAIN ST)
+            (re.compile(rf"^\s*#\s*([A-Za-z0-9/-]+)\s+(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "hash_prefix", 0.92, 0.95),
+            
+            # 5. Level prefix (e.g. LEVEL 2 123 MAIN ST)
+            # 5. 楼层前缀
+            (re.compile(rf"^\s*(LEVEL|FLOOR|FL)\s*([A-Za-z0-9/-]+)\s+(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "level_prefix", 0.95, 0.98),
+            
+            # 6. Trailing explicit unit after street (e.g. 123 MAIN ST UNIT 128)
+            # 6. 街道后的显式 unit 关键字，不再接受无关键字裸数字
+            (re.compile(rf"^\s*(\d+[A-Za-z]?)\s+(.+?)\s+(?:{unit_kw}\s+([A-Za-z0-9/-]+))$", re.IGNORECASE), "trailing_unit", 0.88, 0.85),
+
+            # 7. Street standard with optional prefix
+            # 7. 带有可选前缀的街道标准格式
+            (re.compile(rf"^\s*(?:{unit_kw}\s*[\w/-]+\s+)?(\d+[A-Za-z]?)\s+([^,]+)", re.IGNORECASE), "street_standard", 0.85, 0.80)
         ]
 
     def normalize_province(self, value: str | None) -> str | None:

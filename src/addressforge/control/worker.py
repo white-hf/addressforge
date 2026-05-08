@@ -9,6 +9,7 @@ from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
 from addressforge.core.utils import logger
 
 from .jobs import (
+    get_ingestion_runtime_config,
     claim_next_job,
     create_job,
     get_setting,
@@ -74,10 +75,12 @@ class ControlWorker:
                     return None
             except Exception:
                 pass
+        ingestion_config = get_ingestion_runtime_config(self.workspace_name)
+        mode = str(ingestion_config.get("mode") or "api").strip().lower()
         payload = {
-            "mode": os.getenv("ADDRESSFORGE_INGESTION_MODE", "api"),
-            "batch_size": int(os.getenv("ADDRESSFORGE_INGESTION_API_BATCH_SIZE", "1000")),
-            "source_name": os.getenv("ADDRESSFORGE_INGESTION_SOURCE_NAME", "third_party"),
+            "mode": mode,
+            "batch_size": int(ingestion_config["db"]["batch_size"] if mode == "db" else ingestion_config["api"]["batch_size"]),
+            "source_name": str(ingestion_config.get("source_name") or "third_party"),
         }
         alert_status = str(get_setting(self.workspace_name, "ingestion.alert_status", "ok") or "ok")
         failed_cursor = get_setting(self.workspace_name, "ingestion.last_failed_cursor", "")
@@ -96,6 +99,7 @@ class ControlWorker:
         return job
 
     def poll_once(self) -> dict[str, Any] | None:
+        self._record_heartbeat()
         self._seed_continuous_ingestion()
         job = claim_next_job(worker_name=self.worker_name, workspace_name=self.workspace_name)
         if not job:
@@ -107,6 +111,16 @@ class ControlWorker:
             job.get("workspace_name"),
         )
         return run_job(job)
+
+    def _record_heartbeat(self) -> None:
+        """Records worker liveness in the settings table."""
+        # 记录 worker 在设置表中的活跃状态
+        try:
+            set_setting(self.workspace_name, f"worker.{self.worker_name}.last_seen", time.strftime("%Y-%m-%d %H:%M:%S"))
+            # Also update a global "any worker" pointer for easier UI checking
+            set_setting(self.workspace_name, "worker.global.last_seen", time.strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception as exc:
+            logger.warning("Failed to record worker heartbeat: %s", exc)
 
     def run_forever(self) -> None:
         logger.info(
@@ -135,3 +149,9 @@ def run_control_worker() -> None:
     poll_interval = int(os.getenv("ADDRESSFORGE_WORKER_POLL_INTERVAL_SECONDS", "5"))
     worker = ControlWorker(workspace_name=workspace_name, poll_interval_seconds=poll_interval)
     worker.run_forever()
+
+
+if __name__ == "__main__":
+    # Start the worker loop
+    # 启动 worker 循环
+    run_control_worker()

@@ -256,6 +256,15 @@ def _load_gold_comparison_rows(workspace_name: str) -> list[dict[str, Any]]:
             acr.building_type,
             acr.suggested_unit_number
         FROM gold_label g
+        JOIN (
+            SELECT source_id, MAX(gold_label_id) AS latest_gold_label_id
+            FROM gold_label
+            WHERE workspace_name = %s
+              AND review_status = 'accepted'
+              AND label_source = 'human'
+            GROUP BY source_id
+        ) latest
+          ON latest.latest_gold_label_id = g.gold_label_id
         LEFT JOIN raw_address_record r
           ON r.workspace_name = g.workspace_name
          AND (CAST(r.raw_id AS CHAR) = g.source_id OR r.external_id = g.source_id)
@@ -267,7 +276,7 @@ def _load_gold_comparison_rows(workspace_name: str) -> list[dict[str, Any]]:
           AND g.label_source = 'human'
         ORDER BY g.gold_label_id ASC
         """,
-        (workspace_name,),
+        (workspace_name, workspace_name),
     )
 
 
@@ -545,26 +554,40 @@ def run_baseline_evaluation(
                 logger.warning("Canada benchmark evaluation failed: %s", exc)
         # 5. Integration: Historical Replay & Consistency Check
         # 5. 集成：历史重放与一致性检查
-        from addressforge.services.replay_service import run_historical_replay
-        logger.info("Triggering integrated historical replay for consistency check...")
-        replay_result = run_historical_replay(
-            workspace_name=workspace_name,
-            candidate_version=model_version,
-            limit=5000 # Large sample for stability check
-        )
-        
+        replay_result: dict[str, Any] | None = None
+        replay_error: str | None = None
+        skip_replay = str(os.getenv("ADDRESSFORGE_SKIP_REPLAY_ON_EVAL", "0")).strip().lower() in {"1", "true", "yes"}
+        if skip_replay:
+            replay_error = "skipped_by_config"
+            logger.info("Skipping integrated historical replay for evaluation of %s/%s", model_name, model_version)
+        else:
+            try:
+                from addressforge.services.replay_service import run_historical_replay
+
+                logger.info("Triggering integrated historical replay for consistency check...")
+                replay_result = run_historical_replay(
+                    workspace_name=workspace_name,
+                    candidate_version=model_version,
+                    limit=5000,  # Large sample for stability check
+                )
+            except Exception as exc:  # noqa: BLE001
+                replay_error = str(exc)
+                logger.warning("Historical replay failed during evaluation for %s/%s: %s", model_name, model_version, exc)
+
         metrics_json["replay_metrics"] = {
-            "processed_samples": replay_result.get("processed"),
-            "consistency_score": _to_float(replay_result.get("consistency_score")),
-            "decision_match_rate": _to_float(replay_result.get("decision_match_rate")),
-            "building_type_match_rate": _to_float(replay_result.get("building_type_match_rate")),
-            "unit_number_match_rate": _to_float(replay_result.get("unit_number_match_rate")),
-            "disagreement_rate": _to_float(replay_result.get("disagreement_rate")),
-            "active_current_match_rate": _to_float(replay_result.get("active_current_match_rate")),
-            "candidate_current_match_rate": _to_float(replay_result.get("candidate_current_match_rate")),
-            "mismatches": int(replay_result.get("mismatches") or 0),
-            "failures": int(replay_result.get("failures") or 0),
-            "regression_detected": _to_float(replay_result.get("disagreement_rate")),
+            "processed_samples": int((replay_result or {}).get("processed") or 0),
+            "consistency_score": _to_float((replay_result or {}).get("consistency_score")),
+            "decision_match_rate": _to_float((replay_result or {}).get("decision_match_rate")),
+            "building_type_match_rate": _to_float((replay_result or {}).get("building_type_match_rate")),
+            "unit_number_match_rate": _to_float((replay_result or {}).get("unit_number_match_rate")),
+            "disagreement_rate": _to_float((replay_result or {}).get("disagreement_rate")),
+            "active_current_match_rate": _to_float((replay_result or {}).get("active_current_match_rate")),
+            "candidate_current_match_rate": _to_float((replay_result or {}).get("candidate_current_match_rate")),
+            "mismatches": int((replay_result or {}).get("mismatches") or 0),
+            "failures": int((replay_result or {}).get("failures") or 0),
+            "regression_detected": _to_float((replay_result or {}).get("disagreement_rate")),
+            "status": "failed" if replay_error else "completed",
+            "error": replay_error,
         }
 
         # 6. Generate Release Readiness Comparison

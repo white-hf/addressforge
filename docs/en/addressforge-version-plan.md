@@ -32,6 +32,38 @@ Console polish, platform abstraction, and third-party extensibility remain in sc
 4. Build canonical address assets before platform polish
 5. Every iteration must answer whether quality improved or regressed
 
+## 2.1 Current Optimization Shift: From Fast Rule Fixes To ML-Led Improvement
+
+Multiple rounds of high-frequency parser fixes have already materially improved:
+
+- `house -> commercial` false positives
+- `unit_number` recall
+- `building_type` stability
+
+But future gains should not continue to come primarily from adding more rules. Otherwise the system will remain “rule-heavy with only thin model fusion”.
+
+Starting from the current stage, the strategy shifts to:
+
+1. keep using rules only for high-frequency, structurally strong, low-cost-to-rule gaps
+2. move the main quality-improvement path toward:
+   - parser reranking
+   - learned match-rule / pattern reliability
+   - learned weighting for unit presence / unit extraction
+   - gold-driven residential / commercial boundary fusion
+   - LLM outputs as fusion signals rather than review-only hints
+3. make each iteration distinguish explicitly between:
+   - gains from rules
+   - gains from models / feature weighting / reranking
+4. once a failure class can be learned reliably from gold + features, stop prioritizing more rule growth for that class
+
+At this stage, the most important model-led metrics are:
+
+- `unit_number_f1`
+- `unit_recall`
+- `building_type_f1`
+
+Future gains on these metrics should increasingly come from learned artifact parameters rather than newly added regex rules.
+
 ## 3. Iteration Map
 
 ### Iteration 1: Canada Parsing Baseline
@@ -218,6 +250,20 @@ Detailed task requirements:
 5. Version-bound evaluation
 - benchmark / shadow / replay must load the requested model version runtime
 - eliminate cases where a candidate version label is evaluated with default behavior
+
+6. Shift from rule patching to learned ranking signals
+- after high-frequency parser gaps are patched, new gains should primarily come from learned signals
+- training artifacts must progressively include:
+  - parser source reliability
+  - match-rule / pattern reliability
+  - explicit unit-signal recovery weights
+  - residential vs commercial boundary hint weights
+- runtime candidate scoring must consume these learned weights
+
+7. Unit-first model improvement
+- prioritize apartment / residential unit recall before deeper commercial refinement
+- use gold to learn which parser patterns and unit cues most often yield correct unit extraction
+- make `unit_number_f1` and `unit_recall` the leading indicators for this stage
 
 Exit criteria:
 

@@ -35,12 +35,12 @@ class LLMAddressRefiner:
             "Return only valid JSON with keys: "
             "'street_number', 'street_name', 'unit_number', 'building_type', 'decision_hint'. "
             "Use null for missing fields. "
-            "building_type must be one of: single_unit, multi_unit, commercial, unknown. "
+            "building_type_hint must be one of: single_unit, multi_unit, commercial, unknown. "
             "decision_hint must be one of: accept, review, enrich. "
-            "Important rules: "
-            "1) A street type like Road, Street, Avenue, Lane, Drive, Tower Road is not by itself commercial evidence. "
-            "2) If an address looks like 'street address, bare number city province', the bare number after the comma may be a unit/apartment number. "
-            "3) If a trailing bare number appears between a street address and city/province, prefer treating it as unit_number when plausible. "
+            "Special Rules for Ambiguity: "
+            "1) GEOGRAPHIC MODIFIERS: In some rural Canadian areas, numbers like '1676 PICTOU' or '664 PICTOU' following a street address are often area codes or community identifiers, NOT unit numbers. If a number is followed by a known city/town name, prefer single_unit. "
+            "2) REDUNDANT NUMBERS: If an address repeats the same number (e.g., '307 ... 307 GRAND PRE'), treat it as a House (single_unit) with the second number being redundant. "
+            "3) Street types like Road, Street, Avenue, Lane are not by themselves commercial evidence. "
             f"Address: {raw_text}"
         )
 

@@ -44,6 +44,13 @@ def _normalized_value(value: Any, *, field: str) -> str | None:
     return str(value)
 
 
+def _format_shadow_sample_side(side: dict[str, Any]) -> str:
+    decision = side.get("decision") or "n/a"
+    building_type = side.get("building_type") or "n/a"
+    unit_number = side.get("unit_number") or "n/a"
+    return f"Building: `{building_type}` | Unit: `{unit_number}` | Decision: `{decision}`"
+
+
 def run_baseline_shadow(
     workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
     model_name: str = "shadow_model",
@@ -208,6 +215,50 @@ def run_baseline_shadow(
             "shadow_run_id": run_id,
         }
         artifact_path.write_text(json.dumps(artifact_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # --- Generate Markdown Report for Reports Center (Iteration 11 Fix) ---
+        # --- 为报表中心生成 Markdown 格式的报告 (迭代 11 修复) ---
+        from datetime import datetime
+        report_dir = Path("runtime/reports")
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / f"{model_version}_shadow_report.md"
+        
+        md_lines = [
+            f"# Shadow Evaluation Report: {model_version}",
+            f"**Workspace:** {workspace_name}",
+            f"**Run ID:** {run_id}",
+            f"**Timestamp:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "## 1. Candidate vs Active Overview",
+            "| Metric | Value |",
+            "| :--- | :--- |",
+            f"| Compared Rows | {compared} |",
+            f"| Candidate Match Rate | {candidate_match_rate:.4f} |",
+            f"| Active Match Rate | {active_match_rate:.4f} |",
+            f"| Shadow Advantage | {shadow_advantage:+.4f} |",
+            f"| Disagreement Rate | {disagreement_rate:.4f} |",
+            f"| Final Decision | **{decision.upper()}** |",
+            "",
+            "## 2. Metric Deltas (vs Benchmark)",
+            "| Metric | Delta |",
+            "| :--- | :--- |"
+        ]
+        for k, v in deltas.items():
+            md_lines.append(f"| {k} | {v:+.4f} |")
+            
+        if disagreement_samples:
+            md_lines.extend(["", "## 3. Disagreement Samples (Top 50)", ""])
+            for idx, s in enumerate(disagreement_samples[:50], 1):
+                md_lines.extend([
+                    f"### Sample {idx} (Raw ID: {s['raw_id']})",
+                    f"- **Text:** `{s['raw_address_text']}`",
+                    f"- **Candidate:** {_format_shadow_sample_side(s['candidate'])}",
+                    f"- **Active:** {_format_shadow_sample_side(s['active'])}",
+                    f"- **Current:** {_format_shadow_sample_side(s['current'])}",
+                    ""
+                ])
+
+        report_path.write_text("\n".join(md_lines), encoding="utf-8")
 
         register_model_version(
             workspace_name=workspace_name,

@@ -11,13 +11,18 @@ except Exception:  # pragma: no cover - optional dependency
         return False
 
 
-BASE_DIR = Path(__file__).resolve().parent
+# Search for .env files in the project root (3 levels up from this file)
+# 在项目根目录中搜索 .env 文件 (从当前文件向上 3 级)
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 for candidate in (
-    BASE_DIR / ".env.local",
-    BASE_DIR / ".env",
+    ROOT_DIR / ".env.local",
+    ROOT_DIR / ".env",
 ):
     if candidate.exists():
         load_dotenv(dotenv_path=candidate, override=True)
+        # Use print during early initialization before logger is set up
+        # 在设置 logger 之前的早期初始化期间使用 print
+        print(f"INFO: Loaded configuration from: {candidate}")
         break
 
 
@@ -27,7 +32,11 @@ MYSQL_CONFIG = {
     "password": os.getenv("MYSQL_PASSWORD"),
     "database": os.getenv("MYSQL_DATABASE"),
     "raise_on_warnings": True,
+    "connection_timeout": int(os.getenv("MYSQL_CONNECTION_TIMEOUT", "5")),
 }
+
+ADDRESSFORGE_DB_CONNECT_RETRY_ATTEMPTS = int(os.getenv("ADDRESSFORGE_DB_CONNECT_RETRY_ATTEMPTS", "3"))
+ADDRESSFORGE_DB_CONNECT_RETRY_SLEEP_MS = int(os.getenv("ADDRESSFORGE_DB_CONNECT_RETRY_SLEEP_MS", "300"))
 
 ADDRESSFORGE_PROJECT_NAME = os.getenv("ADDRESSFORGE_PROJECT_NAME", "AddressForge")
 ADDRESSFORGE_WORKSPACE_NAME = os.getenv("ADDRESSFORGE_WORKSPACE_NAME", "default")
@@ -70,12 +79,17 @@ ADDRESSFORGE_INGESTION_API_DRIVER_COUNT_HIDE_SUB_REFERRER = int(os.getenv("ADDRE
 ADDRESSFORGE_INGESTION_API_ORDERS_HIDE_ASSOCIATED = int(os.getenv("ADDRESSFORGE_INGESTION_API_ORDERS_HIDE_ASSOCIATED", "1"))
 ADDRESSFORGE_INGESTION_API_ORDERS_HIDE_SUB_REFERRER = int(os.getenv("ADDRESSFORGE_INGESTION_API_ORDERS_HIDE_SUB_REFERRER", "0"))
 
+# Manual batch list override to skip /getbatchlist call (comma-separated)
+# 用于跳过 /getbatchlist 调用的手动批次列表覆盖 (逗号分隔)
+ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE = os.getenv("ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE", "")
+
 ADDRESSFORGE_INGESTION_DB_HOST = os.getenv("ADDRESSFORGE_INGESTION_DB_HOST", os.getenv("MYSQL_HOST", ""))
 ADDRESSFORGE_INGESTION_DB_USER = os.getenv("ADDRESSFORGE_INGESTION_DB_USER", os.getenv("MYSQL_USER", ""))
 ADDRESSFORGE_INGESTION_DB_PASSWORD = os.getenv("ADDRESSFORGE_INGESTION_DB_PASSWORD", os.getenv("MYSQL_PASSWORD", ""))
 ADDRESSFORGE_INGESTION_DB_NAME = os.getenv("ADDRESSFORGE_INGESTION_DB_NAME", os.getenv("MYSQL_DATABASE", ""))
 ADDRESSFORGE_INGESTION_DB_TABLE = os.getenv("ADDRESSFORGE_INGESTION_DB_TABLE", "source_raw_address")
 ADDRESSFORGE_INGESTION_DB_CURSOR_COLUMN = os.getenv("ADDRESSFORGE_INGESTION_DB_CURSOR_COLUMN", "updated_at")
+ADDRESSFORGE_INGESTION_DB_TIEBREAKER_COLUMN = os.getenv("ADDRESSFORGE_INGESTION_DB_TIEBREAKER_COLUMN", "")
 ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN = os.getenv("ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN", "external_id")
 ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN = os.getenv("ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN", "raw_address_text")
 ADDRESSFORGE_INGESTION_DB_CITY_COLUMN = os.getenv("ADDRESSFORGE_INGESTION_DB_CITY_COLUMN", "city")

@@ -35,16 +35,27 @@ class ParserRerankerTrainer:
                 r.raw_address_text,
                 r.postal_code
             FROM gold_label g
+            JOIN (
+                SELECT source_id, MAX(gold_label_id) AS latest_gold_label_id
+                FROM gold_label
+                WHERE workspace_name = %s
+                  AND review_status = 'accepted'
+                  AND label_source = 'human'
+                GROUP BY source_id
+            ) latest
+              ON latest.latest_gold_label_id = g.gold_label_id
             JOIN address_cleaning_result acr
               ON g.workspace_name = acr.workspace_name
              AND CAST(acr.raw_id AS CHAR) = g.source_id
             JOIN raw_address_record r
               ON acr.workspace_name = r.workspace_name
-             AND acr.raw_id = r.raw_id
-            WHERE g.workspace_name = %s AND g.review_status = 'accepted'
+              AND acr.raw_id = r.raw_id
+            WHERE g.workspace_name = %s
+              AND g.review_status = 'accepted'
+              AND g.label_source = 'human'
             LIMIT %s
         """
-        rows = fetch_all(query, (self.workspace_name, limit))
+        rows = fetch_all(query, (self.workspace_name, self.workspace_name, limit))
         
         features = []
         for row in rows:
@@ -98,6 +109,7 @@ class ParserRerankerTrainer:
 
             feat = {
                 "unit_source": parser_source,
+                "match_rule": f_vec.get("pattern", "unknown"),
                 "text_length": len(raw_text),
                 "has_unit_keyword": f_vec.get("regex_hit", 0),
                 "is_commercial_hit": f_vec.get("is_commercial", 0),
@@ -119,7 +131,7 @@ class ParserRerankerTrainer:
         from addressforge.core.config import ADDRESSFORGE_MODEL_ARTIFACT_DIR
         import datetime
 
-        run_id = create_run("reranking_train", notes="Parser reranking weight calibration")
+        run_id = create_run("ml_train", notes="Parser reranking weight calibration")
         logger.info("Starting reranking calibration for workspace: %s", self.workspace_name)
         
         try:
@@ -131,19 +143,53 @@ class ParserRerankerTrainer:
             # Calculate precision for each parser source
             # 为每个解析源计算精确率
             source_stats = {}
+            rule_stats = {}
+            unit_kw_stats = {"total": 0, "correct": 0}
+            no_unit_kw_stats = {"total": 0, "correct": 0}
+
             for f in features:
                 src = f.get("unit_source", "unknown")
+                rule = f.get("match_rule", "unknown")
+                is_correct = f.get("target_is_correct", 0)
+
+                # Source stats
                 if src not in source_stats:
                     source_stats[src] = {"total": 0, "correct": 0}
                 source_stats[src]["total"] += 1
-                # If LLM was involved and result was accepted, boost source reliability
-                # 如果 LLM 参与且结果被接受，则提升源可靠性
-                if f.get("target_is_correct") == 1:
+                if is_correct:
                     source_stats[src]["correct"] += 1
+                
+                # Rule stats
+                if rule not in rule_stats:
+                    rule_stats[rule] = {"total": 0, "correct": 0}
+                rule_stats[rule]["total"] += 1
+                if is_correct:
+                    rule_stats[rule]["correct"] += 1
+
+                # Unit keyword stats
+                if f.get("has_unit_keyword", 0):
+                    unit_kw_stats["total"] += 1
+                    if is_correct: unit_kw_stats["correct"] += 1
+                else:
+                    no_unit_kw_stats["total"] += 1
+                    if is_correct: no_unit_kw_stats["correct"] += 1
             
             # Final weights (Confidence Scores)
             # 最终权重 (置信度分值)
             weights = {src: round(s["correct"] / s["total"], 4) for src, s in source_stats.items()}
+            rule_weights = {rule: round(s["correct"] / s["total"], 4) for rule, s in rule_stats.items() if s["total"] >= 5}
+            
+            unit_kw_acc = unit_kw_stats["correct"] / max(1, unit_kw_stats["total"])
+            no_unit_kw_acc = no_unit_kw_stats["correct"] / max(1, no_unit_kw_stats["total"])
+            unit_present_bonus = round(max(0, unit_kw_acc - no_unit_kw_acc), 4)
+
+            payload_weights = {
+                "parser_weights": weights,
+                "match_rule_weights": {
+                    **rule_weights,
+                    "__unit_present__": unit_present_bonus,
+                },
+            }
             
             # Export as artifact
             # 作为产物导出
@@ -153,11 +199,11 @@ class ParserRerankerTrainer:
             
             weight_path = artifact_dir / f"{version}_weights.json"
             with open(weight_path, "w") as f:
-                json.dump(weights, f, indent=2)
+                json.dump(payload_weights, f, indent=2)
 
             metadata = {
                 "model_version": version,
-                "weights": weights,
+                "weights": payload_weights,
                 "artifact_path": str(weight_path),
                 "sample_size": len(features)
             }

@@ -77,6 +77,23 @@ def get_business_dashboard_metrics(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
         "gold_set_growth": int(gold_rows[0]["cnt"]) if gold_rows else 0,
     }
 
+def get_asset_stats(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
+    """
+    Retrieves statistics about canonical assets (buildings and units).
+    获取规范资产（建筑物和单元）的统计信息。
+    """
+    building_rows = fetch_all(
+        "SELECT COUNT(*) AS cnt FROM canonical_building_address"
+    )
+    unit_rows = fetch_all(
+        "SELECT COUNT(*) AS cnt FROM canonical_unit_address"
+    )
+    return {
+        "total_buildings": int(building_rows[0]["cnt"]) if building_rows else 0,
+        "total_units": int(unit_rows[0]["cnt"]) if unit_rows else 0,
+    }
+
+
 def get_batch_stats(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
     pending_rows = fetch_all(
         "SELECT COUNT(*) AS cnt FROM active_learning_queue WHERE workspace_name = %s AND status = 'queued'",
@@ -115,14 +132,31 @@ def get_batch_stats(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
     }
 
 def get_reports_list(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
-    # 报表列表与摘要
-    # 扫描 runtime/reports 目录
+    """
+    Retrieves the list of reports and computes specific summaries per report type.
+    获取报表列表并计算每种报表类型的特定摘要。
+    """
     report_dir = Path("runtime/reports")
     report_dir.mkdir(parents=True, exist_ok=True)
     
+    def get_latest_mtime(pattern: str) -> str:
+        files = list(report_dir.glob(pattern))
+        if not files:
+            return "-"
+        latest_file = max(files, key=lambda f: f.stat().st_mtime)
+        return datetime.fromtimestamp(latest_file.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+
+    summaries = {
+        "quality": get_latest_mtime("*quality*.md"),
+        "evaluation": get_latest_mtime("*release_report.md"),
+        "gold": get_latest_mtime("*gold_governance*.md"),
+        "building": get_latest_mtime("*building*.md"),
+        "shadow": get_latest_mtime("*shadow_report.md")
+    }
+
     files = []
     for f in report_dir.glob("*.*"):
-        if f.suffix in ['.md', '.pdf', '.csv']:
+        if f.suffix in ['.md', '.pdf', '.csv', '.json']:
             mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
             size_kb = round(f.stat().st_size / 1024, 1)
             files.append({
@@ -132,15 +166,12 @@ def get_reports_list(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
                 "size": f"{size_kb} KB"
             })
     
+    # Sort descending by time
     # 按时间降序排序
     files.sort(key=lambda x: x["created_at"], reverse=True)
     
     return {
-        "summaries": {
-            "quality": files[0]["created_at"] if files else "-",
-            "evaluation": "-",
-            "gold": "-",
-            "building": "-"
-        },
-        "files": files[:10]
+        "summaries": summaries,
+        "files": files[:20]
     }
+

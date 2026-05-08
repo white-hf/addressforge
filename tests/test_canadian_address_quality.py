@@ -1,6 +1,7 @@
 from addressforge.api.server import AddressPlatformService, AddressRequest
 from addressforge.core.common import hybrid_canadian_parse_address
 from addressforge.core.profiles.factory import get_profile
+from addressforge.pipelines.cleaning import _extract_feature_flags
 
 
 CANADA_PROFILE = get_profile("base_canada")
@@ -48,6 +49,58 @@ def test_validate_plain_house_defaults_to_single_unit():
     assert result["decision"] == "accept"
 
 
+def test_validate_plain_house_street_address_does_not_drift_to_commercial():
+    service = AddressPlatformService()
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="14 Park Street, Trenton, NS, B0K1X0",
+            city="Trenton",
+            province="NS",
+            postal_code="B0K1X0",
+        )
+    )
+    assert result["building_type"] == "single_unit"
+    assert result["decision"] == "accept"
+
+
+def test_validate_geographic_upper_lower_place_name_remains_single_unit():
+    service = AddressPlatformService()
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="48 Rudolf Road, Upper Lahave, NS, B4V7B7",
+            city="Upper Lahave",
+            province="NS",
+            postal_code="B4V7B7",
+        )
+    )
+    assert result["building_type"] == "single_unit"
+
+
+def test_validate_true_upper_unit_remains_multi_unit():
+    service = AddressPlatformService()
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="Upper 123 Main St, Halifax, NS",
+            city="Halifax",
+            province="NS",
+        )
+    )
+    assert result["building_type"] == "multi_unit"
+    assert result["suggested_unit_number"] == "UPPER"
+
+
+def test_validate_low_confidence_falls_back_to_review_not_reject():
+    service = AddressPlatformService()
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="Tim Hortons Childrens Camp 300Tim Horton Rd TATAMAGOUCHE NS",
+            city="Tatamagouche",
+            province="NS",
+        )
+    )
+    assert result["decision"] == "review"
+
+
 def test_validate_marks_suite_address_as_commercial():
     service = AddressPlatformService()
     result = service.validate(
@@ -74,6 +127,308 @@ def test_validate_residential_unit_is_multi_unit_not_commercial():
     assert result["building_type"] == "multi_unit"
     assert result["suggested_unit_number"] == "1123"
     assert result["decision"] == "accept"
+
+
+def test_hybrid_parser_requires_comma_or_explicit_hint_for_bare_unit_recovery():
+    parsed = hybrid_canadian_parse_address("194 Union St 1676 PICTOU NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] == "194"
+    assert parsed["street_name"] == "UNION ST"
+    assert parsed["unit_number"] is None
+
+
+def test_validate_double_number_house_does_not_false_extract_unit():
+    service = AddressPlatformService()
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="194 Union St 1676 PICTOU NS",
+            city="Pictou",
+            province="NS",
+        )
+    )
+    assert result["building_type"] == "single_unit"
+    assert result["suggested_unit_number"] is None
+
+
+def test_validate_comma_bare_unit_city_pattern_still_recovers_true_apartment_unit():
+    service = AddressPlatformService()
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="1122 Tower Road, 312 Halifax NS",
+            city="Halifax",
+            province="NS",
+        )
+    )
+    assert result["building_type"] == "multi_unit"
+    assert result["suggested_unit_number"] == "312"
+
+
+def test_validate_no_comma_bare_trailing_unit_city_pattern_recovers_true_apartment_unit():
+    service = AddressPlatformService()
+
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="241 Broad Street 105 Bedford NS",
+            city="Bedford",
+            province="NS",
+        )
+    )
+    assert result["building_type"] == "multi_unit"
+    assert result["suggested_unit_number"] == "105"
+
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="5633 Fenwick St 305 HALIFAX NS",
+            city="Halifax",
+            province="NS",
+        )
+    )
+    assert result["building_type"] == "multi_unit"
+    assert result["suggested_unit_number"] == "305"
+
+
+def test_hybrid_parser_recovers_no_comma_bare_trailing_unit_city_without_fallback():
+    parsed = hybrid_canadian_parse_address("241 Broad Street 105 Bedford NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] == "241"
+    assert parsed["street_name"] == "BROAD ST"
+    assert parsed["unit_number"] == "105"
+    assert parsed["city"] == "Bedford"
+    assert parsed["province"] == "NS"
+
+    parsed = hybrid_canadian_parse_address("5633 Fenwick St 305 HALIFAX NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] == "5633"
+    assert parsed["street_name"] == "FENWICK ST"
+    assert parsed["unit_number"] == "305"
+    assert parsed["city"] == "Halifax"
+    assert parsed["province"] == "NS"
+
+
+def test_validate_hash_unit_and_dotted_apartment_pattern_are_multi_unit():
+    service = AddressPlatformService()
+
+    hash_result = service.validate(
+        AddressRequest(
+            raw_address_text="1407 St Margarets Bay Rd #101, Lakeside, NS, B3T",
+            city="Lakeside",
+            province="NS",
+            postal_code="B3T",
+        )
+    )
+    assert hash_result["building_type"] == "multi_unit"
+    assert hash_result["suggested_unit_number"] == "101"
+
+    dotted_result = service.validate(
+        AddressRequest(
+            raw_address_text="6957 Mumford Rd. Apt.27, Halifax, NS, B3L2H7, CA",
+            city="Halifax",
+            province="NS",
+            postal_code="B3L2H7",
+        )
+    )
+    assert dotted_result["building_type"] == "multi_unit"
+    assert dotted_result["suggested_unit_number"] == "27"
+
+
+def test_validate_ordinal_street_with_trailing_garage_apartment_preserves_street_and_unit_keyword():
+    service = AddressPlatformService()
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="58 14th Street garage apt TRENTON NS",
+            city="Trenton",
+            province="NS",
+        )
+    )
+    assert result["building_type"] == "multi_unit"
+    assert result["canonical"]["street_number"] == "58"
+    assert result["canonical"]["street_name"] == "14TH STREET"
+    assert result["canonical"]["city"] == "Trenton"
+    assert result["canonical"]["province"] == "NS"
+    assert result["suggested_unit_number"] == "GARAGE APT"
+
+
+def test_validate_ordinal_street_with_compound_residential_unit_keywords():
+    service = AddressPlatformService()
+
+    basement = service.validate(
+        AddressRequest(
+            raw_address_text="58 14th Street basement apt TRENTON NS",
+            city="Trenton",
+            province="NS",
+        )
+    )
+    assert basement["building_type"] == "multi_unit"
+    assert basement["canonical"]["street_name"] == "14TH STREET"
+    assert basement["suggested_unit_number"] == "BASEMENT APT"
+
+    rear = service.validate(
+        AddressRequest(
+            raw_address_text="58 14th Street rear apt TRENTON NS",
+            city="Trenton",
+            province="NS",
+        )
+    )
+    assert rear["building_type"] == "multi_unit"
+    assert rear["canonical"]["street_name"] == "14TH STREET"
+    assert rear["suggested_unit_number"] == "REAR APT"
+
+
+def test_validate_comma_bare_unit_with_comma_separated_city_province_is_multi_unit():
+    service = AddressPlatformService()
+    result = service.validate(
+        AddressRequest(
+            raw_address_text="5870 Demone Street, 602,HALIFAX,NS,B3K 0G9",
+            city="Halifax",
+            province="NS",
+            postal_code="B3K 0G9",
+        )
+    )
+    assert result["building_type"] == "multi_unit"
+    assert result["suggested_unit_number"] == "602"
+
+
+def test_validate_route_name_and_place_name_do_not_false_extract_unit():
+    service = AddressPlatformService()
+
+    route_result = service.validate(
+        AddressRequest(
+            raw_address_text="6886 NS-325 West Clifford NS",
+            city="West Clifford",
+            province="NS",
+        )
+    )
+    assert route_result["building_type"] == "single_unit"
+    assert route_result["suggested_unit_number"] is None
+
+    highway_result = service.validate(
+        AddressRequest(
+            raw_address_text="3960 HIGHWAY 2, FLETCHERS LAKE, NS, CA, B2T 1A3",
+            city="Fletchers Lake",
+            province="NS",
+            postal_code="B2T 1A3",
+        )
+    )
+    assert highway_result["building_type"] == "single_unit"
+    assert highway_result["suggested_unit_number"] is None
+
+    noisy_tail_result = service.validate(
+        AddressRequest(
+            raw_address_text="3 Autumn Dr Halifax NS B3R 1H2 Canada 15 Halifax NS",
+            city="Halifax",
+            province="NS",
+            postal_code="B3R 1H2",
+        )
+    )
+    assert noisy_tail_result["building_type"] == "single_unit"
+    assert noisy_tail_result["suggested_unit_number"] is None
+
+    plain_house_result = service.validate(
+        AddressRequest(
+            raw_address_text="137 Mackay St STELLARTON",
+            city="Stellarton",
+            province="NS",
+        )
+    )
+    assert plain_house_result["building_type"] == "single_unit"
+    assert plain_house_result["suggested_unit_number"] is None
+
+
+def test_validate_single_unit_parser_disagreement_can_still_accept_clean_house_patterns():
+    service = AddressPlatformService()
+
+    eagle = service.validate(
+        AddressRequest(
+            raw_address_text="N/A 11 EAGLE RD, Bible Hill, NS",
+            city="Bible Hill",
+            province="NS",
+        )
+    )
+    assert eagle["building_type"] == "single_unit"
+    assert eagle["decision"] == "accept"
+
+    medjuck = service.validate(
+        AddressRequest(
+            raw_address_text="MEDJUCK 5410 SPRING GARDEN RD, HALIFAX, NS",
+            city="Halifax",
+            province="NS",
+        )
+    )
+    assert medjuck["building_type"] == "single_unit"
+    assert medjuck["decision"] == "accept"
+
+    terrace = service.validate(
+        AddressRequest(
+            raw_address_text="Terrace Street 264 New Glasgow NS",
+            city="New Glasgow",
+            province="NS",
+        )
+    )
+    assert terrace["building_type"] == "single_unit"
+    assert terrace["decision"] == "accept"
+
+
+def test_feature_flags_ignore_postal_noise_but_keep_double_number_boundary_signal():
+    flags = _extract_feature_flags(
+        "14 Park Street, Trenton, NS, B0K1X0",
+        "single_unit",
+        {"street_name": "PARK STREET"},
+    )
+    assert flags["has_double_number"] == 0
+
+    flags = _extract_feature_flags(
+        "194 Union St 1676 PICTOU NS",
+        "single_unit",
+        {"street_name": "UNION ST"},
+    )
+    assert flags["has_double_number"] == 1
+
+
+def test_hybrid_parser_recovers_route_only_before_city_pattern():
+    parsed = hybrid_canadian_parse_address("HIGHWAY 376 Lyons Brook NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] is None
+    assert parsed["street_name"] == "HIGHWAY 376"
+    assert parsed["unit_number"] is None
+    assert parsed["city"] == "Lyons Brook"
+    assert parsed["province"] == "NS"
+
+
+def test_hybrid_parser_recovers_reversed_civic_before_city_pattern():
+    parsed = hybrid_canadian_parse_address("Terrace Street 264 New Glasgow NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] == "264"
+    assert parsed["street_name"] == "TERRACE ST"
+    assert parsed["unit_number"] is None
+    assert parsed["city"] == "New Glasgow"
+    assert parsed["province"] == "NS"
+
+    parsed = hybrid_canadian_parse_address("Braemar Drive 11 Dartmouth NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] == "11"
+    assert parsed["street_name"] == "BRAEMAR DR"
+    assert parsed["unit_number"] is None
+    assert parsed["city"] == "Dartmouth"
+    assert parsed["province"] == "NS"
+
+
+def test_hybrid_parser_recovers_prefixed_civic_before_city_pattern():
+    parsed = hybrid_canadian_parse_address("N/A 11 EAGLE RD, Bible Hill, NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] == "11"
+    assert parsed["street_name"] == "EAGLE RD"
+    assert parsed["unit_number"] is None
+    assert parsed["city"] == "Bible Hill"
+    assert parsed["province"] == "NS"
+
+    parsed = hybrid_canadian_parse_address("MEDJUCK 5410 SPRING GARDEN RD, HALIFAX, NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] == "5410"
+    assert parsed["street_name"] == "SPRING GARDEN RD"
+    assert parsed["unit_number"] is None
+    assert parsed["city"] == "Halifax"
+    assert parsed["province"] == "NS"
+
+
+def test_hybrid_parser_recovers_prefixed_unit_civic_before_city_pattern():
+    parsed = hybrid_canadian_parse_address("SOUTH END 709-1530 BIRMINGHAM ST HALIFAX NS", profile=CANADA_PROFILE)
+    assert parsed["street_number"] == "1530"
+    assert parsed["street_name"] == "BIRMINGHAM ST"
+    assert parsed["unit_number"] == "709"
+    assert parsed["city"] == "Halifax"
+    assert parsed["province"] == "NS"
 
 
 def test_hybrid_parser_handles_basement_prefix_as_unit():
@@ -265,6 +620,106 @@ def test_validate_inline_unit_with_repeated_street_tail_is_multi_unit():
     assert result["building_type"] == "multi_unit"
     assert result["suggested_unit_number"] == "706"
     assert result["decision"] == "accept"
+
+
+def test_validate_strong_commercial_premise_names_remain_commercial():
+    service = AddressPlatformService()
+
+    square = service.validate(
+        AddressRequest(
+            raw_address_text="Scotia Square Suite 500, Halifax, NS",
+            city="Halifax",
+            province="NS",
+        )
+    )
+    assert square["building_type"] == "commercial"
+    assert square["suggested_unit_number"] == "500"
+
+    mall = service.validate(
+        AddressRequest(
+            raw_address_text="Park Lane Mall Unit 210, Halifax, NS",
+            city="Halifax",
+            province="NS",
+        )
+    )
+    assert mall["building_type"] == "commercial"
+    assert mall["suggested_unit_number"] == "210"
+
+
+def test_validate_unit_keyword_glued_to_street_or_number_is_recovered():
+    service = AddressPlatformService()
+
+    apt_glued = service.validate(
+        AddressRequest(
+            raw_address_text="67 KINGS WHARF PLACEAPT 308, DARTMOUTH, NS, CA, B2Y 0C6",
+            city="Dartmouth",
+            province="NS",
+            postal_code="B2Y 0C6",
+        )
+    )
+    assert apt_glued["building_type"] == "multi_unit"
+    assert apt_glued["suggested_unit_number"] == "308"
+    assert apt_glued["decision"] == "accept"
+
+    room_glued = service.validate(
+        AddressRequest(
+            raw_address_text="660 FRANCKLYN STROOM 216, HALIFAX, NS, CA, B3H 3B5",
+            city="Halifax",
+            province="NS",
+            postal_code="B3H 3B5",
+        )
+    )
+    assert room_glued["building_type"] == "multi_unit"
+    assert room_glued["suggested_unit_number"] == "216"
+    assert room_glued["decision"] == "accept"
+
+    unit_glued = service.validate(
+        AddressRequest(
+            raw_address_text="1094 WELLINGTON STREET UNIT1302 Halifax NS",
+            city="Halifax",
+            province="NS",
+        )
+    )
+    assert unit_glued["building_type"] == "multi_unit"
+    assert unit_glued["suggested_unit_number"] == "1302"
+    assert unit_glued["decision"] == "accept"
+
+
+def test_validate_trailing_bare_unit_without_comma_before_city_is_recovered():
+    service = AddressPlatformService()
+
+    windmill = service.validate(
+        AddressRequest(
+            raw_address_text="275 Windmill Rd 128 DARTMOUTH",
+            city="Dartmouth",
+            province="NS",
+        )
+    )
+    assert windmill["building_type"] == "multi_unit"
+    assert windmill["suggested_unit_number"] == "128"
+    assert windmill["decision"] == "accept"
+
+    norma = service.validate(
+        AddressRequest(
+            raw_address_text="195 Norma St 6 NEW GLASGOW NS",
+            city="New Glasgow",
+            province="NS",
+        )
+    )
+    assert norma["building_type"] == "multi_unit"
+    assert norma["suggested_unit_number"] == "6"
+    assert norma["decision"] == "accept"
+
+    uteck = service.validate(
+        AddressRequest(
+            raw_address_text="20 LARRY UTECK BLVD 203 UNIT Halifax NS",
+            city="Halifax",
+            province="NS",
+        )
+    )
+    assert uteck["building_type"] == "multi_unit"
+    assert uteck["suggested_unit_number"] == "203"
+    assert uteck["decision"] == "accept"
 
 
 def test_hybrid_parser_handles_commercial_premise_without_civic_number():

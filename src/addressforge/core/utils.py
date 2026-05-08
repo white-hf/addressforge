@@ -3,6 +3,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import mysql.connector
@@ -11,6 +12,8 @@ from mysql.connector import Error
 from scipy.stats import entropy
 
 from .config import (
+    ADDRESSFORGE_DB_CONNECT_RETRY_ATTEMPTS,
+    ADDRESSFORGE_DB_CONNECT_RETRY_SLEEP_MS,
     INVALID_ROWS_FILE,
     LOG_FILE,
     MYSQL_CONFIG,
@@ -41,12 +44,22 @@ def _resolve_profile(
 # 数据库连接
 def get_db_connection():
     """获取 MySQL 连接"""
-    try:
-        conn = mysql.connector.connect(**MYSQL_CONFIG)
-        return conn
-    except Error as e:
-        logger.error(f"MySQL 连接错误: {e}")
-        raise
+    last_error = None
+    attempts = max(int(ADDRESSFORGE_DB_CONNECT_RETRY_ATTEMPTS or 1), 1)
+    sleep_ms = max(int(ADDRESSFORGE_DB_CONNECT_RETRY_SLEEP_MS or 0), 0)
+    for attempt in range(1, attempts + 1):
+        try:
+            conn = mysql.connector.connect(**MYSQL_CONFIG)
+            return conn
+        except Error as e:
+            last_error = e
+            if attempt >= attempts:
+                break
+            logger.warning("MySQL 连接失败，重试 %s/%s：%s", attempt, attempts, e)
+            if sleep_ms > 0:
+                time.sleep(sleep_ms / 1000.0)
+    logger.error(f"MySQL 连接错误: {last_error}")
+    raise last_error
 
 # 验证 GPS
 def is_valid_gps(lat, lon, profile: BaseCountryProfile | str | None = None, *, country_code: str = "CA"):

@@ -58,36 +58,40 @@
         </div>
 
         <nav class="nav">
+          <!-- Stage 1: Pipeline -->
           <a href="/" class="nav-item {% if active == 'dashboard' %}active{% endif %}">
-            <div class="nav-icon">▣</div>
+            <div class="nav-icon text-xl">▣</div>
             <div class="nav-copy">
-              <div class="name" data-i18n="dashboard">业务看板</div>
-              <div class="desc" data-i18n="dashboard_desc">全流程水位监控</div>
+              <div class="name font-bold" data-i18n="nav_pipeline">治理流水线</div>
+              <div class="desc text-[10px] opacity-70" data-i18n="nav_pipeline_desc">主线任务与状态导览</div>
             </div>
           </a>
 
+          <!-- Stage 2: Review Lab -->
           <a href="/review" class="nav-item {% if active == 'review' %}active{% endif %}">
-            <div class="nav-icon">✎</div>
+            <div class="nav-icon text-xl">✎</div>
             <div class="nav-copy">
-              <div class="name" data-i18n="review">专家审核</div>
-              <div class="desc" data-i18n="review_desc">人工纠错与金标沉淀</div>
+              <div class="name font-bold" data-i18n="nav_review">专家审核实验室</div>
+              <div class="desc text-[10px] opacity-70" data-i18n="nav_review_desc">人工纠错与高价值样本裁决</div>
             </div>
             <div class="nav-badge" id="nav-badge-review">-</div>
           </a>
 
-          <a href="/batch" class="nav-item {% if active == 'batch' %}active{% endif %}">
-            <div class="nav-icon">▤</div>
+          <!-- Stage 3: Gold Library (Crucial for corrections) -->
+          <a href="/assets" class="nav-item {% if active == 'assets' %}active{% endif %}">
+            <div class="nav-icon text-xl">💎</div>
             <div class="nav-copy">
-              <div class="name" data-i18n="batch">批次管理</div>
-              <div class="desc" data-i18n="batch_desc">生成批次与版本冻结</div>
+              <div class="name font-bold" data-i18n="nav_assets">资产与金标库</div>
+              <div class="desc text-[10px] opacity-70" data-i18n="nav_assets_desc">查看与修正已审核的数据</div>
             </div>
           </a>
 
+          <!-- Stage 4: Analytics -->
           <a href="/reports" class="nav-item {% if active == 'reports' %}active{% endif %}">
-            <div class="nav-icon">▣</div>
+            <div class="nav-icon text-xl">📈</div>
             <div class="nav-copy">
-              <div class="name" data-i18n="reports">报表中心</div>
-              <div class="desc" data-i18n="reports_desc">质量与评测分析</div>
+              <div class="name font-bold" data-i18n="nav_analytics">分析与报表</div>
+              <div class="desc text-[10px] opacity-70" data-i18n="nav_analytics_desc">模型质量与准入指标</div>
             </div>
           </a>
         </nav>

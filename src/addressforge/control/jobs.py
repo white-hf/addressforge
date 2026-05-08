@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
@@ -15,6 +16,22 @@ from addressforge.core.common import (
     transaction_cursor,
 )
 from addressforge.core.config import (
+    ADDRESSFORGE_INGESTION_API_BATCH_SIZE,
+    ADDRESSFORGE_INGESTION_DB_BATCH_SIZE,
+    ADDRESSFORGE_INGESTION_DB_CITY_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_CURSOR_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_HOST,
+    ADDRESSFORGE_INGESTION_DB_LATITUDE_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_LONGITUDE_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_NAME,
+    ADDRESSFORGE_INGESTION_DB_PASSWORD,
+    ADDRESSFORGE_INGESTION_DB_POSTAL_CODE_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_PROVINCE_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_TABLE,
+    ADDRESSFORGE_INGESTION_DB_TIEBREAKER_COLUMN,
+    ADDRESSFORGE_INGESTION_DB_USER,
     ADDRESSFORGE_INGESTION_MODE,
     ADDRESSFORGE_INGESTION_SOURCE_NAME,
     ADDRESSFORGE_MODEL_NAME,
@@ -23,7 +40,7 @@ from addressforge.core.config import (
 )
 from addressforge.core.utils import logger
 from addressforge.ingestion.service import IngestionService
-from addressforge.ingestion.providers import resolve_ingestion_provider
+from addressforge.ingestion.providers import ApiIngestionProvider, DatabaseIngestionProvider, resolve_ingestion_provider
 from addressforge.core.reference import ExternalReferenceImportService
 from addressforge.learning.evaluator import run_baseline_evaluation
 from addressforge.learning.gold import freeze_gold_set, seed_active_learning_queue
@@ -43,9 +60,12 @@ CONTROL_JOB_KINDS = (
     "shadow_once",
     "gold_freeze_once",
     "active_learning_once",
+    "promote_assets_once",
     "bootstrap_registry",
 )
 CONTROL_JOB_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
+WORKER_HEARTBEAT_TIMEOUT_SECONDS = 30
+STALE_RUNNING_JOB_TIMEOUT_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -93,6 +113,20 @@ def bootstrap_control_center() -> dict[str, Any]:
         "ingestion.last_failed_cursor": "",
         "ingestion.retry_job_id": "",
         "ingestion.consecutive_failures": 0,
+        "ingestion.mode": ADDRESSFORGE_INGESTION_MODE,
+        "ingestion.source_name": ADDRESSFORGE_INGESTION_SOURCE_NAME,
+        "ingestion.api.batch_size": ADDRESSFORGE_INGESTION_API_BATCH_SIZE,
+        "ingestion.db.batch_size": ADDRESSFORGE_INGESTION_DB_BATCH_SIZE,
+        "ingestion.db.table": ADDRESSFORGE_INGESTION_DB_TABLE,
+        "ingestion.db.cursor_column": ADDRESSFORGE_INGESTION_DB_CURSOR_COLUMN,
+        "ingestion.db.tiebreaker_column": ADDRESSFORGE_INGESTION_DB_TIEBREAKER_COLUMN,
+        "ingestion.db.external_id_column": ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN,
+        "ingestion.db.raw_address_column": ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN,
+        "ingestion.db.city_column": ADDRESSFORGE_INGESTION_DB_CITY_COLUMN,
+        "ingestion.db.province_column": ADDRESSFORGE_INGESTION_DB_PROVINCE_COLUMN,
+        "ingestion.db.postal_code_column": ADDRESSFORGE_INGESTION_DB_POSTAL_CODE_COLUMN,
+        "ingestion.db.latitude_column": ADDRESSFORGE_INGESTION_DB_LATITUDE_COLUMN,
+        "ingestion.db.longitude_column": ADDRESSFORGE_INGESTION_DB_LONGITUDE_COLUMN,
         "pipeline.auto_clean.enabled": True,
         "pipeline.auto_train.enabled": False,
         "pipeline.auto_eval.enabled": True,
@@ -296,7 +330,122 @@ def _summarize_job_result(job: dict[str, Any]) -> str:
     return " · ".join(parts) if parts else "—"
 
 
-def list_jobs(
+def _decoded_payload(job: dict[str, Any]) -> dict[str, Any]:
+    payload = job.get("payload")
+    if isinstance(payload, dict):
+        return payload
+    raw = job.get("payload_json")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _decoded_result(job: dict[str, Any]) -> dict[str, Any]:
+    result = job.get("result")
+    if isinstance(result, dict):
+        return result
+    raw = job.get("result_json")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def summarize_latest_ingestion_cleaning_batch(workspace_name: str) -> dict[str, Any]:
+    """
+    Summarize the latest ingestion batch and its downstream cleaning jobs.
+    汇总最新一次导入批次及其后续清洗任务。
+    """
+    reconcile_stale_running_jobs(workspace_name)
+    ingestion_rows = fetch_all(
+        """
+        SELECT *
+        FROM control_job
+        WHERE workspace_name = %s
+          AND job_kind = 'ingestion_once'
+        ORDER BY created_at DESC, job_id DESC
+        LIMIT 5
+        """,
+        (workspace_name,),
+    )
+    if not ingestion_rows:
+        return {
+            "workspace_name": workspace_name,
+            "has_batch": False,
+        }
+
+    latest_ingestion = ingestion_rows[0]
+    latest_ingestion_job_id = int(latest_ingestion["job_id"])
+    latest_ingestion_created_at = latest_ingestion.get("created_at")
+    cleaning_query = """
+        SELECT *
+        FROM control_job
+        WHERE workspace_name = %s
+          AND job_kind = 'cleaning_once'
+          AND created_at >= %s
+    """
+    params: list[Any] = [workspace_name, latest_ingestion_created_at]
+    cleaning_query += " ORDER BY created_at ASC, job_id ASC"
+    cleaning_rows = fetch_all(cleaning_query, tuple(params))
+
+    imported_count = 0
+    ingestion_result = _decoded_result(latest_ingestion)
+    if isinstance(ingestion_result.get("result"), dict):
+        imported_count = int(ingestion_result["result"].get("records_ingested") or 0)
+
+    cleaned_count = 0
+    cleaning_succeeded = 0
+    cleaning_failed = 0
+    cleaning_running = 0
+    cleaning_queued = 0
+    latest_cleaning_finished_at = None
+    related_cleaning_job_ids: list[int] = []
+    for job in cleaning_rows:
+        related_cleaning_job_ids.append(int(job["job_id"]))
+        status = str(job.get("status") or "")
+        if status == "succeeded":
+            cleaning_succeeded += 1
+            result = _decoded_result(job)
+            if isinstance(result.get("result"), dict):
+                cleaned_count += int(result["result"].get("records_processed") or 0)
+            latest_cleaning_finished_at = job.get("finished_at") or latest_cleaning_finished_at
+        elif status == "failed":
+            cleaning_failed += 1
+        elif status == "running":
+            cleaning_running += 1
+        elif status == "queued":
+            cleaning_queued += 1
+
+    latest_cleaning_job = cleaning_rows[-1] if cleaning_rows else None
+    return {
+        "workspace_name": workspace_name,
+        "has_batch": True,
+        "latest_ingestion_job_id": latest_ingestion_job_id,
+        "latest_ingestion_status": latest_ingestion.get("status"),
+        "latest_ingestion_created_at": latest_ingestion_created_at,
+        "latest_ingestion_finished_at": latest_ingestion.get("finished_at"),
+        "records_ingested": imported_count,
+        "related_cleaning_job_ids": related_cleaning_job_ids,
+        "cleaning_job_count": len(cleaning_rows),
+        "records_cleaned": cleaned_count,
+        "cleaning_succeeded": cleaning_succeeded,
+        "cleaning_failed": cleaning_failed,
+        "cleaning_running": cleaning_running,
+        "cleaning_queued": cleaning_queued,
+        "latest_cleaning_job_id": int(latest_cleaning_job["job_id"]) if latest_cleaning_job else None,
+        "latest_cleaning_status": latest_cleaning_job.get("status") if latest_cleaning_job else None,
+        "latest_cleaning_finished_at": latest_cleaning_finished_at,
+    }
+
+
+def list_jobs_full(
     workspace_name: str | None = None,
     status: str | None = None,
     job_kind: str | None = None,
@@ -319,6 +468,8 @@ def list_jobs(
 
 
 def count_jobs(workspace_name: str | None = None) -> dict[str, int]:
+    if workspace_name:
+        reconcile_stale_running_jobs(workspace_name)
     query = """
         SELECT status, COUNT(*) AS cnt
         FROM control_job
@@ -335,8 +486,9 @@ def count_jobs(workspace_name: str | None = None) -> dict[str, int]:
         counts[str(row["status"])] = int(row["cnt"])
     return counts
 
-
 def count_jobs_by_kind(workspace_name: str | None = None) -> dict[str, int]:
+    if workspace_name:
+        reconcile_stale_running_jobs(workspace_name)
     query = """
         SELECT job_kind, COUNT(*) AS cnt
         FROM control_job
@@ -352,6 +504,154 @@ def count_jobs_by_kind(workspace_name: str | None = None) -> dict[str, int]:
     for row in rows:
         counts[str(row["job_kind"])] = int(row["cnt"])
     return counts
+
+
+def count_cleaning_results(workspace_name: str, decision: str | None = None) -> int:
+    """
+    Counts records in the cleaning result table, optionally filtered by decision.
+    统计清洗结果表中的记录数，可选按决策过滤。
+    """
+    query = "SELECT COUNT(*) as cnt FROM address_cleaning_result WHERE workspace_name = %s"
+    params = [workspace_name]
+    if decision:
+        query += " AND decision = %s"
+        params.append(decision)
+    
+    rows = fetch_all(query, tuple(params))
+    return int(rows[0]["cnt"]) if rows else 0
+
+
+def count_available_for_review(workspace_name: str, confidence_threshold: float = 0.55) -> int:
+    """
+    Counts high-value samples that are suggested for review but haven't been queued or labeled yet.
+    统计建议审核但尚未进入队列或标记的高价值样本。
+    """
+    query = """
+        SELECT COUNT(*) as cnt
+        FROM address_cleaning_result
+        WHERE workspace_name = %s 
+          AND (decision = 'review' OR confidence <= %s)
+          AND CAST(raw_id AS CHAR) NOT IN (SELECT source_id FROM active_learning_queue WHERE workspace_name = %s)
+          AND CAST(raw_id AS CHAR) NOT IN (SELECT source_id FROM gold_label WHERE workspace_name = %s)
+    """
+    params = (workspace_name, confidence_threshold, workspace_name, workspace_name)
+    rows = fetch_all(query, params)
+    return int(rows[0]["cnt"]) if rows else 0
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    for candidate in (text[:19], text):
+        try:
+            return datetime.strptime(candidate, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+    return None
+
+
+def _worker_last_seen_map(workspace_name: str) -> dict[str, datetime]:
+    rows = fetch_all(
+        """
+        SELECT setting_key, setting_value
+        FROM control_setting
+        WHERE workspace_name = %s
+          AND setting_key LIKE 'worker.%.last_seen'
+          AND setting_key <> 'worker.global.last_seen'
+        """,
+        (workspace_name,),
+    )
+    result: dict[str, datetime] = {}
+    for row in rows:
+        setting_key = str(row.get("setting_key") or "")
+        worker_name = setting_key.removeprefix("worker.").removesuffix(".last_seen")
+        last_seen = _parse_timestamp(row.get("setting_value"))
+        if worker_name and last_seen:
+            result[worker_name] = last_seen
+    return result
+
+
+def _active_worker_names(workspace_name: str, timeout_seconds: int = WORKER_HEARTBEAT_TIMEOUT_SECONDS) -> set[str]:
+    now = datetime.now()
+    return {
+        worker_name
+        for worker_name, last_seen in _worker_last_seen_map(workspace_name).items()
+        if (now - last_seen).total_seconds() < timeout_seconds
+    }
+
+
+def reconcile_stale_running_jobs(
+    workspace_name: str,
+    *,
+    stale_after_seconds: int = STALE_RUNNING_JOB_TIMEOUT_SECONDS,
+) -> list[int]:
+    active_workers = _active_worker_names(workspace_name)
+    running_jobs = fetch_all(
+        """
+        SELECT job_id, claimed_by, started_at, updated_at
+        FROM control_job
+        WHERE workspace_name = %s AND status = 'running'
+        """,
+        (workspace_name,),
+    )
+    worker_job_activity = fetch_all(
+        """
+        SELECT job_id, claimed_by, status, started_at, updated_at, finished_at
+        FROM control_job
+        WHERE workspace_name = %s AND claimed_by IS NOT NULL AND claimed_by <> ''
+        """,
+        (workspace_name,),
+    )
+    now = datetime.now()
+    stale_job_ids: list[int] = []
+    for job in running_jobs:
+        claimed_by = str(job.get("claimed_by") or "").strip()
+        started_at = _parse_timestamp(job.get("started_at")) or _parse_timestamp(job.get("updated_at"))
+        if not started_at:
+            continue
+        worker_has_newer_activity = False
+        if claimed_by:
+            for candidate in worker_job_activity:
+                if str(candidate.get("claimed_by") or "").strip() != claimed_by:
+                    continue
+                if int(candidate.get("job_id") or 0) == int(job["job_id"]):
+                    continue
+                candidate_ts = (
+                    _parse_timestamp(candidate.get("finished_at"))
+                    or _parse_timestamp(candidate.get("updated_at"))
+                    or _parse_timestamp(candidate.get("started_at"))
+                )
+                if candidate_ts and candidate_ts > started_at:
+                    worker_has_newer_activity = True
+                    break
+        if claimed_by and claimed_by in active_workers and not worker_has_newer_activity:
+            continue
+        if (now - started_at).total_seconds() < stale_after_seconds:
+            continue
+        stale_job_ids.append(int(job["job_id"]))
+
+    if not stale_job_ids:
+        return []
+
+    with db_cursor() as (conn, cursor):
+        for job_id in stale_job_ids:
+            cursor.execute(
+                """
+                UPDATE control_job
+                SET status = 'failed',
+                    error_text = COALESCE(error_text, 'Marked failed after worker heartbeat timeout.'),
+                    finished_at = NOW()
+                WHERE job_id = %s AND status = 'running'
+                """,
+                (job_id,),
+            )
+        conn.commit()
+    return stale_job_ids
 
 
 def list_settings(workspace_name: str | None = None) -> list[dict[str, Any]]:
@@ -386,6 +686,190 @@ def get_setting(workspace_name: str, setting_key: str, default: Any | None = Non
         return json.loads(text)
     except Exception:
         return text
+
+
+def _get_setting_text(workspace_name: str, setting_key: str) -> str | None:
+    rows = fetch_all(
+        """
+        SELECT setting_value
+        FROM control_setting
+        WHERE workspace_name = %s AND setting_key = %s
+        LIMIT 1
+        """,
+        (workspace_name, setting_key),
+    )
+    if not rows:
+        return None
+    value = rows[0].get("setting_value")
+    if value is None:
+        return None
+    return str(value)
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def get_ingestion_runtime_config(workspace_name: str) -> dict[str, Any]:
+    def _resolve_setting_text(setting_key: str, default: str) -> str:
+        text = _get_setting_text(workspace_name, setting_key)
+        if text is None:
+            return default
+        return text.strip()
+
+    mode = str(get_setting(workspace_name, "ingestion.mode", ADDRESSFORGE_INGESTION_MODE) or ADDRESSFORGE_INGESTION_MODE).strip().lower()
+    source_name = str(get_setting(workspace_name, "ingestion.source_name", ADDRESSFORGE_INGESTION_SOURCE_NAME) or ADDRESSFORGE_INGESTION_SOURCE_NAME).strip()
+    return {
+        "mode": mode if mode in {"api", "db"} else "api",
+        "source_name": source_name or ADDRESSFORGE_INGESTION_SOURCE_NAME,
+        "api": {
+            "batch_size": _coerce_positive_int(
+                get_setting(workspace_name, "ingestion.api.batch_size", ADDRESSFORGE_INGESTION_API_BATCH_SIZE),
+                ADDRESSFORGE_INGESTION_API_BATCH_SIZE,
+            ),
+        },
+        "db": {
+            "batch_size": _coerce_positive_int(
+                get_setting(workspace_name, "ingestion.db.batch_size", ADDRESSFORGE_INGESTION_DB_BATCH_SIZE),
+                ADDRESSFORGE_INGESTION_DB_BATCH_SIZE,
+            ),
+            "table": _resolve_setting_text("ingestion.db.table", ADDRESSFORGE_INGESTION_DB_TABLE),
+            "cursor_column": _resolve_setting_text("ingestion.db.cursor_column", ADDRESSFORGE_INGESTION_DB_CURSOR_COLUMN),
+            "tiebreaker_column": _resolve_setting_text("ingestion.db.tiebreaker_column", ADDRESSFORGE_INGESTION_DB_TIEBREAKER_COLUMN),
+            "external_id_column": _resolve_setting_text("ingestion.db.external_id_column", ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN),
+            "raw_address_column": _resolve_setting_text("ingestion.db.raw_address_column", ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN),
+            "city_column": _resolve_setting_text("ingestion.db.city_column", ADDRESSFORGE_INGESTION_DB_CITY_COLUMN),
+            "province_column": _resolve_setting_text("ingestion.db.province_column", ADDRESSFORGE_INGESTION_DB_PROVINCE_COLUMN),
+            "postal_code_column": _resolve_setting_text("ingestion.db.postal_code_column", ADDRESSFORGE_INGESTION_DB_POSTAL_CODE_COLUMN),
+            "latitude_column": _resolve_setting_text("ingestion.db.latitude_column", ADDRESSFORGE_INGESTION_DB_LATITUDE_COLUMN),
+            "longitude_column": _resolve_setting_text("ingestion.db.longitude_column", ADDRESSFORGE_INGESTION_DB_LONGITUDE_COLUMN),
+        },
+    }
+
+
+def update_ingestion_runtime_config(workspace_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    mode = str(payload.get("mode") or "").strip().lower()
+    if mode not in {"api", "db"}:
+        raise ValueError("ingestion mode must be 'api' or 'db'")
+    updates: dict[str, Any] = {
+        "ingestion.mode": mode,
+        "ingestion.source_name": str(payload.get("source_name") or ADDRESSFORGE_INGESTION_SOURCE_NAME).strip() or ADDRESSFORGE_INGESTION_SOURCE_NAME,
+    }
+    api_payload = payload.get("api") if isinstance(payload.get("api"), dict) else {}
+    db_payload = payload.get("db") if isinstance(payload.get("db"), dict) else {}
+    if "batch_size" in api_payload:
+        updates["ingestion.api.batch_size"] = _coerce_positive_int(api_payload.get("batch_size"), ADDRESSFORGE_INGESTION_API_BATCH_SIZE)
+    if "batch_size" in db_payload:
+        updates["ingestion.db.batch_size"] = _coerce_positive_int(db_payload.get("batch_size"), ADDRESSFORGE_INGESTION_DB_BATCH_SIZE)
+    db_field_keys = {
+        "table": "ingestion.db.table",
+        "cursor_column": "ingestion.db.cursor_column",
+        "tiebreaker_column": "ingestion.db.tiebreaker_column",
+        "external_id_column": "ingestion.db.external_id_column",
+        "raw_address_column": "ingestion.db.raw_address_column",
+        "city_column": "ingestion.db.city_column",
+        "province_column": "ingestion.db.province_column",
+        "postal_code_column": "ingestion.db.postal_code_column",
+        "latitude_column": "ingestion.db.latitude_column",
+        "longitude_column": "ingestion.db.longitude_column",
+    }
+    for input_key, setting_key in db_field_keys.items():
+        if input_key in db_payload:
+            updates[setting_key] = str(db_payload.get(input_key) or "").strip()
+    for setting_key, value in updates.items():
+        set_setting(workspace_name, setting_key, value)
+    return get_ingestion_runtime_config(workspace_name)
+
+
+def build_ingestion_provider_from_runtime_config(workspace_name: str, *, mode: str | None = None, source_name: str | None = None):
+    config = get_ingestion_runtime_config(workspace_name)
+    resolved_mode = (mode or config["mode"] or "api").strip().lower()
+    resolved_source_name = str(source_name or config["source_name"] or ADDRESSFORGE_INGESTION_SOURCE_NAME).strip()
+    if resolved_mode == "api":
+        return ApiIngestionProvider(source_name=resolved_source_name)
+    if resolved_mode == "db":
+        db_cfg = config["db"]
+        return DatabaseIngestionProvider(
+            host=ADDRESSFORGE_INGESTION_DB_HOST,
+            user=ADDRESSFORGE_INGESTION_DB_USER,
+            password=ADDRESSFORGE_INGESTION_DB_PASSWORD,
+            database=ADDRESSFORGE_INGESTION_DB_NAME,
+            table=str(db_cfg.get("table") or ADDRESSFORGE_INGESTION_DB_TABLE),
+            cursor_column=str(db_cfg.get("cursor_column") or ADDRESSFORGE_INGESTION_DB_CURSOR_COLUMN),
+            tie_breaker_column=str(db_cfg.get("tiebreaker_column") or ADDRESSFORGE_INGESTION_DB_TIEBREAKER_COLUMN),
+            external_id_column=str(db_cfg.get("external_id_column") or ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN),
+            raw_address_column=str(db_cfg.get("raw_address_column") or ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN),
+            city_column=str(db_cfg.get("city_column") or ""),
+            province_column=str(db_cfg.get("province_column") or ""),
+            postal_code_column=str(db_cfg.get("postal_code_column") or ADDRESSFORGE_INGESTION_DB_POSTAL_CODE_COLUMN),
+            latitude_column=str(db_cfg.get("latitude_column") or ADDRESSFORGE_INGESTION_DB_LATITUDE_COLUMN),
+            longitude_column=str(db_cfg.get("longitude_column") or ADDRESSFORGE_INGESTION_DB_LONGITUDE_COLUMN),
+            source_name=resolved_source_name,
+        )
+    return resolve_ingestion_provider(resolved_mode)
+
+
+def list_jobs(
+    workspace_name: str,
+    status: str | None = None,
+    job_kind: str | None = None,
+    limit: int = 10,
+    page: int = 1,
+) -> list[dict[str, Any]]:
+    """
+    Lists jobs, prioritizing running and then queued jobs.
+    列出任务，优先显示正在运行和排队的任务。
+    """
+    reconcile_stale_running_jobs(workspace_name)
+    offset = (page - 1) * limit
+    query = "SELECT * FROM control_job WHERE workspace_name = %s"
+    params: list[Any] = [workspace_name]
+    if status:
+        query += " AND status = %s"
+        params.append(status)
+    if job_kind:
+        query += " AND job_kind = %s"
+        params.append(job_kind)
+    rows = fetch_all(query, tuple(params))
+    active_workers = _active_worker_names(workspace_name)
+    now = datetime.now()
+    for row in rows:
+        claimed_by = str(row.get("claimed_by") or "").strip()
+        if row.get("status") == "running" and claimed_by and claimed_by not in active_workers:
+            last_touch = _parse_timestamp(row.get("updated_at")) or _parse_timestamp(row.get("started_at"))
+            stale_seconds = (now - last_touch).total_seconds() if last_touch else None
+            row["display_status"] = "stale_running"
+            row["is_stale_running"] = True
+            row["stale_for_seconds"] = int(stale_seconds) if stale_seconds is not None else None
+        else:
+            row["display_status"] = row.get("status")
+            row["is_stale_running"] = False
+            row["stale_for_seconds"] = None
+
+    def _sort_bucket(item: dict[str, Any]) -> int:
+        display_status = str(item.get("display_status") or item.get("status") or "")
+        if display_status == "running":
+            return 0
+        if display_status == "queued":
+            return 1
+        if display_status == "stale_running":
+            return 2
+        return 3
+
+    def _sort_timestamp(item: dict[str, Any]) -> datetime:
+        return (
+            _parse_timestamp(item.get("updated_at"))
+            or _parse_timestamp(item.get("started_at"))
+            or _parse_timestamp(item.get("created_at"))
+            or datetime.min
+        )
+
+    rows.sort(key=lambda item: (_sort_bucket(item), -_sort_timestamp(item).timestamp() if _sort_timestamp(item) != datetime.min else float("inf")))
+    return rows[offset: offset + limit]
 
 
 def set_setting(workspace_name: str, setting_key: str, setting_value: Any) -> dict[str, Any]:
@@ -482,13 +966,15 @@ def _run_ingestion_job(job: dict[str, Any]) -> dict[str, Any]:
     payload = job.get("payload_json")
     payload_data = json.loads(payload) if payload else {}
     workspace_name = str(job["workspace_name"] or ADDRESSFORGE_WORKSPACE_NAME)
-    mode = str(payload_data.get("mode") or ADDRESSFORGE_INGESTION_MODE or "api")
-    batch_size = int(payload_data.get("batch_size") or 1000)
-    source_name = str(payload_data.get("source_name") or ADDRESSFORGE_INGESTION_SOURCE_NAME)
+    runtime_config = get_ingestion_runtime_config(workspace_name)
+    mode = str(payload_data.get("mode") or runtime_config["mode"] or ADDRESSFORGE_INGESTION_MODE or "api").strip().lower()
+    default_batch_size = int(runtime_config["db"]["batch_size"] if mode == "db" else runtime_config["api"]["batch_size"])
+    batch_size = _coerce_positive_int(payload_data.get("batch_size"), default_batch_size)
+    source_name = str(payload_data.get("source_name") or runtime_config["source_name"] or ADDRESSFORGE_INGESTION_SOURCE_NAME).strip()
     cursor_override = payload_data.get("cursor_override")
     attempt = int(payload_data.get("retry_count") or 0)
     service = IngestionService(
-        provider=resolve_ingestion_provider(mode),
+        provider=build_ingestion_provider_from_runtime_config(workspace_name, mode=mode, source_name=source_name),
         source_name=source_name,
         workspace_name=workspace_name,
     )
@@ -567,19 +1053,32 @@ def _schedule_ingestion_retry(job: dict[str, Any], error_text: str) -> dict[str,
     return retry_job
 
 
+from addressforge.pipelines.training_pipeline import run_training_pipeline
+
 def _run_training_job(job: dict[str, Any]) -> dict[str, Any]:
+    """
+    Executes the training job via the unified training pipeline.
+    通过统一的训练流水线执行训练任务。
+    """
     payload = job.get("payload_json")
     payload_data = json.loads(payload) if payload else {}
     workspace_name = str(payload_data.get("workspace_name") or job["workspace_name"] or ADDRESSFORGE_WORKSPACE_NAME)
     model_name = str(payload_data.get("model_name") or ADDRESSFORGE_MODEL_NAME)
-    model_version = str(payload_data.get("model_version") or ADDRESSFORGE_MODEL_VERSION)
+    model_version = payload_data.get("model_version") # Let pipeline auto-generate if None / 如果为 None，则让流水线自动生成
     dataset_name = str(payload_data.get("dataset_name") or "default_training_set")
-    result = run_baseline_training(
+    
+    # Use the unified training pipeline which handles the end-to-end process
+    # 使用统一的训练流水线来处理端到端过程
+    result = run_training_pipeline(
         workspace_name=workspace_name,
         model_name=model_name,
         model_version=model_version,
-        dataset_name=dataset_name,
     )
+    
+    # Extract the actual version used or generated by the pipeline
+    # 提取流水线实际使用或生成的版本
+    actual_model_version = result.get("model_version") or model_version
+    
     followup_job: dict[str, Any] | None = None
     auto_eval_enabled = get_setting(workspace_name, "pipeline.auto_eval.enabled", True)
     if _truthy_setting(auto_eval_enabled):
@@ -589,7 +1088,7 @@ def _run_training_job(job: dict[str, Any]) -> dict[str, Any]:
             payload={
                 "workspace_name": workspace_name,
                 "model_name": model_name,
-                "model_version": model_version,
+                "model_version": actual_model_version,
                 "dataset_name": dataset_name,
                 "triggered_by": "auto_followup_after_training",
                 "source_job_id": job.get("job_id"),
@@ -601,7 +1100,7 @@ def _run_training_job(job: dict[str, Any]) -> dict[str, Any]:
         "job_kind": job["job_kind"],
         "workspace_name": workspace_name,
         "model_name": model_name,
-        "model_version": model_version,
+        "model_version": actual_model_version,
         "dataset_name": dataset_name,
         "result": result,
         "followup_job": followup_job,
@@ -839,6 +1338,20 @@ def _schedule_cleaning_retry(job: dict[str, Any], error_text: str) -> dict[str, 
     )
 
 
+def _run_promote_assets_job(job: dict[str, Any]) -> dict[str, Any]:
+    """
+    Promotes high-confidence results to canonical assets.
+    将高置信度结果提升为标准资产。
+    """
+    workspace_name = str(job.get("workspace_name") or ADDRESSFORGE_WORKSPACE_NAME)
+    from addressforge.services.asset_service import promote_results_to_assets
+    result = promote_results_to_assets(workspace_name=workspace_name)
+    return {
+        "job_kind": "promote_assets_once",
+        "workspace_name": workspace_name,
+        "result": result
+    }
+
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
     job_kind = str(job.get("job_kind") or "")
     ensure_etl_run_types()
@@ -864,6 +1377,8 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             result = _run_gold_freeze_job(job)
         elif job_kind == "active_learning_once":
             result = _run_active_learning_job(job)
+        elif job_kind == "promote_assets_once":
+            result = _run_promote_assets_job(job)
         else:
             raise ValueError(f"Unsupported job kind: {job_kind}")
         _store_job_result(job["job_id"], status="succeeded", result=result, etl_run_id=run_id)
@@ -892,4 +1407,4 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         _store_job_result(job["job_id"], status="failed", result=failure_result, error_text=str(exc), etl_run_id=run_id)
         finish_run(run_id, "failed", notes=dumps_payload({"error": str(exc)}))
         logger.exception("Control job failed: job_id=%s kind=%s", job.get("job_id"), job_kind)
-        raise
+        return failure_result or {"status": "failed", "error": str(exc)}

@@ -38,43 +38,33 @@ async def trigger_generic_job(request: GenericJobRequest):
             workspace_name=request.workspace_name,
             limit=limit
         )
-        return {"status": "completed", "job": {"job_id": result.get("run_id")}, "inserted": result.get("inserted")}
-    
-    if request.job_action == "freeze_human_gold":
-        result = freeze_gold_set(
-            workspace_name=request.workspace_name,
-            gold_set_version=request.payload.get("version", "v1"),
-            notes=request.payload.get("notes")
-        )
-        return {"status": "completed", "job": {"job_id": result.get("run_id")}}
-
-    if request.job_action == "training_once":
-        result = run_training_pipeline(
-            workspace_name=request.workspace_name,
-            model_name=request.payload.get("model_name", "canada_default"),
-            model_version=request.payload.get("model_version")
-        )
-        return {"status": "completed", "job": {"job_id": result.get("run_id")}, "model_id": result.get("model_id")}
-
-    if request.job_action == "promote_assets":
-        # Synchronously promote high-confidence results to canonical assets
-        # 同步将高置信度结果提升为标准资产
-        result = promote_results_to_assets(workspace_name=request.workspace_name)
         return {
             "status": "completed", 
-            "promoted_buildings": result.get("promoted_buildings"), 
-            "promoted_units": result.get("promoted_units")
+            "job": {"job_id": result.get("run_id")}, 
+            "inserted": result.get("inserted"),
+            "breakdown": result.get("breakdown")
         }
 
-    # 2. Queued Execution Pathways (Async Worker Background)
-    # 2. 队列执行路径 (异步 Worker 后台)
+    # 2. Pipeline Execution Pathway (Async Worker Background)
+    # 2. 流水线执行路径 (异步 Worker 后台)
     kind_map = {
         "ingestion_once": "ingestion_once",
         "cleaning_once": "cleaning_once",
-        "evaluation_once": "evaluation_once"
+        "training_once": "training_once",
+        "evaluation_once": "evaluation_once",
+        "freeze_human_gold": "gold_freeze_once",
+        "promote_assets": "promote_assets_once"
     }
+    
     job_kind = kind_map.get(request.job_action, request.job_action)
-    job = enqueue_job(request.workspace_name, job_kind, request.payload, request.requested_by, request.priority)
+    
+    job = enqueue_job(
+        request.workspace_name, 
+        job_kind, 
+        request.payload, 
+        request.requested_by or "ui", 
+        request.priority
+    )
     return {"status": "queued", "job": job}
 
 

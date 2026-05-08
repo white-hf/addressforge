@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import mysql.connector
@@ -24,6 +25,7 @@ from addressforge.core.config import (
     ADDRESSFORGE_INGESTION_DB_PROVINCE_COLUMN,
     ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN,
     ADDRESSFORGE_INGESTION_DB_TABLE,
+    ADDRESSFORGE_INGESTION_DB_TIEBREAKER_COLUMN,
     ADDRESSFORGE_INGESTION_DB_USER,
     ADDRESSFORGE_INGESTION_MODE,
     ADDRESSFORGE_INGESTION_SOURCE_NAME,
@@ -90,6 +92,14 @@ class DatabaseIngestionProvider(BaseIngestionProvider):
         database: str = ADDRESSFORGE_INGESTION_DB_NAME,
         table: str = ADDRESSFORGE_INGESTION_DB_TABLE,
         cursor_column: str = ADDRESSFORGE_INGESTION_DB_CURSOR_COLUMN,
+        tie_breaker_column: str = ADDRESSFORGE_INGESTION_DB_TIEBREAKER_COLUMN,
+        external_id_column: str = ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN,
+        raw_address_column: str = ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN,
+        city_column: str = ADDRESSFORGE_INGESTION_DB_CITY_COLUMN,
+        province_column: str = ADDRESSFORGE_INGESTION_DB_PROVINCE_COLUMN,
+        postal_code_column: str = ADDRESSFORGE_INGESTION_DB_POSTAL_CODE_COLUMN,
+        latitude_column: str = ADDRESSFORGE_INGESTION_DB_LATITUDE_COLUMN,
+        longitude_column: str = ADDRESSFORGE_INGESTION_DB_LONGITUDE_COLUMN,
         source_name: str = ADDRESSFORGE_INGESTION_SOURCE_NAME,
     ) -> None:
         super().__init__(source_name=source_name)
@@ -99,16 +109,45 @@ class DatabaseIngestionProvider(BaseIngestionProvider):
         self.database = database
         self.table = table
         self.cursor_column = cursor_column
+        self.tie_breaker_column = tie_breaker_column
         self.field_mapping = {
-            "external_id": ADDRESSFORGE_INGESTION_DB_EXTERNAL_ID_COLUMN,
-            "raw_address_text": ADDRESSFORGE_INGESTION_DB_RAW_ADDRESS_COLUMN,
-            "city": ADDRESSFORGE_INGESTION_DB_CITY_COLUMN,
-            "province": ADDRESSFORGE_INGESTION_DB_PROVINCE_COLUMN,
-            "postal_code": ADDRESSFORGE_INGESTION_DB_POSTAL_CODE_COLUMN,
-            "latitude": ADDRESSFORGE_INGESTION_DB_LATITUDE_COLUMN,
-            "longitude": ADDRESSFORGE_INGESTION_DB_LONGITUDE_COLUMN,
+            "external_id": external_id_column,
+            "raw_address_text": raw_address_column,
+            "city": city_column,
+            "province": province_column,
+            "postal_code": postal_code_column,
+            "latitude": latitude_column,
+            "longitude": longitude_column,
             "cursor_value": self.cursor_column,
         }
+
+    def _decode_cursor(self, cursor_value: str | None) -> tuple[str | None, str | None]:
+        if not cursor_value:
+            return None, None
+        if self.tie_breaker_column:
+            try:
+                payload = json.loads(cursor_value)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                return (
+                    None if payload.get("cursor") in (None, "") else str(payload.get("cursor")),
+                    None if payload.get("tiebreaker") in (None, "") else str(payload.get("tiebreaker")),
+                )
+        return str(cursor_value), None
+
+    def _encode_cursor(self, cursor_raw: Any, tie_raw: Any) -> str | None:
+        if cursor_raw in (None, ""):
+            return None
+        if self.tie_breaker_column:
+            return json.dumps(
+                {
+                    "cursor": str(cursor_raw),
+                    "tiebreaker": None if tie_raw in (None, "") else str(tie_raw),
+                },
+                separators=(",", ":"),
+            )
+        return str(cursor_raw)
 
     def _connect(self):
         return mysql.connector.connect(
@@ -121,14 +160,41 @@ class DatabaseIngestionProvider(BaseIngestionProvider):
 
     def fetch_page(self, cursor_value: str | None, batch_size: int) -> IngestionPage:
         batch_limit = batch_size or ADDRESSFORGE_INGESTION_DB_BATCH_SIZE
-        sql = f"""
-            SELECT *
-            FROM {self.table}
-            {f"WHERE {self.cursor_column} > %s" if cursor_value else ""}
-            ORDER BY {self.cursor_column} ASC
-            LIMIT %s
-        """
-        params: tuple[Any, ...] = (cursor_value, batch_limit) if cursor_value else (batch_limit,)
+        decoded_cursor, decoded_tiebreaker = self._decode_cursor(cursor_value)
+        if self.tie_breaker_column and decoded_cursor is not None:
+            sql = f"""
+                SELECT *
+                FROM {self.table}
+                WHERE (
+                    {self.cursor_column} > %s
+                    OR ({self.cursor_column} = %s AND {self.tie_breaker_column} > %s)
+                )
+                ORDER BY {self.cursor_column} ASC, {self.tie_breaker_column} ASC
+                LIMIT %s
+            """
+            params: tuple[Any, ...] = (decoded_cursor, decoded_cursor, decoded_tiebreaker or "", batch_limit)
+        elif decoded_cursor is not None:
+            sql = f"""
+                SELECT *
+                FROM {self.table}
+                WHERE {self.cursor_column} > %s
+                ORDER BY {self.cursor_column} ASC
+                LIMIT %s
+            """
+            params = (decoded_cursor, batch_limit)
+        else:
+            order_by = (
+                f"ORDER BY {self.cursor_column} ASC, {self.tie_breaker_column} ASC"
+                if self.tie_breaker_column
+                else f"ORDER BY {self.cursor_column} ASC"
+            )
+            sql = f"""
+                SELECT *
+                FROM {self.table}
+                {order_by}
+                LIMIT %s
+            """
+            params = (batch_limit,)
         conn = self._connect()
         cursor = conn.cursor(dictionary=True)
         try:
@@ -150,7 +216,7 @@ class DatabaseIngestionProvider(BaseIngestionProvider):
                 )
             )
             if row.get(self.cursor_column) is not None:
-                next_cursor = str(row.get(self.cursor_column))
+                next_cursor = self._encode_cursor(row.get(self.cursor_column), row.get(self.tie_breaker_column))
         has_more = len(rows) >= batch_limit
         return IngestionPage(records=records, next_cursor=next_cursor, has_more=has_more, source_name=self.source_name)
 
@@ -162,4 +228,3 @@ def resolve_ingestion_provider(mode: str | None = None) -> BaseIngestionProvider
     if normalized_mode in {"db", "database", "direct"}:
         return DatabaseIngestionProvider()
     raise ValueError(f"Unsupported ingestion mode: {mode}")
-

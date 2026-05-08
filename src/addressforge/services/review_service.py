@@ -16,6 +16,7 @@ _UNIT_HINT_TOKENS = (
 _COMMERCIAL_HINT_TOKENS = (
     "MALL", "PLAZA", "SQUARE", "TOWER", "OFFICE", "CENTRE", "CENTER", "PARK LANE", "SCOTIA"
 )
+_BALANCED_POOL_RE = r"Balanced pool:\s*([a-z_]+)"
 
 
 def _should_run_llm_prescreen(item: dict, detail: dict) -> bool:
@@ -73,6 +74,7 @@ def _run_llm_prescreen(item: dict, detail: dict) -> dict | None:
     building_type = suggestion.get("building_type") or infer_structure_type(
         raw_address_text=str(raw_text),
         parsed_unit_number=unit_number,
+        unit_source=current_result.get("unit_source"),
     )
     suggested_decision = suggestion.get("decision_hint") or (
         "review" if building_type in {"commercial", "multi_unit"} and not unit_number else "accept"
@@ -85,6 +87,37 @@ def _run_llm_prescreen(item: dict, detail: dict) -> dict | None:
         "decision": suggested_decision,
         "reasoning": suggestion.get("reasoning"),
     }
+
+
+def _prescreen_status(item: dict, detail: dict, cached: dict | None) -> str:
+    if cached:
+        return "ready"
+    if _should_run_llm_prescreen(item, detail):
+        return "pending"
+    return "not_required"
+
+
+def _extract_balanced_sample_pool(queue_reason: str | None) -> str | None:
+    text = str(queue_reason or "").strip()
+    if not text:
+        return None
+    import re
+
+    match = re.search(_BALANCED_POOL_RE, text, re.IGNORECASE)
+    if not match:
+        return None
+    return str(match.group(1) or "").strip().lower() or None
+
+
+def _merge_review_notes(queue_reason: str | None, user_notes: str | None) -> str | None:
+    parts: list[str] = []
+    pool_name = _extract_balanced_sample_pool(queue_reason)
+    if pool_name:
+        parts.append(f"[sample_pool={pool_name}]")
+    normalized_user_notes = str(user_notes or "").strip()
+    if normalized_user_notes:
+        parts.append(normalized_user_notes)
+    return " ".join(parts) if parts else None
 
 
 def _fetch_cleaning_detail(workspace_name: str, source_id: str) -> dict:
@@ -201,16 +234,7 @@ def get_review_queue(workspace_name=ADDRESSFORGE_WORKSPACE_NAME, limit=10):
             str(source_id),
             str(item.get("task_type") or "review"),
         )
-        if llm_prescreen is None:
-            llm_prescreen = _run_llm_prescreen(item, detail)
-            if llm_prescreen:
-                _upsert_prescreen_cache(
-                    workspace_name,
-                    str(item.get("source_name") or "address_cleaning_result"),
-                    str(source_id),
-                    str(item.get("task_type") or "review"),
-                    llm_prescreen,
-                )
+        prescreen_status = _prescreen_status(item, detail, llm_prescreen)
         llm_reasoning = (llm_prescreen or {}).get("reasoning")
         llm_summary = None
         if llm_prescreen:
@@ -219,6 +243,8 @@ def get_review_queue(workspace_name=ADDRESSFORGE_WORKSPACE_NAME, limit=10):
                 f", unit={llm_prescreen.get('unit_number') or 'none'}"
                 f", suggested decision={llm_prescreen.get('decision') or 'review'}."
             )
+        elif prescreen_status == "pending":
+            llm_summary = "LLM prescreen is still running for this sample."
         
         enriched_tasks.append({
             "task_id": task_id,
@@ -231,7 +257,12 @@ def get_review_queue(workspace_name=ADDRESSFORGE_WORKSPACE_NAME, limit=10):
             "building_type": detail.get("building_type"),
             "suggested_unit_number": detail.get("suggested_unit_number"),
             "llm_prescreen": llm_prescreen,
-            "llm_advice": llm_reasoning or "LLM prescreen not triggered for this sample.",
+            "llm_prescreen_status": prescreen_status,
+            "llm_advice": llm_reasoning or (
+                "LLM prescreen is pending for this sample."
+                if prescreen_status == "pending"
+                else "LLM prescreen not triggered for this sample."
+            ),
             "audit_tip": llm_summary or "Review the address fact first, then use system suggestion as guidance.",
             "risk_points": ["Partial street match", "Low confidence score (< 0.6)", "Ambiguous abbreviation in source"],
             "evidence": [
@@ -312,7 +343,7 @@ def submit_review(task_id, decision, notes, building_type=None, unit_number=None
         review_status="accepted",
         label_source="human",
         score=queue_item.get("confidence"),
-        notes=notes,
+        notes=_merge_review_notes(queue_item.get("reason"), notes),
     )
     with db_cursor() as (conn, cursor):
         cursor.execute(

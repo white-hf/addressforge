@@ -32,6 +32,38 @@ AddressForge 当前阶段不再优先追求“平台外壳更完整”，而是�
 4. 先形成标准地址资产，再扩平台体验
 5. 每个版本都必须能量化说明“比上一版更好还是更差”
 
+## 2.1 当前优化策略调整：从规则快速修正切到 ML 主导提升
+
+当前已经通过多轮高频错型修正，明显改善了：
+
+- `house -> commercial` 误判
+- `unit_number` 召回
+- `building_type` 稳定性
+
+但后续优化不能继续主要依赖不断新增规则。否则系统会停留在“规则不断增长、模型只做薄融合”的状态。
+
+从当前阶段开始，优化策略调整为：
+
+1. 规则只继续修复高频、结构性强、低成本可规则化的缺口
+2. 主导提升重心转向：
+   - parser reranking
+   - learned match-rule / pattern reliability
+   - unit presence / unit extraction 的学习型加权
+   - residential / commercial 边界的 gold 驱动融合
+   - LLM 结果作为融合信号，而不只是审核提示
+3. 每轮优化都应明确区分：
+   - 哪些提升来自规则
+   - 哪些提升来自模型 / 特征加权 / reranking
+4. 一旦某类错误已经能稳定从 gold + feature 中学会，就不再优先继续堆规则
+
+当前阶段最重要的模型化指标是：
+
+- `unit_number_f1`
+- `unit_recall`
+- `building_type_f1`
+
+后续这几个指标的主要提升，应越来越多来自训练 artifact 中的学习参数，而不是新增正则。
+
 ## 3. 迭代地图
 
 ### Iteration 1: Canada Parsing Baseline
@@ -218,6 +250,20 @@ AddressForge 当前阶段不再优先追求“平台外壳更完整”，而是�
 5. 版本绑定
 - benchmark / shadow / replay 必须能加载指定 model version 的 runtime
 - 不能再出现“评测挂在候选版本号上，但实际跑的是默认行为”
+
+6. 从规则修补切到学习型排序信号
+- 高频 parser 缺口补完后，新的质量提升应主要来自学习型信号
+- 训练 artifact 中必须逐步引入：
+  - parser source reliability
+  - match-rule / pattern reliability
+  - explicit unit-signal recovery weight
+  - residential vs commercial 边界提示权重
+- runtime candidate scoring 必须消费这些学习到的权重
+
+7. unit-first 模型提升
+- 当前阶段优先提升公寓 / 住宅 unit 召回，再继续扩商业细分类
+- 用 gold 学会哪些 parser pattern 和 unit cue 最容易产生正确 unit
+- 将 `unit_number_f1` 和 `unit_recall` 作为当前阶段的主要领先指标
 
 退出标准：
 

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import requests
+from addressforge.core.utils import logger
 
 from addressforge.core.common import normalize_space
 from addressforge.core.config import (
@@ -345,27 +346,43 @@ class LegacyBatchOrdersApiAdapter(BaseApiSourceAdapter):
         cursor_value: str | None,
         batch_size: int,
     ) -> IngestionPage:
+        import os
+        # Read directly from environ to support hot-reloading from .env.local
+        # 直接从环境读取以支持从 .env.local 进行热加载
+        manual_override = os.getenv("ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE", "")
         start_time = self._start_time(cursor_value)
-        batch_payload = self._request_json(
-            session,
-            context,
-            self.batchlist_endpoint,
-            params={
-                "branch": self.branch,
-                "hide_associated": ADDRESSFORGE_INGESTION_API_BATCHLIST_HIDE_ASSOCIATED,
-                "hide_sub_referrer": ADDRESSFORGE_INGESTION_API_BATCHLIST_HIDE_SUB_REFERRER,
-                "start_time": start_time,
-            },
-        )
-        batch_ids = [
-            str(batch.get("referer"))
-            for batch in batch_payload
-            if isinstance(batch, dict)
-            and str(batch.get("referer") or "").startswith("HA")
-            and int(batch.get("refer_count") or 0) > 0
-        ]
+
+        # --- STATIC BATCH OVERRIDE LOGIC ---
+        # --- 静态批次覆盖逻辑 ---
+        if manual_override:
+            logger.info("MANUAL OVERRIDE ACTIVE: Using batch list from config: %s", manual_override)
+            # Split by comma and clean whitespace
+            batch_ids = [b.strip() for b in manual_override.split(",") if b.strip()]
+        else:
+            # Standard path: Dynamic discovery via /getbatchlist
+
+            # 标准路径：通过 /getbatchlist 进行动态发现
+            batch_payload = self._request_json(
+                session,
+                context,
+                self.batchlist_endpoint,
+                params={
+                    "branch": self.branch,
+                    "hide_associated": ADDRESSFORGE_INGESTION_API_BATCHLIST_HIDE_ASSOCIATED,
+                    "hide_sub_referrer": ADDRESSFORGE_INGESTION_API_BATCHLIST_HIDE_SUB_REFERRER,
+                    "start_time": start_time,
+                },
+            )
+            batch_ids = [
+                str(batch.get("referer"))
+                for batch in batch_payload
+                if isinstance(batch, dict)
+                and str(batch.get("referer") or "").startswith("HA")
+                and int(batch.get("refer_count") or 0) > 0
+            ]
 
         records: list[IngestionRecord] = []
+
         next_cursor = start_time
         for batch_id in batch_ids:
             drivers_payload = self._request_json(
@@ -384,6 +401,9 @@ class LegacyBatchOrdersApiAdapter(BaseApiSourceAdapter):
                 for driver in drivers_payload
                 if isinstance(driver, dict) and int(driver.get("order_count") or 0) > 0 and driver.get("driver_id") is not None
             ]
+
+            logger.info("Found %d drivers in batch %s", len(driver_ids), batch_id)
+
             for driver_id in driver_ids:
                 orders_payload = self._request_json(
                     session,
@@ -429,19 +449,23 @@ class LegacyBatchOrdersApiAdapter(BaseApiSourceAdapter):
                             cursor_field="add_time",
                         )
                     )
-                    if len(records) >= batch_size:
+                    # Only return early if NOT in manual override mode
+                    # 仅在非手动覆盖模式下提前返回
+                    if not manual_override and len(records) >= batch_size:
                         return IngestionPage(
                             records=records,
                             next_cursor=str(next_cursor),
                             has_more=True,
                             source_name=context.source_name,
                         )
+
         return IngestionPage(
             records=records,
             next_cursor=str(next_cursor),
             has_more=False,
             source_name=context.source_name,
         )
+
 
 
 def resolve_api_source_adapter(name: str | None = None) -> BaseApiSourceAdapter:

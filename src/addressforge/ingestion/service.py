@@ -137,10 +137,21 @@ class IngestionService:
             return text
 
     def _retry(self, label: str, func, *args, attempts: int = 3, **kwargs):
+        import requests
         last_exc: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
                 return func(*args, **kwargs)
+            except requests.exceptions.HTTPError as exc:
+                # Terminal authentication errors - fail fast without retries
+                # 致命身份验证错误 - 快速失败，不进行重试
+                if exc.response is not None and exc.response.status_code in (401, 403):
+                    logger.error("Terminal authentication error during %s [%s]: %s", label, exc.response.status_code, exc)
+                    raise
+                last_exc = exc
+                logger.warning("Ingestion %s failed on attempt %s/%s: %s", label, attempt, attempts, exc)
+                if attempt < attempts:
+                    time.sleep(min(2.0 * attempt, 5.0))
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 logger.warning("Ingestion %s failed on attempt %s/%s: %s", label, attempt, attempts, exc)

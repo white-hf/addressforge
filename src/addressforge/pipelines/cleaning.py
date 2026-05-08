@@ -5,8 +5,9 @@ from datetime import datetime
 from typing import Any
 
 from addressforge.api.server import AddressRequest, service as address_service
-from addressforge.core.common import db_cursor, dumps_payload, fetch_all
+from addressforge.core.common import db_cursor, dumps_payload, fetch_all, has_numbered_road_signal
 from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
+from addressforge.core.utils import logger
 from addressforge.control.settings import get_setting
 from addressforge.models import get_workspace
 
@@ -70,6 +71,42 @@ def _get_existing_result(workspace_name: str, raw_id: int) -> dict[str, Any] | N
     return rows[0] if rows else None
 
 
+def _extract_feature_flags(raw_text: str, building_type: str, parsed: dict) -> dict[str, int]:
+    """
+    Identifies high-value structural patterns for strategic sampling.
+    识别用于战略抽样的高价值结构模式。
+    """
+    import re
+    text = str(raw_text or "").upper()
+    flags = {
+        "has_double_number": 0,
+        "is_numbered_road": 0,
+        "has_explicit_unit": 0,
+    }
+
+    text_without_postal = re.sub(r"\b[A-Z]\d[A-Z]\s*\d[A-Z]\d\b", " ", text)
+
+    # 1. Detect double-number boundary patterns while excluding postal-code noise.
+    # 1. 检测双数字边界模式，同时排除邮编噪音。
+    if re.search(r"^\s*\d+[A-Z]?\s+.+\s+\d+[A-Z]?\s+[A-Z][A-Z .'-]+\s+(?:NS|NB|ON|QC|PE|NL|MB|SK|AB|BC|YT|NT|NU)\b", text_without_postal):
+        flags["has_double_number"] = 1
+    elif re.search(r"^\s*\d+[A-Z]?\s+.+,\s*\d+[A-Z]?\s+[A-Z][A-Z .'-]+\s+(?:NS|NB|ON|QC|PE|NL|MB|SK|AB|BC|YT|NT|NU)\b", text_without_postal):
+        flags["has_double_number"] = 1
+
+    # 2. Detect Numbered Roads (e.g., Highway 325)
+    # 2. 检测编号道路 (例如 Highway 325)
+    street_name = str(parsed.get("street_name") or "").upper()
+    if has_numbered_road_signal(street_name) or has_numbered_road_signal(text):
+        flags["is_numbered_road"] = 1
+
+    # 3. Has Explicit Unit Key (e.g., APT, UNIT, SUITE)
+    # 3. 包含显式单元关键字 (例如 APT, UNIT, SUITE)
+    if re.search(r"(?:\b(?:APT|APARTMENT|UNIT|SUITE|STE|ROOM|RM|FLOOR|FL|BASEMENT|BSMT)\b|#\s*[A-Z0-9]+)", text):
+        flags["has_explicit_unit"] = 1
+
+    return flags
+
+
 def _upsert_stage_result(
     workspace_name: str,
     raw_row: dict[str, Any],
@@ -84,27 +121,40 @@ def _upsert_stage_result(
     validation = validation_result or {}
     canonical = validation.get("canonical") or {}
     reference = validation.get("reference") or {}
+    
+    # Extract structural feature flags for future strategic sampling
+    # 提取结构化特征标记以用于未来的战略抽样
+    best_candidate = (parse_result or {}).get("best_candidate") or {}
+    parsed_data = best_candidate.get("parsed") or {}
+    feature_flags = _extract_feature_flags(
+        str(raw_row.get("raw_address_text") or ""), 
+        validation.get("building_type", "unknown"), 
+        parsed_data
+    )
+
     with db_cursor() as (conn, cursor):
         cursor.execute(
             """
             INSERT INTO address_cleaning_result (
                 workspace_name, raw_id, raw_address_text, normalize_json, decision, confidence, reason,
                 building_type, suggested_unit_number, base_address_key, full_address_key,
-                parser_json, validation_json, reference_json, checkpoint_stage, checkpoint_status, checkpoint_error
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) AS new_row
+                parser_json, validation_json, reference_json, feature_flags,
+                checkpoint_stage, checkpoint_status, checkpoint_error
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) AS new_row
             ON DUPLICATE KEY UPDATE
                 raw_address_text = new_row.raw_address_text,
-                normalize_json = COALESCE(new_row.normalize_json, normalize_json),
-                decision = COALESCE(new_row.decision, decision),
-                confidence = COALESCE(new_row.confidence, confidence),
-                reason = COALESCE(new_row.reason, reason),
-                building_type = COALESCE(new_row.building_type, building_type),
-                suggested_unit_number = COALESCE(new_row.suggested_unit_number, suggested_unit_number),
-                base_address_key = COALESCE(new_row.base_address_key, base_address_key),
-                full_address_key = COALESCE(new_row.full_address_key, full_address_key),
-                parser_json = COALESCE(new_row.parser_json, parser_json),
-                validation_json = COALESCE(new_row.validation_json, validation_json),
-                reference_json = COALESCE(new_row.reference_json, reference_json),
+                normalize_json = COALESCE(new_row.normalize_json, address_cleaning_result.normalize_json),
+                decision = COALESCE(new_row.decision, address_cleaning_result.decision),
+                confidence = COALESCE(new_row.confidence, address_cleaning_result.confidence),
+                reason = COALESCE(new_row.reason, address_cleaning_result.reason),
+                building_type = COALESCE(new_row.building_type, address_cleaning_result.building_type),
+                suggested_unit_number = COALESCE(new_row.suggested_unit_number, address_cleaning_result.suggested_unit_number),
+                base_address_key = COALESCE(new_row.base_address_key, address_cleaning_result.base_address_key),
+                full_address_key = COALESCE(new_row.full_address_key, address_cleaning_result.full_address_key),
+                parser_json = COALESCE(new_row.parser_json, address_cleaning_result.parser_json),
+                validation_json = COALESCE(new_row.validation_json, address_cleaning_result.validation_json),
+                reference_json = COALESCE(new_row.reference_json, address_cleaning_result.reference_json),
+                feature_flags = new_row.feature_flags,
                 checkpoint_stage = new_row.checkpoint_stage,
                 checkpoint_status = new_row.checkpoint_status,
                 checkpoint_error = new_row.checkpoint_error,
@@ -125,6 +175,7 @@ def _upsert_stage_result(
                 dumps_payload(parse_result) if parse_result else None,
                 dumps_payload(validation_result) if validation_result else None,
                 dumps_payload(reference) if reference else None,
+                dumps_payload(feature_flags),
                 checkpoint_stage,
                 checkpoint_status,
                 checkpoint_error,
@@ -181,6 +232,41 @@ def _mark_pipeline_error(workspace_name: str, *, raw_id: int, stage: str, error_
     )
 
 
+def _safe_checkpoint_failure(
+    workspace_name: str,
+    row: dict[str, Any],
+    *,
+    current_stage: str,
+    normalize_result: dict[str, Any] | None,
+    parse_result: dict[str, Any] | None,
+    validation_result: dict[str, Any] | None,
+    error_text: str,
+) -> None:
+    try:
+        _upsert_stage_result(
+            workspace_name,
+            row,
+            checkpoint_stage=current_stage or "unknown",
+            checkpoint_status="failed",
+            normalize_result=normalize_result if isinstance(normalize_result, dict) else None,
+            parse_result=parse_result if isinstance(parse_result, dict) else None,
+            validation_result=validation_result if isinstance(validation_result, dict) else None,
+            checkpoint_error=error_text,
+        )
+    except Exception as checkpoint_exc:  # noqa: BLE001
+        logger.warning("Failed to persist cleaning failure checkpoint: %s", checkpoint_exc)
+
+    try:
+        _mark_pipeline_error(
+            workspace_name,
+            raw_id=int(row.get("raw_id") or 0),
+            stage=current_stage or "unknown",
+            error_text=error_text,
+        )
+    except Exception as mark_exc:  # noqa: BLE001
+        logger.warning("Failed to persist cleaning pipeline error status: %s", mark_exc)
+
+
 def run_cleaning_once(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, batch_size: int = 1000) -> dict[str, Any]:
     workspace = get_workspace(workspace_name) or {}
     workspace_profile = workspace.get("default_profile")
@@ -203,13 +289,26 @@ def run_cleaning_once(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, batch_s
 
     for row in rows:
         raw_id = int(row["raw_id"])
+        current_stage = "normalize"
         request = _build_request(row, profile=str(workspace_profile) if workspace_profile else None)
         existing = _get_existing_result(workspace_name, raw_id) or {}
-        normalize_result = existing.get("normalize_json")
-        parse_result = existing.get("parser_json")
-        validation_result = existing.get("validation_json")
+        
+        # Safely parse JSON fields from database
+        # 安全地从数据库解析 JSON 字段
+        def _parse_json(val: Any) -> dict | None:
+            if not val: return None
+            if isinstance(val, dict): return val
+            try:
+                return json.loads(str(val))
+            except Exception:
+                return None
+
+        normalize_result = _parse_json(existing.get("normalize_json"))
+        parse_result = _parse_json(existing.get("parser_json"))
+        validation_result = _parse_json(existing.get("validation_json"))
         try:
             if not normalize_result:
+                current_stage = "normalize"
                 _set_stage_progress(workspace_name, "normalize", raw_id)
                 normalize_result = address_service.normalize(request)
                 _upsert_stage_result(
@@ -221,6 +320,7 @@ def run_cleaning_once(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, batch_s
                 )
 
             if not parse_result:
+                current_stage = "parse"
                 _set_stage_progress(workspace_name, "parse", raw_id)
                 parse_result = address_service.parse(request)
                 _upsert_stage_result(
@@ -233,6 +333,7 @@ def run_cleaning_once(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, batch_s
                 )
 
             if not validation_result:
+                current_stage = "validate"
                 _set_stage_progress(workspace_name, "validate", raw_id)
                 validation_result = address_service.validate(request)
                 
@@ -259,6 +360,7 @@ def run_cleaning_once(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, batch_s
                     validation_result=validation_result,
                 )
 
+            current_stage = "publish"
             _set_stage_progress(workspace_name, "publish", raw_id)
             _upsert_stage_result(
                 workspace_name,
@@ -273,20 +375,13 @@ def run_cleaning_once(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, batch_s
             records_processed += 1
             last_validation = validation_result
         except Exception as exc:  # noqa: BLE001
-            _upsert_stage_result(
+            _safe_checkpoint_failure(
                 workspace_name,
                 row,
-                checkpoint_stage=get_setting(workspace_name, "cleaning.current_stage", "unknown") or "unknown",
-                checkpoint_status="failed",
+                current_stage=current_stage,
                 normalize_result=normalize_result if isinstance(normalize_result, dict) else None,
                 parse_result=parse_result if isinstance(parse_result, dict) else None,
                 validation_result=validation_result if isinstance(validation_result, dict) else None,
-                checkpoint_error=str(exc),
-            )
-            _mark_pipeline_error(
-                workspace_name,
-                raw_id=raw_id,
-                stage=str(get_setting(workspace_name, "cleaning.current_stage", "unknown") or "unknown"),
                 error_text=str(exc),
             )
             raise

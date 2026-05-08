@@ -142,7 +142,8 @@
             <div id="no-task-placeholder" class="py-20 text-center">
                 <div class="text-4xl mb-4">☕</div>
                 <h3 class="text-lg font-bold" data-i18n="no_pending_tasks">暂无待审核任务</h3>
-                <p class="text-slate-500" data-i18n="no_pending_tasks_desc">您可以去“批次管理”生成新的任务包。</p>
+                <p class="text-slate-500 mb-6" data-i18n="no_pending_tasks_desc">您可以去“批次管理”生成新的任务包。</p>
+                <button class="btn primary px-8 py-3" onclick="generateAndLoadBatch()" data-i18n="generate_next_batch">Generate Next Batch</button>
             </div>
 
             <div id="active-review-container" style="display: none;">
@@ -241,8 +242,40 @@ async function loadQueue() {
     } else {
         showEmpty();
         if (typeof showToast === 'function') {
-            showToast("Review queue is empty. Please ensure cleaning jobs are run.", "warn");
+            showToast(`Queue is empty! <a href="#" onclick="generateAndLoadBatch(); return false;" class="underline ml-2 font-bold text-white hover:text-emerald-100" data-i18n="generate_next_batch">Generate Next Batch →</a>`, "info");
+            translatePage();
         }
+    }
+}
+
+async function generateAndLoadBatch() {
+    if (typeof showToast === 'function') showToast("Generating new batch...", "info");
+    const res = await fetch('/api/v1/jobs/trigger', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            job_action: 'seed_review_batch',
+            payload: { limit: 50, strategy: 'uncertainty' }
+        })
+    });
+    if (res.ok) {
+        const result = await res.json();
+        if (result.inserted > 0) {
+            const b = result.breakdown || {};
+            const breakdownStr = Object.entries(b).map(([k, v]) => `${k}: ${v}`).join(', ');
+            const msg = `Strategic Batch Ready! Total: ${result.inserted} (${breakdownStr}). Loading queue...`;
+            const msg_zh = `战略批次已生成！共 ${result.inserted} 条 (${breakdownStr})。正在加载队列...`;
+            if (typeof showToast === 'function') showToast(localStorage.getItem('addressforge_lang') === 'zh' ? msg_zh : msg, "success");
+        } else {
+            const msg = "✅ All pending samples have high confidence. No tasks need manual review.";
+            const msg_zh = "✅ 太棒了！所有待处理样本均为高置信度，无需人工审核。";
+            if (typeof showToast === 'function') showToast(localStorage.getItem('addressforge_lang') === 'zh' ? msg_zh : msg, "success");
+        }
+        // Always try to load the queue to show existing or new data
+        // 始终尝试加载队列以显示现有或新数据
+        loadQueue();
+    } else {
+        if (typeof showToast === 'function') showToast("Error generating batch.", "error");
     }
 }
 
