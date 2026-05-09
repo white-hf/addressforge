@@ -140,6 +140,7 @@ async def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSP
         "job_kind_counts": count_jobs_by_kind(target_workspace),
         "recent_jobs": list_jobs(target_workspace, limit=10),
         "has_shadow_model": Path("runtime/models/decision_catboost_v1.cbm").exists(),
+        "has_reranker_model": Path("runtime/models/reranker_catboost_v1.cbm").exists(),
         "continuous_mode": {
             "is_enabled": _truthy_setting(get_setting(target_workspace, "continuous_mode.enabled", False)),
             "interval_seconds": int(get_setting(target_workspace, "continuous_mode.interval_seconds", 300) or 300),

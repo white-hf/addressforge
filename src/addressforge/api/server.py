@@ -44,6 +44,7 @@ from addressforge.learning import (
     upsert_gold_label,
 )
 from addressforge.services.model_service import get_model_service
+from addressforge.services.reranker_service import get_reranker_service
 
 
 APP_TITLE = "Address Platform API / 地址平台 API"
@@ -625,6 +626,7 @@ class AddressPlatformService:
         # New: ML Model Service for supervised decisioning
         # 新增：用于监督决策的 ML 模型服务
         self._model_service = get_model_service()
+        self._reranker_service = get_reranker_service()
 
     def _policy_float(self, key: str, default: float) -> float:
         value = self._decision_policy.get(key, default)
@@ -831,7 +833,12 @@ class AddressPlatformService:
         profile = get_profile(request.profile or self._default_profile or request.country_code or "CA")
         parsed_result = self.parse(request)
         candidates = parsed_result.get("candidates") or []
-        best = parsed_result["best_candidate"] or {}
+        
+        # New: Phase 10 - ML Candidate Reranking
+        # 新增：第 10 阶段 - ML 候选人重排
+        reranked_candidates = self._reranker_service.rerank_candidates(request.raw_address_text, candidates)
+        best = reranked_candidates[0] if reranked_candidates else {}
+        
         parsed = best.get("parsed") or {}
         normalized_raw_text = normalize_unit_signal_text(request.raw_address_text)
         normalized_city = normalize_city(parsed.get("city") or request.city)
@@ -1049,7 +1056,11 @@ class AddressPlatformService:
                 "postal_code": postal_code,
                 "country_code": request.country_code or "CA",
             },
-            "parser_result": parsed_result,
+            "parser_result": {
+                **parsed_result,
+                "candidates": reranked_candidates,
+                "best_candidate": best
+            },
             "reference": reference,
             "hints": {
                 "gps_conflict": bool(

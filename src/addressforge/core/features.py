@@ -41,7 +41,8 @@ class AddressFeatureExtractor:
         parsed: Dict[str, Any], 
         parser_name: str = "unknown",
         validation_context: Dict[str, Any] | None = None,
-        reference_context: Dict[str, Any] | None = None
+        reference_context: Dict[str, Any] | None = None,
+        best_candidate_score: float | None = None
     ) -> Dict[str, Any]:
         """
         Main entry point for feature extraction.
@@ -98,9 +99,14 @@ class AddressFeatureExtractor:
         # 6. Semantic Hints (语义暗示)
         features["has_explicit_unit_hint"] = 1 if _UNIT_HINT_RE.search(raw_text) else 0
         
-        # 7. Parser Provenance (解释器来源)
+        # 7. Parser Provenance & Score Delta (解释器来源与得分增量)
         features["parser_source"] = parser_name
         features["parse_confidence"] = float(parsed.get("parse_confidence", 0.5))
+        
+        # New Reranking Feature: Delta from the best heuristic score
+        # 新重排特征：与最佳启发式得分的差值
+        current_score = float(parsed.get("score") or parsed.get("parse_confidence") or 0.5)
+        features["score_delta"] = (best_candidate_score - current_score) if best_candidate_score is not None else 0.0
 
         return features
 
@@ -117,7 +123,7 @@ class AddressFeatureExtractor:
             "is_city_valid", "is_unit_redundant", "has_double_number", 
             "is_numbered_road", "has_hwy_keyword", "has_explicit_unit_hint",
             "confidence", "reference_score", "gps_conflict", "parser_disagreement",
-            "parse_confidence"
+            "parse_confidence", "score_delta"
         ]
         return [float(feature_dict.get(k, 0)) for k in ordered_keys]
 

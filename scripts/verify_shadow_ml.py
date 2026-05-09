@@ -19,10 +19,12 @@ def verify_shadow_ml():
             if res.status_code == 200:
                 data = res.json()
                 ml = data.get("ml_decision", {})
+                best = data.get("parser_result", {}).get("best_candidate", {})
                 print(f"Input: {tc['text']} ({tc['desc']})")
                 print(f"  Heuristic Decision: {data.get('decision')}")
-                print(f"  ML Score: {ml.get('ml_score')} | ML Decision: {ml.get('ml_decision')}")
-                print(f"  Status: {ml.get('status')}")
+                print(f"  ML Decision: {ml.get('ml_decision')} (Score: {ml.get('ml_score')})")
+                print(f"  Best Candidate Rerank Score: {best.get('rerank_score', 'N/A')}")
+                print(f"  Best Candidate Final Score: {best.get('final_score', 'N/A')}")
             else:
                 print(f"Error for {tc['text']}: HTTP {res.status_code}")
         except Exception as e:

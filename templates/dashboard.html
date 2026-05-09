@@ -104,7 +104,10 @@
                     <div class="text-xs text-slate-400 font-bold mb-2 uppercase" data-i18n="model_status">Model</div>
                     <div class="text-sm font-mono text-orange-600 mb-2" id="status-model">IDLE</div>
                     <div id="shadow-model-badge" class="hidden">
-                        <span class="pill good text-[10px] py-0.5 px-2">Shadow ML Active</span>
+                        <span class="pill good text-[10px] py-0.5 px-2">Decision ML Active</span>
+                    </div>
+                    <div id="reranker-model-badge" class="hidden mt-1">
+                        <span class="pill good text-[10px] py-0.5 px-2">Reranker ML Active</span>
                     </div>
                 </div>
             </div>
@@ -295,13 +298,20 @@ async function refreshStatus() {
     document.getElementById('status-model').textContent = (status.job_kind_counts.training_once || 0) > 0 ? "EVOLVING" : "IDLE";
     document.getElementById('status-assets').textContent = `${assets.total_buildings + assets.total_units} Assets`;
 
-    // New: Toggle Shadow Model Badge
+    // New: Toggle Shadow Model Badges
     // 新增：切换影子模型徽章
     const shadowBadge = document.getElementById('shadow-model-badge');
     if (status.has_shadow_model) {
         shadowBadge.classList.remove('hidden');
     } else {
         shadowBadge.classList.add('hidden');
+    }
+
+    const rerankerBadge = document.getElementById('reranker-model-badge');
+    if (status.has_reranker_model) {
+        rerankerBadge.classList.remove('hidden');
+    } else {
+        rerankerBadge.classList.add('hidden');
     }
 
     // Smart Nudge Logic

@@ -69,15 +69,21 @@ class ModelService:
             )
             vector = self.feature_extractor.vectorize(features)
             
-            # CatBoost predict_proba returns [P(0), P(1)]
-            # 1 is 'accepted', 0 is 'rejected'
+            # CatBoost predict_proba returns [P(0), P(1), P(2)]
+            # 0=reject, 1=accept, 2=review
             probs = self.model.predict_proba([vector])[0]
-            ml_score = float(probs[1])
+            
+            # Map probabilities to class names
+            # 将概率映射到类别名称
+            class_map = {0: "reject", 1: "accept", 2: "review"}
+            ml_decision_idx = int(self.model.predict([vector])[0][0])
+            ml_decision = class_map.get(ml_decision_idx, "review")
             
             return {
-                "ml_score": round(ml_score, 4),
+                "ml_score": round(float(probs[ml_decision_idx]), 4),
+                "probabilities": {class_map[i]: round(float(probs[i]), 4) for i in range(len(probs))},
                 "status": "success",
-                "ml_decision": "accept" if ml_score > 0.5 else "reject"
+                "ml_decision": ml_decision
             }
         except Exception as e:
             logger.error("ML Inference error: %s", e)

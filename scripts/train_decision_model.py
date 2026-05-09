@@ -13,24 +13,22 @@ from addressforge.core.common import fetch_all
 from addressforge.core.features import AddressFeatureExtractor
 
 def train_decision_model(workspace_name="default"):
-    print(f"Exporting training data for workspace: {workspace_name}")
+    print(f"Exporting 3-class training data for workspace: {workspace_name}")
     
-    # Query gold labels and associated raw/cleaning data
-    # Only include labels where source_id is numeric (representing raw_id)
+    # Query gold labels and associated cleaning results for 3-class labels
     query = """
         SELECT 
-            g.review_status as label_decision,
-            g.label_json as gold_json,
+            g.review_status as gold_status,
+            c.decision as system_decision,
             r.raw_address_text,
             c.parser_json,
             c.validation_json,
-            c.reference_json,
-            c.confidence as heuristic_confidence
+            c.reference_json
         FROM gold_label g
         JOIN raw_address_record r ON g.source_id = CAST(r.raw_id AS CHAR)
         LEFT JOIN address_cleaning_result c ON r.raw_id = c.raw_id
         WHERE g.workspace_name = %s
-          AND g.review_status IN ('accepted', 'rejected')
+          AND (g.review_status IN ('accepted', 'rejected'))
           AND g.source_id REGEXP '^[0-9]+$'
     """
     rows = fetch_all(query, (workspace_name,))
@@ -45,14 +43,22 @@ def train_decision_model(workspace_name="default"):
     X_list = []
     y_list = []
     
+    # Class mapping: 0=reject, 1=accept, 2=review
     for row in rows:
+        gold_status = row["gold_status"]
+        system_dec = row["system_decision"]
+        
+        if gold_status == "rejected":
+            target = 0
+        elif system_dec == "review":
+            target = 2
+        else:
+            target = 1
+            
         raw_text = row["raw_address_text"]
-        parser_json = json.loads(row["parser_json"]) if row["parser_json"] else {}
-        # Use the best candidate from parser_json if available
+        parser_json = json.loads(row["parser_json"]) if row.get("parser_json") else {}
         parsed = parser_json.get("best_candidate", {}).get("parsed", {})
         
-        # New: Include contexts for richer feature extraction
-        # 新增：包含上下文以进行更丰富的特征提取
         validation_ctx = json.loads(row["validation_json"]) if row.get("validation_json") else {}
         reference_ctx = json.loads(row["reference_json"]) if row.get("reference_json") else {}
 
@@ -67,24 +73,24 @@ def train_decision_model(workspace_name="default"):
         vector = extractor.vectorize(features)
         
         X_list.append(vector)
-        
-        # Label: accepted -> 1, rejected -> 0 (or multi-class if we add 'review')
-        # Since we only have accepted/rejected in training set for now
-        y_list.append(1 if row["label_decision"] == "accepted" else 0)
+        y_list.append(target)
 
     # Convert to DataFrame
     X = pd.DataFrame(X_list)
     y = pd.Series(y_list)
     
-    print(f"Training CatBoost model (X shape: {X.shape})...")
+    print(f"Label distribution: {y.value_counts().to_dict()}")
+    
+    print(f"Training 3-class CatBoost model (X shape: {X.shape})...")
     
     model = CatBoostClassifier(
         iterations=500,
         depth=6,
-        learning_rate=0.1,
-        loss_function='Logloss',
+        learning_rate=0.08,
+        loss_function='MultiClass',
         verbose=100,
-        random_seed=42
+        random_seed=42,
+        auto_class_weights='Balanced'
     )
     
     model.fit(X, y)
@@ -107,7 +113,7 @@ def train_decision_model(workspace_name="default"):
         "is_city_valid", "is_unit_redundant", "has_double_number", 
         "is_numbered_road", "has_hwy_keyword", "has_explicit_unit_hint",
         "confidence", "reference_score", "gps_conflict", "parser_disagreement",
-        "parse_confidence"
+        "parse_confidence", "score_delta"
     ]
     fi_df = pd.DataFrame({'feature': feature_names, 'importance': importance}).sort_values('importance', ascending=False)
     print("\nFeature Importance:")
