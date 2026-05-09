@@ -1011,6 +1011,35 @@ def run_baseline_training(
         if existing_model and existing_model.get("default_profile"):
             profile = str(existing_model["default_profile"])
         decision_policy = _derive_decision_policy(workspace_name)
+        from addressforge.learning.supervised_baseline import (
+            summarize_decision_training_dataset_balance,
+            train_decision_baseline
+        )
+
+        decision_label_balance = summarize_decision_training_dataset_balance(
+            workspace_name,
+            artifact_name=f"{model_name}_{model_version}_decision_balance",
+        )
+        
+        # New: Train the supervised CatBoost decision model
+        # 新增：训练监督式 CatBoost 决策模型
+        try:
+            ml_model_result = train_decision_baseline(
+                workspace_name=workspace_name,
+                model_name=f"{model_name}_catboost",
+                model_version=model_version
+            )
+            # Standardize the shadow model filename for ModelService consumption
+            # 为 ModelService 消费标准化影子模型文件名
+            if ml_model_result.get("model_type") == "catboost":
+                cb_model = ml_model_result["estimator"]
+                cb_model_path = Path("runtime/models/decision_catboost_v1.cbm")
+                cb_model_path.parent.mkdir(parents=True, exist_ok=True)
+                cb_model.save_model(str(cb_model_path))
+                logger.info("Shadow CatBoost model saved to %s", cb_model_path)
+        except Exception as ml_exc:
+            logger.warning("Failed to train shadow CatBoost model: %s", ml_exc)
+
         parser_weights = _derive_parser_weights(
             workspace_name,
             model_name=model_name,
@@ -1055,6 +1084,7 @@ def run_baseline_training(
             "gold_count": gold_count,
             "hard_sample_profile": hard_sample_profile,
             "label_consistency_diagnostics": label_consistency_diagnostics,
+            "decision_label_balance": decision_label_balance,
             "canada_benchmark": benchmark_summary,
             "notes": "baseline training artifact with learned decision policy",
         }
@@ -1076,9 +1106,10 @@ def run_baseline_training(
                 "decision_policy": decision_policy,
                 "hard_sample_profile": hard_sample_profile,
                 "label_consistency_diagnostics": label_consistency_diagnostics,
+                "decision_label_balance": decision_label_balance,
                 "canada_benchmark": benchmark_summary,
             },
-            notes=dumps_payload(artifact_payload),
+            notes=f"Training completed for {model_name}/{model_version} on {dataset_name}. Samples={sample_count}, Gold={gold_count}",
             is_default=int(existing_model.get("is_default") or 0) if existing_model else 0,
         )
         result = {

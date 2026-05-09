@@ -143,7 +143,10 @@
                 <div class="text-4xl mb-4">☕</div>
                 <h3 class="text-lg font-bold" data-i18n="no_pending_tasks">暂无待审核任务</h3>
                 <p class="text-slate-500 mb-6" data-i18n="no_pending_tasks_desc">您可以去“批次管理”生成新的任务包。</p>
-                <button class="btn primary px-8 py-3" onclick="generateAndLoadBatch()" data-i18n="generate_next_batch">Generate Next Batch</button>
+                <div class="flex flex-wrap items-center justify-center gap-3">
+                    <button class="btn primary px-8 py-3" onclick="generateAndLoadBatch()" data-i18n="generate_next_batch">Generate Next Batch</button>
+                    <button class="btn soft px-8 py-3" onclick="generateDecisionMinorityBatchAndLoad()">Generate Decision Minority Batch</button>
+                </div>
             </div>
 
             <div id="active-review-container" style="display: none;">
@@ -166,6 +169,32 @@
                     <button class="btn primary w-full py-4" onclick="handleDecision('correct')" data-i18n="correct_save">修正并保存</button>
                     <button class="btn warn w-full py-4" onclick="handleDecision('review')" data-i18n="mark_review">标记复核</button>
                     <button class="btn border border-slate-200 w-full py-4" onclick="skipTask()" data-i18n="skip">跳过</button>
+                </div>
+
+                <div class="mt-8">
+                    <div class="evidence-label">Structured Address Fields</div>
+                    <div class="grid grid-cols-2 gap-4 mt-2">
+                        <div>
+                            <label class="evidence-label">Street Number</label>
+                            <input id="review-street-number" class="w-full p-3 rounded-xl border border-slate-200 mt-2" placeholder="e.g. 1456 or 61A" />
+                        </div>
+                        <div>
+                            <label class="evidence-label">Street Name</label>
+                            <input id="review-street-name" class="w-full p-3 rounded-xl border border-slate-200 mt-2" placeholder="e.g. HERITAGE COURT" />
+                        </div>
+                        <div>
+                            <label class="evidence-label">City</label>
+                            <input id="review-city" class="w-full p-3 rounded-xl border border-slate-200 mt-2" placeholder="e.g. FALL RIVER" />
+                        </div>
+                        <div>
+                            <label class="evidence-label">Province</label>
+                            <input id="review-province" class="w-full p-3 rounded-xl border border-slate-200 mt-2" placeholder="e.g. NS" />
+                        </div>
+                        <div>
+                            <label class="evidence-label">Postal Code</label>
+                            <input id="review-postal-code" class="w-full p-3 rounded-xl border border-slate-200 mt-2" placeholder="Optional postal code" />
+                        </div>
+                    </div>
                 </div>
 
                 <div class="mt-8 grid grid-cols-2 gap-4">
@@ -224,9 +253,46 @@
     </aside>
 </div>
 
-<div class="review-footer">
-    <button class="btn px-8" onclick="saveOnly()" data-i18n="save_only">仅保存</button>
-    <button class="btn primary px-8" onclick="saveAndNext()" data-i18n="save_next">保存并下一条</button>
+<div class="review-footer flex items-center justify-between px-6 py-4">
+    <div class="flex gap-3">
+        <!-- New Reject Action -->
+        <button class="btn border border-rose-200 text-rose-600 bg-rose-50 hover:bg-rose-100 px-8" onclick="openRejectModal()" data-i18n="reject_next">拒绝并下一条</button>
+    </div>
+    <div class="flex gap-3">
+        <button class="btn px-8" onclick="saveOnly()" data-i18n="save_only">仅保存</button>
+        <button class="btn primary px-8" onclick="saveAndNext()" data-i18n="save_next">保存并下一条</button>
+    </div>
+</div>
+
+<!-- Reject Reason Modal -->
+<div id="reject-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden flex items-center justify-center">
+    <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+        <div class="p-6 border-b bg-rose-50">
+            <h3 class="text-xl font-bold text-rose-800" data-i18n="reject_title">拒绝原因 (Reject Reason)</h3>
+        </div>
+        <div class="p-8 flex flex-col gap-4">
+            <label class="flex items-center gap-3 p-4 rounded-xl border border-slate-100 hover:bg-slate-50 cursor-pointer transition-all">
+                <input type="radio" name="reject-reason" value="missing_number" class="w-5 h-5 text-rose-600" checked>
+                <span data-i18n="reason_missing_number">缺失街道号</span>
+            </label>
+            <label class="flex items-center gap-3 p-4 rounded-xl border border-slate-100 hover:bg-slate-50 cursor-pointer transition-all">
+                <input type="radio" name="reject-reason" value="missing_unit" class="w-5 h-5 text-rose-600">
+                <span data-i18n="reason_missing_unit">缺失单元号</span>
+            </label>
+            <label class="flex items-center gap-3 p-4 rounded-xl border border-slate-100 hover:bg-slate-50 cursor-pointer transition-all">
+                <input type="radio" name="reject-reason" value="invalid_format" class="w-5 h-5 text-rose-600">
+                <span data-i18n="reason_invalid_format">格式混乱/乱码</span>
+            </label>
+            <label class="flex items-center gap-3 p-4 rounded-xl border border-slate-100 hover:bg-slate-50 cursor-pointer transition-all">
+                <input type="radio" name="reject-reason" value="non_existent" class="w-5 h-5 text-rose-600">
+                <span data-i18n="reason_not_found">查无此地</span>
+            </label>
+        </div>
+        <div class="p-6 bg-slate-50 border-t flex justify-end gap-3">
+            <button class="btn soft px-6" onclick="closeRejectModal()" data-i18n="cancel">取消</button>
+            <button class="btn bg-rose-600 text-white hover:bg-rose-700 px-10" onclick="submitRejection()" data-i18n="confirm">确认拒绝</button>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -279,6 +345,32 @@ async function generateAndLoadBatch() {
     }
 }
 
+async function generateDecisionMinorityBatchAndLoad() {
+    if (typeof showToast === 'function') showToast("Generating decision minority-label batch...", "info");
+    const res = await fetch('/api/v1/review/seed-decision-minority-labels', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+    });
+    if (res.ok) {
+        const result = await res.json();
+        if ((result.inserted || 0) > 0) {
+            const bucketSummary = Object.entries(result.inserted_by_bucket || {})
+                .map(([key, value]) => `${key}: ${value}`)
+                .join(', ');
+            const msg = bucketSummary
+                ? `Decision minority batch ready! Total: ${result.inserted} (${bucketSummary}). Loading queue...`
+                : `Decision minority batch ready! Total: ${result.inserted}. Loading queue...`;
+            if (typeof showToast === 'function') showToast(msg, "success");
+        } else {
+            if (typeof showToast === 'function') showToast("No new decision minority-label samples were found.", "warn");
+        }
+        loadQueue();
+    } else {
+        if (typeof showToast === 'function') showToast("Error generating decision minority-label batch.", "error");
+    }
+}
+
 function renderQueue() {
     const container = document.getElementById('task-list');
     if (tasks.length === 0) {
@@ -309,8 +401,15 @@ function selectTask(index) {
     const llmPrescreen = task.llm_prescreen || null;
     const effectiveBuildingType = task.building_type || (llmPrescreen ? llmPrescreen.building_type : '') || '';
     const effectiveUnitNumber = task.suggested_unit_number || (llmPrescreen ? llmPrescreen.unit_number : '') || '';
+    const effectiveStreetNumber = task.street_number || (llmPrescreen ? llmPrescreen.street_number : '') || '';
+    const effectiveStreetName = task.street_name || (llmPrescreen ? llmPrescreen.street_name : '') || '';
     document.getElementById('review-building-type').value = effectiveBuildingType;
     document.getElementById('review-unit-number').value = effectiveUnitNumber;
+    document.getElementById('review-street-number').value = effectiveStreetNumber;
+    document.getElementById('review-street-name').value = effectiveStreetName;
+    document.getElementById('review-city').value = task.city || '';
+    document.getElementById('review-province').value = task.province || '';
+    document.getElementById('review-postal-code').value = task.postal_code || '';
     document.getElementById('review-notes').value = '';
     document.getElementById('curr-audit-tip').textContent = task.audit_tip || 'Review the core address fact first.';
     
@@ -338,14 +437,48 @@ function showEmpty() {
     document.getElementById('evidence-container').innerHTML = '';
 }
 
-async function handleDecision(decision) {
+function openRejectModal() {
+    if (currentTaskIndex < 0) return;
+    document.getElementById('reject-modal').classList.remove('hidden');
+}
+
+function closeRejectModal() {
+    document.getElementById('reject-modal').classList.add('hidden');
+}
+
+async function submitRejection() {
+    const task = tasks[currentTaskIndex];
+    const reason = document.querySelector('input[name="reject-reason"]:checked').value;
+    const notes = document.getElementById('review-notes').value || '';
+    
+    closeRejectModal();
+    showToast("Submitting rejection...", "info");
+    
+    // We send this as a 'rejected' status with the specific reason in notes
+    // 我们将其作为 'rejected' 状态发送，并在备注中说明具体原因
+    const finalNotes = `[REJECT:${reason}] ${notes}`;
+    
+    await handleDecision('reject', finalNotes);
+}
+
+async function handleDecision(decision, overrideNotes = null) {
     const task = tasks[currentTaskIndex];
     if (!task) return;
     
-    const notes = document.getElementById('review-notes').value;
+    const notes = overrideNotes !== null ? overrideNotes : document.getElementById('review-notes').value;
     const buildingType = document.getElementById('review-building-type').value || null;
     const unitNumberRaw = document.getElementById('review-unit-number').value;
     const unitNumber = unitNumberRaw.trim() ? unitNumberRaw.trim() : null;
+    const streetNumberRaw = document.getElementById('review-street-number').value;
+    const streetNameRaw = document.getElementById('review-street-name').value;
+    const cityRaw = document.getElementById('review-city').value;
+    const provinceRaw = document.getElementById('review-province').value;
+    const postalCodeRaw = document.getElementById('review-postal-code').value;
+    const streetNumber = streetNumberRaw.trim() ? streetNumberRaw.trim() : null;
+    const streetName = streetNameRaw.trim() ? streetNameRaw.trim() : null;
+    const city = cityRaw.trim() ? cityRaw.trim() : null;
+    const province = provinceRaw.trim() ? provinceRaw.trim() : null;
+    const postalCode = postalCodeRaw.trim() ? postalCodeRaw.trim() : null;
     
     try {
         const res = await fetch('/api/v1/review/submit', {
@@ -356,7 +489,12 @@ async function handleDecision(decision) {
                 decision: decision,
                 notes: notes,
                 building_type: buildingType,
-                unit_number: unitNumber
+                unit_number: unitNumber,
+                street_number: streetNumber,
+                street_name: streetName,
+                city: city,
+                province: province,
+                postal_code: postalCode
             })
         });
         

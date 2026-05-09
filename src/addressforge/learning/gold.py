@@ -1535,6 +1535,210 @@ def seed_decision_calibration_review_queue(
         finish_run(run_id, "failed", notes=dumps_payload({"error": str(exc)}))
         raise
 
+
+def seed_decision_minority_label_review_queue(
+    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
+    limit: int = 80,
+    confidence_threshold: float = 0.72,
+) -> dict[str, Any]:
+    """
+    Seeds a dedicated review batch to increase rare `review/reject` decision labels.
+    为稀缺的 `review/reject` decision 标签生成专门审核批次。
+    """
+    run_id = create_run("ml_active_learning", notes=f"decision minority label batch threshold={confidence_threshold}")
+    try:
+        candidates: list[dict[str, Any]] = []
+        bucket_queries = [
+            (
+                "decision_reject_candidate",
+                99,
+                """
+                SELECT raw_id, decision, confidence, reason, building_type, raw_address_text, suggested_unit_number
+                FROM address_cleaning_result
+                WHERE workspace_name = %s
+                  AND decision = 'reject'
+                ORDER BY confidence ASC, raw_id DESC
+                LIMIT %s
+                """,
+                (workspace_name, max(limit * 4, 160)),
+            ),
+            (
+                "decision_review_incomplete",
+                98,
+                """
+                SELECT raw_id, decision, confidence, reason, building_type, raw_address_text, suggested_unit_number
+                FROM address_cleaning_result
+                WHERE workspace_name = %s
+                  AND decision = 'review'
+                  AND reason = 'Address is incomplete and needs manual confirmation.'
+                ORDER BY confidence ASC, raw_id DESC
+                LIMIT %s
+                """,
+                (workspace_name, max(limit * 4, 160)),
+            ),
+            (
+                "decision_review_commercial",
+                97,
+                """
+                SELECT raw_id, decision, confidence, reason, building_type, raw_address_text, suggested_unit_number
+                FROM address_cleaning_result
+                WHERE workspace_name = %s
+                  AND decision = 'review'
+                  AND reason = 'Commercial-looking address parsed well, but unit details may need confirmation.'
+                ORDER BY confidence ASC, raw_id DESC
+                LIMIT %s
+                """,
+                (workspace_name, max(limit * 3, 120)),
+            ),
+            (
+                "decision_review_low_confidence",
+                96,
+                """
+                SELECT raw_id, decision, confidence, reason, building_type, raw_address_text, suggested_unit_number
+                FROM address_cleaning_result
+                WHERE workspace_name = %s
+                  AND decision = 'review'
+                  AND reason = 'Parser confidence is low; review is safer than rejection.'
+                ORDER BY confidence ASC, raw_id DESC
+                LIMIT %s
+                """,
+                (workspace_name, max(limit * 3, 120)),
+            ),
+            (
+                "decision_review_moderate",
+                95,
+                """
+                SELECT raw_id, decision, confidence, reason, building_type, raw_address_text, suggested_unit_number
+                FROM address_cleaning_result
+                WHERE workspace_name = %s
+                  AND decision = 'review'
+                  AND reason = 'Parser confidence is moderate; review is safer.'
+                  AND confidence <= %s
+                ORDER BY confidence ASC, raw_id DESC
+                LIMIT %s
+                """,
+                (workspace_name, confidence_threshold, max(limit * 3, 120)),
+            ),
+        ]
+
+        bucketed_candidates: dict[str, list[dict[str, Any]]] = {}
+        for bucket, priority, query, params in bucket_queries:
+            rows = fetch_all(query, params)
+            prepared: list[dict[str, Any]] = []
+            for row in rows:
+                source_id = str(row.get("raw_id") or "").strip()
+                if not source_id:
+                    continue
+                reason = str(row.get("reason") or "").strip()
+                prepared.append(
+                    {
+                        "source_name": "decision_minority_label",
+                        "source_id": source_id,
+                        "task_type": "review",
+                        "priority": priority,
+                        "confidence": row.get("confidence"),
+                        "reason": f"Decision minority label seeding [{bucket}]: {reason or 'review/reject label enrichment candidate'}",
+                        "bucket": bucket,
+                    }
+                )
+            bucketed_candidates[bucket] = prepared
+            candidates.extend(prepared)
+
+        bucket_counts: dict[str, int] = {bucket: len(items) for bucket, items in bucketed_candidates.items() if items}
+        all_candidate_source_ids = [str(item["source_id"]) for item in candidates if str(item.get("source_id") or "").strip()]
+        existing_source_ids = _existing_reviewed_or_queued_source_ids(
+            workspace_name,
+            all_candidate_source_ids,
+        )
+
+        deduped: list[dict[str, Any]] = []
+        seen_source_ids: set[str] = set()
+        ordered_buckets = [bucket for bucket, _priority, _query, _params in bucket_queries]
+        bucket_positions: dict[str, int] = {bucket: 0 for bucket in ordered_buckets}
+        while len(deduped) < limit:
+            made_progress = False
+            for bucket in ordered_buckets:
+                items = bucketed_candidates.get(bucket) or []
+                position = bucket_positions[bucket]
+                while position < len(items):
+                    item = items[position]
+                    position += 1
+                    source_id = str(item["source_id"]).strip()
+                    if not source_id or source_id in seen_source_ids or source_id in existing_source_ids:
+                        continue
+                    seen_source_ids.add(source_id)
+                    deduped.append(item)
+                    made_progress = True
+                    break
+                bucket_positions[bucket] = position
+                if len(deduped) >= limit:
+                    break
+            if not made_progress:
+                break
+
+        inserted = 0
+        inserted_bucket_counts: dict[str, int] = {}
+        with db_cursor() as (conn, cursor):
+            for item in deduped:
+                source_id = str(item["source_id"])
+                cursor.execute(
+                    """
+                    INSERT INTO active_learning_queue (
+                        workspace_name, source_name, source_id, task_type, priority, confidence, reason, status
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'queued') AS new_row
+                    ON DUPLICATE KEY UPDATE
+                        priority = new_row.priority,
+                        confidence = new_row.confidence,
+                        reason = new_row.reason,
+                        status = 'queued',
+                        updated_at = NOW()
+                    """,
+                    (
+                        workspace_name,
+                        str(item["source_name"]),
+                        source_id,
+                        str(item["task_type"]),
+                        int(item["priority"]),
+                        item.get("confidence"),
+                        str(item["reason"]),
+                    ),
+                )
+                inserted += 1
+                bucket = str(item.get("bucket") or "")
+                inserted_bucket_counts[bucket] = inserted_bucket_counts.get(bucket, 0) + 1
+            conn.commit()
+
+        finish_run(
+            run_id,
+            "completed",
+            notes=dumps_payload(
+                {
+                    "inserted": inserted,
+                    "candidates_found": len(candidates),
+                    "deduped_candidates": len(deduped),
+                    "bucket_counts": bucket_counts,
+                    "inserted_bucket_counts": inserted_bucket_counts,
+                    "limit": limit,
+                    "confidence_threshold": confidence_threshold,
+                }
+            ),
+        )
+        return {
+            "run_id": run_id,
+            "inserted": inserted,
+            "candidates_found": len(candidates),
+            "deduped_candidates": len(deduped),
+            "bucket_counts": bucket_counts,
+            "inserted_bucket_counts": inserted_bucket_counts,
+            "limit": limit,
+            "confidence_threshold": confidence_threshold,
+            "workspace_name": workspace_name,
+        }
+    except Exception as exc:
+        logger.exception("Decision minority-label review seeding failed: %s", exc)
+        finish_run(run_id, "failed", notes=dumps_payload({"error": str(exc)}))
+        raise
+
 def list_gold_labels(
     workspace_name: str,
     *,

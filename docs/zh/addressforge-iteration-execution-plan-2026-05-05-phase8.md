@@ -152,6 +152,55 @@
   - `review_rate`
   - 同时不回退 `building_type_f1 / unit_number_f1 / unit_recall`
 
+### 需求 8：新增监督学习模型基线层
+系统必须从“统计权重校准”进一步演进到“真正的监督学习模型层”，但不能推翻当前 parser/reference/canonical 主链。
+
+交付要求：
+- 新模型层必须先以并行 baseline 方式接入，不得直接替换当前 runtime 主链
+- 第一批目标任务限定为：
+  - `decision`
+  - `building_type`
+  - candidate reranking
+- 模型输入必须优先复用当前系统已稳定产出的结构化特征，而不是直接跳到端到端神经网络
+- 新模型层必须与当前权重法做并行对比，至少比较：
+  - `decision_f1`
+  - `building_type_f1`
+  - `unit_number_f1`
+  - `unit_recall`
+  - `OVER_SENSITIVE_REVIEW`
+- 第一版不得以“黑盒替换全部解析链”为目标，必须保持：
+  - parser 主链
+  - reference matching
+  - canonical assetization
+  的现有职责不变
+
+### 需求 9：控制台必须支持 decision minority-label 批次生成入口
+系统已经具备 `decision minority-label` 的后端 seeding 能力，但控制台必须补齐前端入口，避免该能力只停留在 API 层。
+
+交付要求：
+- `/review` 页面在队列为空或需要定向补 decision 少数类时，必须能直接触发 `decision minority-label` 批次生成
+- `Batch Management` 页面必须提供独立按钮，区分：
+  - 通用审核批次
+  - `decision minority-label` 批次
+- 入口触发后必须直接调用专用接口，而不是继续复用旧的 `seed_review_batch`
+- 生成成功后，用户必须能直接跳转或刷新到审核队列继续人工审核
+
+### 需求 10：审核页必须支持结构化地址字段修正
+当地址问题不只是 `building_type / unit`，而是 `street_number / street_name / city / province / postal_code` 解析错误时，审核页必须允许人工直接修正结构字段。
+
+交付要求：
+- `/review` 页面必须展示并允许编辑：
+  - `street_number`
+  - `street_name`
+  - `city`
+  - `province`
+  - `postal_code`
+  - `building_type`
+  - `unit_number`
+- `submit_review` 必须把这些结构化修正写入 `gold_label.label_json`
+- 新结构字段修正不得只停留在备注里，必须能进入后续训练与 benchmark 使用链路
+- 对于 “two Heritage Court ...” 这类文字数字门牌样本，人工修正必须能沉淀成正式 gold，而不是仅靠备注保留
+
 ## 5. 预期收益映射
 
 ### 任务 1：增量数据受控接入
@@ -170,6 +219,9 @@
 - **控制台 ingestion 配置切换**
   - 在控制台中直接切换 `API / DB` 导入模式，并维护 DB 表、游标列、tie-breaker 列与字段映射配置。
   - 收益：让历史回灌和日常第三方增量可以在同一控制台里安全切换，而不是依赖人工改 `.env.local`。
+- **配置持久化与触发前同步**
+  - 在新 `System Settings` 页面迁移后，补充 ingestion 配置的显式保存、未保存脏状态提示，以及在 `Start Sync` 前自动将待保存配置同步到运行时设置。
+  - 收益：避免界面上已切到 `API` 但后台仍沿用旧 `DB` 配置，减少因配置迁移导致的误导性导入失败。
 - **复合游标分页**
   - 对存在大量重复 `created_at` 的历史表，使用 `created_at + order_id` 这类复合游标分页，而不是单列时间游标。
   - 收益：避免 18w 回灌时因为相同时间戳分页而漏数。
@@ -240,6 +292,81 @@
   - `reject_rate`
   - `GENERAL_MISMATCH` error bucket count
   - `OVER_SENSITIVE_REVIEW` error bucket count
+
+### 任务 8：监督学习模型基线层
+- 预期收益：
+  - 将当前“可学习权重系统”升级为“真正的判别模型层”
+  - 提高复杂边界交互的学习能力，减少单纯手工调阈值的上限问题
+- 主要指标：
+  - `decision_f1`
+  - `building_type_f1`
+  - candidate reranking win rate
+- 次级指标：
+  - `unit_number_f1`
+  - `unit_recall`
+  - `OVER_SENSITIVE_REVIEW`
+  - model-vs-weights delta on fresh historical data
+
+拟采用的技术方法包括：
+- **表格监督模型 baseline**
+  - 使用 `CatBoost`、`HistGradientBoosting` 或同级 GBDT 模型，对现有结构化特征做监督学习 baseline。
+  - 收益：在保持解释性和工程可控性的前提下，提升复杂边界交互学习能力。
+- **并行双轨评估**
+  - 新模型层先与当前 `decision_policy / candidate_feature_weights / candidate_pair_weights` 并行评测，而不是直接替换。
+  - 收益：能明确回答“真正的监督模型是否已经超过当前权重法”。
+- **任务分阶段接入**
+  - 第一阶段只做 `decision`
+  - 第二阶段做 candidate reranking
+  - 第三阶段再评估是否独立做 `building_type`
+  - 收益：降低替换风险，避免一次性重构主链导致回归难定位。
+
+### 任务 9：控制台 decision minority-label 入口补齐
+- 预期收益：
+  - 把 `DecisionModel` 的少数类标签补强能力从“后端可用”升级成“控制台可直接操作”
+- 主要指标：
+  - minority-label batch generated count
+  - minority-label labeled count
+- 次级指标：
+  - review queue visibility
+  - human-to-gold turnaround time
+
+拟采用的技术方法包括：
+- **Review 页面空队列直达生成**
+  - 在 `/review` 页面空队列状态下增加“Generate Decision Minority Batch”按钮。
+  - 收益：当没有普通审核任务时，审核员可以直接拉起高价值 `decision` 少数类样本，而不是只能回退到旧的通用批次。
+- **Batch Management 独立入口**
+  - 在批次管理页增加独立按钮，专门调用 `seed-decision-minority-labels`。
+  - 收益：让运营/审核人员清楚区分“通用审核批次”和“DecisionModel 少数类补强批次”。
+- **前端路由显式分流**
+  - 前端按钮必须直连 `/api/v1/review/seed-decision-minority-labels`，而不是复用旧的 `jobs/trigger -> seed_review_batch`。
+  - 收益：避免按钮存在但仍生成错误样本池，保证前端动作和 ML 设计目标一致。
+- **候选去重必须先于 limit 截断**
+  - `decision minority-label` seeding 在做 limit 截断前，必须先排除已审核/已入队 source_id。
+  - 收益：避免“候选池实际还有新样本，但因为前 N 个都已用过而错误返回 0”的假空问题。
+- **按地址文本去重 minority-label 样本**
+  - `decision minority-label` seeding 不能只按 `source_id` 去重，还必须按标准化后的 `raw_address_text` 去重。
+  - 收益：避免同一地址因为不同 `raw_id` 或重复导入而多次进入人工审核，保护少数类训练样本质量。
+
+### 任务 10：审核页结构字段修正支持
+- 预期收益：
+  - 让 parser/normalization 错误能通过人工审核直接进入结构化 gold，而不是退化成自由文本备注
+- 主要指标：
+  - structured-review correction count
+  - street-number/street-name corrected gold count
+- 次级指标：
+  - number-word normalization sample count
+  - review-to-gold structured completeness ratio
+
+拟采用的技术方法包括：
+- **Review 页面结构字段编辑**
+  - 在审核页中增加 `street_number / street_name / city / province / postal_code` 输入控件，并用当前 parser/LLM 结果预填。
+  - 收益：人工修正结构错误时不再只能改 `building_type/unit`。
+- **结构化 gold 提交扩展**
+  - `submit_review` 在写入 `gold_label` 时，同时提交结构化字段修正。
+  - 收益：训练、benchmark、reranking 能直接消费这些结构化真值。
+- **文字数字地址修正闭环**
+  - 对 “two Heritage Court ... / Fourteen fifty six ...” 这类样本，人工修正的门牌号与街道名能够正式沉淀为 gold。
+  - 收益：为 number-word normalization 这类下一阶段 parser/ML 能力提供可学习监督。
 
 ## 6. 技术实现演进说明
 
@@ -515,7 +642,64 @@
     - single-unit parser_disagreement 放松
     - decision calibration 复审核批次生成
     - ordinal street + trailing residential keyword recovery
+    - leading bare-unit comma apartment recovery
+    - glued explicit-unit + civic recovery
+    - commercial/prefix-noise glued-tail repair
+
+### 需求 8：新增监督学习模型基线层
+拟采用的技术方法包括：
+- **保留 parser/reference 主链，新增监督学习层**
+  - 不推翻当前解析、reference、canonical 主链，而是在其之上增加判别模型层。
+  - 收益：保留现有工程优势，同时让模型学习能力真正升级。
+- **结构化特征优先**
+  - 第一版优先使用现有 runtime 已稳定产出的特征，如：
+    - parser confidence
+    - parser pattern
+    - unit_source
+    - reference score
+    - parser_disagreement
+    - numbered-road flag
+    - explicit/commercial hint
+  - 收益：先用低风险方式获得更强监督学习能力。
+- **表格模型优先，不先上神经网络**
+  - 第一阶段优先 `CatBoost` / `GBDT` / `HistGradientBoosting`，不直接引入端到端 Transformer parser。
+  - 收益：更适合当前 gold 规模、结构化任务和可解释性要求。
+- **CatBoost 作为正式一线 baseline**
+  - 当前实现中，`DecisionModel` 第一版已优先切到 `CatBoost`，仅在库不可用或训练失败时才退回 `numpy/scipy` softmax baseline。
+  - 收益：既满足“使用最适合本项目的库”，也保留环境异常时的工程连续性。
+- **baseline 并行评估**
+  - 新模型层必须和当前权重法并行跑 benchmark / shadow / fresh historical subset，对比真实收益。
+  - 收益：避免“为了上 ML 而上 ML”，确保替换是证据驱动的。
+- **环境安全的 baseline 回退**
+  - 在未安装 `sklearn/CatBoost` 的环境中，第一版 `DecisionModel` 允许退回到 `numpy/scipy` 的 softmax baseline，保证离线训练链路先跑通。
+  - 收益：让下一代 ML 演进不被单个新依赖卡死，先验证数据、特征和标签分布是否成立。
+
+当前代码载体：
+- `learning/trainer.py`
+- `learning/reranking_trainer.py`
+- `learning/evaluator.py`
+- `api/server.py`
+- `learning/supervised_baseline.py`
+
+技术演进要求：
+- 后续必须明确说明是在增强：
+  - `decision` 监督模型
+  - candidate reranking 监督模型
+  - `building_type` 监督模型
+  - 或更后续的 neural reranker
+  - 以及是在增强：
+    - 数据集导出
+    - 特征向量化
+    - CatBoost baseline 主实现
+    - baseline 训练回退能力
+    - 还是并行评估证据
     - compound residential unit keyword recovery
+    - repeated unit-civic 公寓恢复
+    - repeated civic single-unit accept 恢复
+    - glued token spacing repair
+    - malformed explicit-unit prefix recovery
+    - leading explicit-unit and residential-keyword civic recovery
+    - no-fallback explicit-unit city-tail recovery
   - 收益：直接压缩 `OVER_SENSITIVE_REVIEW`，且不回退 apartment/unit 主线。
 
 当前代码载体：
@@ -539,6 +723,7 @@
 5. 从 fresh subset 中抽取 high-value review / gold 候选，接入后续持续学习闭环。
 6. 在 review/gold 入口引入平衡式样本池与分层配比控制，防止 hardest cases 过度主导新 gold。
 7. 在 apartment/unit 主线恢复后，单独收口 `decision_f1`，并清理历史 gold 的非语义 task_type 对 decision 训练的污染。
+8. 在 `decision` 主线上落第一版监督学习 baseline，先完成数据集导出、结构化特征向量化和并行 benchmark 对照，不直接替换 runtime 主链。
 
 ## 12. 当前残余问题与进入 Phase 8 的原因
 
@@ -558,6 +743,15 @@ Phase 7 已经把内部已知数据上的 canonical/reference 主线基本收住
 
 4. **当前人工审核样本明显偏 hardest cases**
    - 这类样本适合做纠错，但不适合单独代表整体训练分布。
+
+5. **fresh historical review 已暴露出两类可专门收口的 parser/decision 模式**
+   - 18.6 万历史回灌清洗完成后，`review` 总量为 `5728`，其中主桶是：
+     - `single_unit`
+     - `Parser confidence is moderate; review is safer.`
+   - 抽样后已经确认两类最值得优先修复的模式：
+     - `505-1000 MICMAC BLVD 505 DARTMOUTH NS` 这类 repeated leading unit-civic 真公寓
+     - `33 MOUNTAIN MAPLE DR 33 TIMBERLEA NS` 这类 repeated civic single-unit
+   - 这两类应作为专门的 parser / decision 恢复闭环处理，而不是继续混在泛化 review 噪音里。
    - 如果不引入校准池和配比控制，模型会更容易被边界样本带偏。
 
 ## 13. 风险与关注点
@@ -592,6 +786,7 @@ Phase 7 已经把内部已知数据上的 canonical/reference 主线基本收住
 6. fresh-gold review 样本可直接供后续人工审核与训练使用
 7. 新人工审核批次可按纠错池 / 校准池明确生成，且训练前能量化新 gold 的样本结构。
 8. `decision_f1` 恢复到可与 active 基线直接竞争，且不以牺牲 `building_type_f1 / unit_number_f1 / unit_recall` 为代价。
+9. 第一版 `DecisionModel baseline` 已可稳定导出训练数据、训练离线 baseline，并能与当前权重法并行比较 benchmark / shadow 结果。
 
 ## 10. 风险与观察点
 - 如果新数据不能按批次隔离，fresh-data 分析会失真

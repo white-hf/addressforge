@@ -286,7 +286,7 @@ def run_baseline_shadow(
                     "decision": decision,
                 },
             },
-            notes=dumps_payload(artifact_payload),
+            notes=f"Shadow evaluation completed for {model_name}/{model_version}. Advantage={shadow_advantage:+.4f}, Recommendation={decision}",
             is_default=int(candidate_model.get("is_default") or 0),
         )
 

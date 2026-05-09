@@ -5,6 +5,7 @@ from addressforge.learning import (
     seed_active_learning_from_errors,
     seed_apartment_unit_hard_samples,
     seed_decision_calibration_review_queue,
+    seed_decision_minority_label_review_queue,
     seed_label_consistency_relabel_queue,
     seed_semantic_disambiguation_review_queue,
 )
@@ -30,6 +31,11 @@ class ReviewSubmitRequest(BaseModel):
     notes: str = ""
     building_type: str | None = None
     unit_number: str | None = None
+    street_number: str | None = None
+    street_name: str | None = None
+    city: str | None = None
+    province: str | None = None
+    postal_code: str | None = None
 
 @router.get("/queue")
 async def review_queue(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, limit: int = 10):
@@ -43,6 +49,11 @@ async def submit(payload: ReviewSubmitRequest):
         notes=payload.notes,
         building_type=payload.building_type,
         unit_number=payload.unit_number,
+        street_number=payload.street_number,
+        street_name=payload.street_name,
+        city=payload.city,
+        province=payload.province,
+        postal_code=payload.postal_code,
     )
 
 @router.post("/seed")
@@ -147,6 +158,29 @@ async def seed_decision_calibration_queue(
         _schedule_review_prescreen(background_tasks, workspace_name, int(result.get("inserted") or 0))
         return {
             "message": "Decision calibration review seeds queued",
+            "prescreen_status": "scheduled",
+            **result,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/seed-decision-minority-labels")
+async def seed_decision_minority_label_queue(
+    background_tasks: BackgroundTasks,
+    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
+    limit: int = 80,
+    confidence_threshold: float = 0.72,
+):
+    try:
+        result = seed_decision_minority_label_review_queue(
+            workspace_name=workspace_name,
+            limit=limit,
+            confidence_threshold=confidence_threshold,
+        )
+        _schedule_review_prescreen(background_tasks, workspace_name, int(result.get("inserted") or 0))
+        return {
+            "message": "Decision minority-label review seeds queued",
             "prescreen_status": "scheduled",
             **result,
         }

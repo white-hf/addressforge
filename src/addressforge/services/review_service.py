@@ -228,6 +228,7 @@ def get_review_queue(workspace_name=ADDRESSFORGE_WORKSPACE_NAME, limit=10):
         source_id = item["source_id"]
         
         detail = _fetch_cleaning_detail(workspace_name, str(source_id))
+        current_parse = _current_parse_payload(detail)
         llm_prescreen = _load_prescreen_cache(
             workspace_name,
             str(item.get("source_name") or "address_cleaning_result"),
@@ -256,6 +257,11 @@ def get_review_queue(workspace_name=ADDRESSFORGE_WORKSPACE_NAME, limit=10):
             "raw_address_text": detail.get("raw_address_text", ""),
             "building_type": detail.get("building_type"),
             "suggested_unit_number": detail.get("suggested_unit_number"),
+            "street_number": (llm_prescreen or {}).get("street_number") or current_parse.get("street_number"),
+            "street_name": (llm_prescreen or {}).get("street_name") or current_parse.get("street_name"),
+            "city": current_parse.get("city"),
+            "province": current_parse.get("province"),
+            "postal_code": current_parse.get("postal_code"),
             "llm_prescreen": llm_prescreen,
             "llm_prescreen_status": prescreen_status,
             "llm_advice": llm_reasoning or (
@@ -280,7 +286,18 @@ def get_review_queue(workspace_name=ADDRESSFORGE_WORKSPACE_NAME, limit=10):
         
     return enriched_tasks
 
-def submit_review(task_id, decision, notes, building_type=None, unit_number=None):
+def submit_review(
+    task_id,
+    decision,
+    notes,
+    building_type=None,
+    unit_number=None,
+    street_number=None,
+    street_name=None,
+    city=None,
+    province=None,
+    postal_code=None,
+):
     normalized_decision = "accept" if decision == "correct" else decision
     queue_rows = fetch_all(
         """
@@ -325,12 +342,19 @@ def submit_review(task_id, decision, notes, building_type=None, unit_number=None
         )
     
     cleaning = cleaning_rows[0] if cleaning_rows else {}
+    detail = _fetch_cleaning_detail(workspace_name, source_id)
+    current_parse = _current_parse_payload(detail)
     resolved_building_type = building_type or cleaning.get("building_type")
     resolved_unit_number = unit_number if unit_number is not None else cleaning.get("suggested_unit_number")
     label_json = {
         "decision": normalized_decision,
         "building_type": resolved_building_type,
         "unit_number": resolved_unit_number,
+        "street_number": str(street_number).strip() if street_number is not None and str(street_number).strip() else current_parse.get("street_number"),
+        "street_name": str(street_name).strip() if street_name is not None and str(street_name).strip() else current_parse.get("street_name"),
+        "city": str(city).strip() if city is not None and str(city).strip() else current_parse.get("city"),
+        "province": str(province).strip() if province is not None and str(province).strip() else current_parse.get("province"),
+        "postal_code": str(postal_code).strip() if postal_code is not None and str(postal_code).strip() else current_parse.get("postal_code"),
         "reason": cleaning.get("reason"),
         "review_action": decision,
     }

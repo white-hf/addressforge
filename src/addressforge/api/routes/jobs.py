@@ -58,14 +58,19 @@ async def trigger_generic_job(request: GenericJobRequest):
     
     job_kind = kind_map.get(request.job_action, request.job_action)
     
-    job = enqueue_job(
-        request.workspace_name, 
-        job_kind, 
-        request.payload, 
-        request.requested_by or "ui", 
-        request.priority
-    )
-    return {"status": "queued", "job": job}
+    try:
+        job = enqueue_job(
+            request.workspace_name, 
+            job_kind, 
+            request.payload, 
+            request.requested_by or "ui", 
+            request.priority
+        )
+        return {"status": "queued", "job": job}
+    except ValueError as exc:
+        # Handle duplicate suppression error
+        # 处理重复抑制错误
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.post("/train")

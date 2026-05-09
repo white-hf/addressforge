@@ -148,6 +148,38 @@ class TestConsoleFeatures(unittest.TestCase):
         self.assertEqual(status_body["ingestion_config"]["db"]["city_column"], "")
         self.assertEqual(status_body["ingestion_config"]["db"]["province_column"], "")
 
+    def test_ingestion_config_mode_switch_normalizes_source_name_defaults(self):
+        api_payload = {
+            "workspace_name": "test_console",
+            "mode": "api",
+            "source_name": "historical_db_backfill",
+            "api": {"batch_size": 1200},
+        }
+        response = self.client.post("/api/v1/control/ingestion-config", json=api_payload)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["ingestion_config"]["mode"], "api")
+        self.assertEqual(body["ingestion_config"]["source_name"], "third_party")
+
+        db_payload = {
+            "workspace_name": "test_console",
+            "mode": "db",
+            "source_name": "third_party",
+            "db": {
+                "batch_size": 2000,
+                "table": "address_raw_history",
+                "cursor_column": "created_at",
+                "tiebreaker_column": "order_id",
+                "external_id_column": "order_id",
+                "raw_address_column": "raw_address_text",
+            },
+        }
+        response = self.client.post("/api/v1/control/ingestion-config", json=db_payload)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["ingestion_config"]["mode"], "db")
+        self.assertEqual(body["ingestion_config"]["source_name"], "historical_db_backfill")
+
 
 class TestConsoleJobListLogic(unittest.TestCase):
     @patch("addressforge.control.jobs.db_cursor")

@@ -714,6 +714,13 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _default_ingestion_source_name_for_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().lower()
+    if normalized == "db":
+        return "historical_db_backfill"
+    return "third_party"
+
+
 def get_ingestion_runtime_config(workspace_name: str) -> dict[str, Any]:
     def _resolve_setting_text(setting_key: str, default: str) -> str:
         text = _get_setting_text(workspace_name, setting_key)
@@ -755,9 +762,19 @@ def update_ingestion_runtime_config(workspace_name: str, payload: dict[str, Any]
     mode = str(payload.get("mode") or "").strip().lower()
     if mode not in {"api", "db"}:
         raise ValueError("ingestion mode must be 'api' or 'db'")
+    raw_source_name = str(payload.get("source_name") or "").strip()
+    default_source_name = _default_ingestion_source_name_for_mode(mode)
+    if not raw_source_name:
+        resolved_source_name = default_source_name
+    elif mode == "api" and raw_source_name == "historical_db_backfill":
+        resolved_source_name = default_source_name
+    elif mode == "db" and raw_source_name == "third_party":
+        resolved_source_name = default_source_name
+    else:
+        resolved_source_name = raw_source_name
     updates: dict[str, Any] = {
         "ingestion.mode": mode,
-        "ingestion.source_name": str(payload.get("source_name") or ADDRESSFORGE_INGESTION_SOURCE_NAME).strip() or ADDRESSFORGE_INGESTION_SOURCE_NAME,
+        "ingestion.source_name": resolved_source_name,
     }
     api_payload = payload.get("api") if isinstance(payload.get("api"), dict) else {}
     db_payload = payload.get("db") if isinstance(payload.get("db"), dict) else {}
@@ -1382,7 +1399,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         else:
             raise ValueError(f"Unsupported job kind: {job_kind}")
         _store_job_result(job["job_id"], status="succeeded", result=result, etl_run_id=run_id)
-        finish_run(run_id, "completed", notes=dumps_payload(result if isinstance(result, dict) else {"result": str(result)}))
+        finish_run(run_id, "completed", notes=f"Job {job_kind} (id={job['job_id']}) completed successfully.")
         logger.info("Control job succeeded: job_id=%s kind=%s", job["job_id"], job_kind)
         return result
     except Exception as exc:  # noqa: BLE001

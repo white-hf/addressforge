@@ -14,6 +14,8 @@ const I18N_DATA = {
         "nav_assets_desc": "View & Correct Results",
         "nav_analytics": "Analytics & Reports",
         "nav_analytics_desc": "Quality & Gate Metrics",
+        "nav_settings": "System Settings",
+        "nav_settings_desc": "Data Sources & Global Config",
         "dashboard": "Control Center",
         "dashboard_desc": "Drives the address governance pipeline: from ingestion and cleaning to model evolution.",
         "review": "Review Lab",
@@ -104,6 +106,12 @@ const I18N_DATA = {
         "risk_label": "Risk Radar",
         "llm_advice_label": "LLM Correction Insight",
         "save_only": "Save Only",
+        "reject_next": "Reject & Next",
+        "reject_title": "Reject Reason",
+        "reason_missing_number": "Missing Street Number",
+        "reason_missing_unit": "Missing Unit Number",
+        "reason_invalid_format": "Malformed/Gibberish",
+        "reason_not_found": "Non-existent Address",
         "empty_queue": "Queue is currently empty.",
         "pending_total_label": "Pending Total",
         "finished_unfrozen_label": "Finished (Unfrozen)",
@@ -154,7 +162,36 @@ const I18N_DATA = {
         "promote_recommended": "✓ Promote Recommended",
         "gate_blocked": "✕ Gate Blocked",
         "no_metrics": "No comparative metrics available.",
-        "no_reports": "No report records found."
+        "no_reports": "No report records found.",
+        "hint_ingestion_mode": "Switch between API (incremental from delivery platform) and DB (historical backfill from local tables).",
+        "hint_source_name": "Unique identifier for this source, used for progress tracking and attribution.",
+        "hint_api_batch_size": "Maximum records to fetch per API request page.",
+        "hint_db_batch_size": "Number of records to process per database read chunk.",
+        "hint_db_table": "The source database table name containing raw addresses.",
+        "hint_cursor_column": "Primary column to track synchronization progress (usually an auto-incrementing ID).",
+        "hint_tiebreaker_column": "Secondary column to ensure stable result ordering during cursor moves.",
+        "hint_external_id_column": "The original unique identifier from the source system, used for deduplication.",
+        "hint_raw_address_column": "The field containing the full unparsed address string.",
+        "hint_postal_code_column": "Mapping for source postal/zip code field (optional).",
+        "hint_latitude_column": "Mapping for source GPS Latitude field (optional).",
+        "hint_longitude_column": "Mapping for source GPS Longitude field (optional).",
+        "hint_city_column": "Mapping for source City name field (optional).",
+        "hint_province_column": "Mapping for source Province/State field (optional).",
+        "settings_mode": "Ingestion Mode",
+        "settings_source_name": "Source Name",
+        "settings_api_batch": "API Batch Size",
+        "settings_db_batch": "DB Batch Size",
+        "settings_table_name": "Table Name",
+        "settings_cursor_col": "Cursor Column",
+        "settings_tiebreaker_col": "Tie-breaker Column",
+        "settings_ext_id_col": "External ID Column",
+        "settings_raw_addr_col": "Raw Address Column",
+        "settings_postal_col": "Postal Code Column",
+        "settings_lat_col": "Latitude Column",
+        "settings_lon_col": "Longitude Column",
+        "settings_city_col": "City Column",
+        "settings_province_col": "Province Column",
+        "save_config": "Save Configuration"
     },
     "zh": {
         "app_title": "地址审核系统",
@@ -171,6 +208,8 @@ const I18N_DATA = {
         "nav_assets_desc": "查看与修正已审核的数据",
         "nav_analytics": "质量与报表中心",
         "nav_analytics_desc": "模型质量与准入指标分析",
+        "nav_settings": "系统设置",
+        "nav_settings_desc": "数据源与全局配置",
         "dashboard": "控制中心",
         "dashboard_desc": "驱动地址治理全流水线：从摄入、清洗到模型演进。",
         "review": "专家审核",
@@ -261,6 +300,12 @@ const I18N_DATA = {
         "risk_label": "风险雷达",
         "llm_advice_label": "LLM 修正建议",
         "save_only": "仅保存",
+        "reject_next": "拒绝并下一条",
+        "reject_title": "拒绝原因",
+        "reason_missing_number": "缺失街道号",
+        "reason_missing_unit": "缺失单元号",
+        "reason_invalid_format": "格式混乱/乱码",
+        "reason_not_found": "查无此地",
         "empty_queue": "当前队列为空。",
         "pending_total_label": "待审核总数",
         "finished_unfrozen_label": "已完成（未冻结）",
@@ -311,7 +356,36 @@ const I18N_DATA = {
         "promote_recommended": "✓ 建议发布",
         "gate_blocked": "✕ 准入受限",
         "no_metrics": "暂无对比指标。",
-        "no_reports": "暂无报表记录。"
+        "no_reports": "暂无报表记录。",
+        "hint_ingestion_mode": "切换数据接入模式：API（从配送平台增量抓取）或 DB（从本地数据库表历史回填）。",
+        "hint_source_name": "数据源的唯一标识，用于进度追踪和归因。",
+        "hint_api_batch_size": "每次 API 请求拉取的最大记录数。",
+        "hint_db_batch_size": "每次数据库读取的数据块大小。",
+        "hint_db_table": "存储原始地址数据的源数据库表名。",
+        "hint_cursor_column": "用于追踪同步进度的主要列（通常为自增 ID）。",
+        "hint_tiebreaker_column": "辅助排序列，确保游标移动时结果顺序稳定。",
+        "hint_external_id_column": "原始系统中的唯一标识符，用于数据去重。",
+        "hint_raw_address_column": "包含完整未解析地址字符串的字段。",
+        "hint_postal_code_column": "映射源数据中的邮编字段（可选）。",
+        "hint_latitude_column": "映射源数据中的 GPS 纬度字段（可选）。",
+        "hint_longitude_column": "映射源数据中的 GPS 经度字段（可选）。",
+        "hint_city_column": "映射源数据中的城市名称字段（可选）。",
+        "hint_province_column": "映射源数据中的省份字段（可选）。",
+        "settings_mode": "接入模式",
+        "settings_source_name": "数据源名称",
+        "settings_api_batch": "API 批次大小",
+        "settings_db_batch": "数据库批次大小",
+        "settings_table_name": "数据库表名",
+        "settings_cursor_col": "游标列 (ID/时间)",
+        "settings_tiebreaker_col": "冲突解决列",
+        "settings_ext_id_col": "原始 ID 字段",
+        "settings_raw_addr_col": "原始地址字段",
+        "settings_postal_col": "邮编字段",
+        "settings_lat_col": "纬度字段",
+        "settings_lon_col": "经度字段",
+        "settings_city_col": "城市字段",
+        "settings_province_col": "省份字段",
+        "save_config": "保存配置"
     }
 };
 
@@ -328,6 +402,13 @@ function setLanguage(lang) {
         const key = el.getAttribute('data-i18n-placeholder');
         if (I18N_DATA[lang] && I18N_DATA[lang][key]) {
             el.placeholder = I18N_DATA[lang][key];
+        }
+    });
+    // Support titles (tooltips)
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const key = el.getAttribute('data-i18n-title');
+        if (I18N_DATA[lang] && I18N_DATA[lang][key]) {
+            el.title = I18N_DATA[lang][key];
         }
     });
 }

@@ -7,6 +7,7 @@ from addressforge.learning.gold import (
     _looks_like_residential_unit_relabel_candidate,
     _looks_like_semantic_ambiguity_candidate,
     seed_decision_calibration_review_queue,
+    seed_decision_minority_label_review_queue,
     seed_active_learning_queue,
 )
 
@@ -221,6 +222,70 @@ class TestGoldSampling(unittest.TestCase):
         self.assertTrue(all(call.args[1][3] == "review" for call in insert_calls))
         inserted_reasons = [call.args[1][6] for call in insert_calls]
         self.assertTrue(any("Decision calibration" in reason for reason in inserted_reasons))
+
+    @patch("addressforge.learning.gold.fetch_all")
+    @patch("addressforge.learning.gold.db_cursor")
+    @patch("addressforge.learning.gold.create_run", return_value=299)
+    @patch("addressforge.learning.gold.finish_run")
+    @patch("addressforge.learning.gold._existing_reviewed_or_queued_source_ids", return_value=set())
+    def test_seed_decision_minority_label_review_queue(self, mock_existing, mock_finish, mock_create, mock_db, mock_fetch):
+        mock_fetch.side_effect = [
+            [
+                {
+                    "raw_id": 703,
+                    "decision": "reject",
+                    "confidence": 0.12,
+                    "reason": "Address is too incomplete to parse safely.",
+                    "building_type": "",
+                    "raw_address_text": "UNKNOWN LOT NS",
+                    "suggested_unit_number": None,
+                }
+            ],
+            [
+                {
+                    "raw_id": 701,
+                    "decision": "review",
+                    "confidence": 0.41,
+                    "reason": "Address is incomplete and needs manual confirmation.",
+                    "building_type": "single_unit",
+                    "raw_address_text": "N/A 11 EAGLE RD, Bible Hill, NS",
+                    "suggested_unit_number": None,
+                }
+            ],
+            [
+                {
+                    "raw_id": 702,
+                    "decision": "review",
+                    "confidence": 0.55,
+                    "reason": "Commercial-looking address parsed well, but unit details may need confirmation.",
+                    "building_type": "commercial",
+                    "raw_address_text": "University of Kings College6350 COBURG ROAD HALIFAX NS",
+                    "suggested_unit_number": None,
+                }
+            ],
+            [],
+            [],
+        ]
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_db.return_value.__enter__.return_value = (mock_conn, mock_cursor)
+
+        result = seed_decision_minority_label_review_queue(workspace_name="default", limit=10)
+
+        self.assertEqual(result["inserted"], 3)
+        self.assertEqual(result["bucket_counts"]["decision_reject_candidate"], 1)
+        self.assertEqual(result["bucket_counts"]["decision_review_incomplete"], 1)
+        self.assertEqual(result["bucket_counts"]["decision_review_commercial"], 1)
+
+        insert_calls = [
+            call for call in mock_cursor.execute.call_args_list
+            if "INSERT INTO active_learning_queue" in call.args[0]
+        ]
+        self.assertEqual(len(insert_calls), 3)
+        inserted_reasons = [call.args[1][6] for call in insert_calls]
+        self.assertTrue(any("decision_reject_candidate" in reason for reason in inserted_reasons))
+        self.assertTrue(any("decision_review_incomplete" in reason for reason in inserted_reasons))
+        self.assertTrue(any("decision_review_commercial" in reason for reason in inserted_reasons))
         self.assertTrue(
             _looks_like_semantic_ambiguity_candidate(
                 "Upper 123 Main St, Halifax, NS",
@@ -235,6 +300,84 @@ class TestGoldSampling(unittest.TestCase):
                 None,
             )
         )
+
+    @patch("addressforge.learning.gold.fetch_all")
+    @patch("addressforge.learning.gold.db_cursor")
+    @patch("addressforge.learning.gold.create_run", return_value=399)
+    @patch("addressforge.learning.gold.finish_run")
+    @patch(
+        "addressforge.learning.gold._existing_reviewed_or_queued_source_ids",
+        return_value={"701", "702", "703"},
+    )
+    def test_seed_decision_minority_label_skips_existing_before_limit(self, mock_existing, mock_finish, mock_create, mock_db, mock_fetch):
+        mock_fetch.side_effect = [
+            [
+                {
+                    "raw_id": 703,
+                    "decision": "reject",
+                    "confidence": 0.12,
+                    "reason": "Address is too incomplete to parse safely.",
+                    "building_type": "",
+                    "raw_address_text": "UNKNOWN LOT NS",
+                    "suggested_unit_number": None,
+                },
+                {
+                    "raw_id": 704,
+                    "decision": "reject",
+                    "confidence": 0.18,
+                    "reason": "Address is too incomplete to parse safely.",
+                    "building_type": "",
+                    "raw_address_text": "UNKNOWN LOT 2 NS",
+                    "suggested_unit_number": None,
+                },
+            ],
+            [
+                {
+                    "raw_id": 701,
+                    "decision": "review",
+                    "confidence": 0.41,
+                    "reason": "Address is incomplete and needs manual confirmation.",
+                    "building_type": "single_unit",
+                    "raw_address_text": "N/A 11 EAGLE RD, Bible Hill, NS",
+                    "suggested_unit_number": None,
+                },
+                {
+                    "raw_id": 705,
+                    "decision": "review",
+                    "confidence": 0.44,
+                    "reason": "Address is incomplete and needs manual confirmation.",
+                    "building_type": "single_unit",
+                    "raw_address_text": "N/A 15 EAGLE RD, Bible Hill, NS",
+                    "suggested_unit_number": None,
+                },
+            ],
+            [
+                {
+                    "raw_id": 702,
+                    "decision": "review",
+                    "confidence": 0.55,
+                    "reason": "Commercial-looking address parsed well, but unit details may need confirmation.",
+                    "building_type": "commercial",
+                    "raw_address_text": "University of Kings College6350 COBURG ROAD HALIFAX NS",
+                    "suggested_unit_number": None,
+                }
+            ],
+            [],
+            [],
+        ]
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_db.return_value.__enter__.return_value = (mock_conn, mock_cursor)
+
+        result = seed_decision_minority_label_review_queue(workspace_name="default", limit=2)
+
+        self.assertEqual(result["inserted"], 2)
+        insert_calls = [
+            call for call in mock_cursor.execute.call_args_list
+            if "INSERT INTO active_learning_queue" in call.args[0]
+        ]
+        inserted_source_ids = [call.args[1][2] for call in insert_calls]
+        self.assertEqual(inserted_source_ids, ["704", "705"])
 
 if __name__ == "__main__":
     unittest.main()

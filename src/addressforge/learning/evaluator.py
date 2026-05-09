@@ -663,15 +663,7 @@ def run_baseline_evaluation(
                 "metric_value": metric_value,
                 **metrics_json,
             },
-            notes=dumps_payload(
-                {
-                    "artifact_path": str(artifact_path),
-                    "model_name": model_name,
-                    "model_version": model_version,
-                    "dataset_name": dataset_name,
-                    **metrics_json,
-                }
-            ),
+            notes=f"Evaluation completed for model={model_name}/{model_version} on dataset={dataset_name}. {metric_name}={metric_value:.4f}",
             is_default=0,
         )
         # 7. Final Artifact Creation & Markdown Reporting
@@ -684,16 +676,7 @@ def run_baseline_evaluation(
         finish_run(
             run_id,
             "completed",
-            notes=dumps_payload(
-                {
-                    "workspace_name": workspace_name,
-                    "artifact_path": str(artifact_path),
-                    "report_path": str(report_path),
-                    "model_name": model_name,
-                    "model_version": model_version,
-                    **metrics_json,
-                }
-            ),
+            notes=f"Evaluation completed. metric={metric_name}:{metric_value:.4f}",
         )
         logger.info("Evaluation and Markdown report completed. Run ID: %s", run_id)
         return asdict(artifact)

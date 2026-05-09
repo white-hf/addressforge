@@ -152,6 +152,55 @@ Delivery requirements:
   - `review_rate`
   while protecting `building_type_f1 / unit_number_f1 / unit_recall`
 
+### Requirement 8: Add a supervised model baseline layer
+The system must evolve from “statistical weight calibration” toward a true supervised model layer, without replacing the existing parser/reference/canonical mainline.
+
+Delivery requirements:
+- the new model layer must first be introduced as a parallel baseline, not as a direct runtime replacement
+- the first target tasks are limited to:
+  - `decision`
+  - `building_type`
+  - candidate reranking
+- the first model version must prioritize existing structured runtime features instead of jumping directly to end-to-end neural parsing
+- the new model layer must be evaluated side-by-side with the current weight-based approach on at least:
+  - `decision_f1`
+  - `building_type_f1`
+  - `unit_number_f1`
+  - `unit_recall`
+  - `OVER_SENSITIVE_REVIEW`
+- the first version must not aim to replace the full parsing chain as a black box; the existing responsibilities of:
+  - parser mainline
+  - reference matching
+  - canonical assetization
+  must remain intact
+
+### Requirement 9: The console must support a decision minority-label batch entry point
+The backend already supports `decision minority-label` seeding, but the console must expose a direct frontend entry point so the capability does not remain API-only.
+
+Delivery requirements:
+- the `/review` page must be able to trigger `decision minority-label` batch generation when the queue is empty or when targeted decision minority-label reinforcement is needed
+- the `Batch Management` page must provide a dedicated button that distinguishes:
+  - general review batches
+  - `decision minority-label` batches
+- the frontend trigger must call the dedicated endpoint directly instead of reusing the old `seed_review_batch`
+- after generation, the operator must be able to refresh or jump directly into the review queue
+
+### Requirement 10: The review page must support structured address-field correction
+When the address problem is not only `building_type / unit`, but also a parsing failure in `street_number / street_name / city / province / postal_code`, the review page must allow direct structured correction.
+
+Delivery requirements:
+- the `/review` page must display and allow editing of:
+  - `street_number`
+  - `street_name`
+  - `city`
+  - `province`
+  - `postal_code`
+  - `building_type`
+  - `unit_number`
+- `submit_review` must write those structured corrections into `gold_label.label_json`
+- the new structured corrections must not remain only in free-form notes; they must enter the downstream training and benchmark flow
+- for cases such as `two Heritage Court ...`, human correction must become formal gold instead of being preserved only as commentary
+
 ## 5. Expected Benefit Mapping
 
 ### Task 1: Controlled incremental data intake
@@ -170,6 +219,9 @@ Planned technical methods:
 - **Console-side ingestion configuration switching**
   - add a console control that can switch between `API / DB` ingestion modes and maintain DB table, cursor, tie-breaker, and field-mapping settings.
   - benefit: historical backfill and day-to-day third-party incremental intake can be switched safely inside the console instead of relying on manual `.env.local` edits.
+- **Configuration persistence and pre-sync synchronization**
+  - after moving ingestion settings into the new `System Settings` page, add explicit save behavior, unsaved-change visibility, and automatic synchronization of pending ingestion settings before `Start Sync`.
+  - benefit: prevents the UI from showing `API` mode while the backend still runs with the old `DB` runtime config, reducing misleading import failures after the console refactor.
 - **Composite cursor pagination**
   - for historical tables with many duplicate `created_at` values, page by a composite cursor such as `created_at + order_id` instead of a single timestamp cursor.
   - benefit: avoids row loss during 180k-scale DB backfill.
@@ -240,6 +292,78 @@ Planned technical methods:
   - `reject_rate`
   - `GENERAL_MISMATCH` error-bucket count
   - `OVER_SENSITIVE_REVIEW` error-bucket count
+
+### Task 8: Supervised model baseline layer
+- Expected benefit:
+  - upgrade the current “learned-weight system” into a true discriminative model layer
+  - improve learning of complex boundary interactions beyond manual threshold tuning
+- Primary metrics:
+  - `decision_f1`
+  - `building_type_f1`
+  - candidate reranking win rate
+- Secondary metrics:
+  - `unit_number_f1`
+  - `unit_recall`
+  - `OVER_SENSITIVE_REVIEW`
+  - model-vs-weights delta on fresh historical data
+
+Planned technical methods:
+- **Tabular supervised baseline**
+  - use `CatBoost`, `HistGradientBoosting`, or a comparable GBDT model to build a supervised baseline over existing structured features.
+  - benefit: improves complex interaction learning while preserving explainability and engineering control.
+- **Parallel dual-track evaluation**
+  - run the new model layer in parallel with the current `decision_policy / candidate_feature_weights / candidate_pair_weights` approach instead of replacing it immediately.
+  - benefit: explicitly measures whether supervised models are actually better than the current learned-weight system.
+- **Phased task introduction**
+  - phase 1: `decision`
+  - phase 2: candidate reranking
+  - phase 3: evaluate whether `building_type` should become a separate supervised model
+  - benefit: lowers replacement risk and keeps regressions easier to localize.
+
+### Task 9: Console decision minority-label entry completion
+- Expected benefit:
+  - upgrade the `DecisionModel` minority-label reinforcement ability from “backend available” to “console directly operable”
+- Primary metrics:
+  - minority-label batch generated count
+  - minority-label labeled count
+- Secondary metrics:
+  - review queue visibility
+  - human-to-gold turnaround time
+
+Planned technical methods:
+- **Empty-queue direct generation from the review page**
+  - add a `Generate Decision Minority Batch` button to the empty-state of `/review`.
+  - benefit: when no regular review task is available, reviewers can directly pull high-value decision minority-label samples instead of falling back to the legacy generic batch.
+- **Dedicated Batch Management entry**
+  - add a dedicated button in the batch management page that calls `seed-decision-minority-labels`.
+  - benefit: operators can clearly distinguish “general review batch” from “DecisionModel minority-label reinforcement batch”.
+- **Explicit frontend route split**
+  - the frontend button must call `/api/v1/review/seed-decision-minority-labels` directly instead of reusing the old `jobs/trigger -> seed_review_batch` path.
+  - benefit: avoids a misleading UI path that appears to support decision minority-label generation but still seeds the wrong sample pool.
+- **Existing-source exclusion before limit truncation**
+  - `decision minority-label` seeding must exclude already reviewed/queued source_ids before applying the final limit cut.
+  - benefit: prevents false-empty behavior where the pool still has new samples but the first N candidates are already consumed.
+
+### Task 10: Structured field correction support in the review page
+- Expected benefit:
+  - allows parser/normalization failures to become structured gold instead of degrading into free-form notes
+- Primary metrics:
+  - structured-review correction count
+  - street-number/street-name corrected gold count
+- Secondary metrics:
+  - number-word normalization sample count
+  - review-to-gold structured completeness ratio
+
+Planned technical methods:
+- **Structured field editing on the review page**
+  - add `street_number / street_name / city / province / postal_code` inputs to the review page, prefilled from current parser or LLM output.
+  - benefit: reviewers can directly fix structure-level mistakes instead of only changing `building_type/unit`.
+- **Structured gold submission extension**
+  - extend `submit_review` so the resulting `gold_label` stores the structured field corrections alongside decision/building_type/unit.
+  - benefit: training, benchmark, and reranking can directly consume these corrected structured truths.
+- **Number-word address correction loop**
+  - for examples like `two Heritage Court ...` or `Fourteen fifty six ...`, the corrected civic number and street can become formal gold.
+  - benefit: provides real supervision for future number-word normalization and parser-learning work.
 
 ## 6. Technical Implementation Evolution
 
@@ -515,11 +639,68 @@ Planned technical methods:
     - complete-street candidate promotion
     - prefix/suffix noise stripping
     - reversed civic order recovery
+    - leading bare-unit comma apartment recovery
+    - glued explicit-unit + civic recovery
+    - commercial/prefix-noise glued-tail repair
+
+### Requirement 8: Add a supervised model baseline layer
+Planned technical methods:
+- **Keep the parser/reference mainline, add a supervised model layer**
+  - do not replace the current parsing, reference, and canonical mainline; instead, add a discriminative model layer on top of it.
+  - benefit: preserves the existing engineering strengths while materially upgrading learning capacity.
+- **Structured-feature-first modeling**
+  - the first version should rely on existing stable runtime features such as:
+    - parser confidence
+    - parser pattern
+    - unit_source
+    - reference score
+    - parser_disagreement
+    - numbered-road flag
+    - explicit/commercial hints
+  - benefit: achieves stronger supervision with lower implementation risk.
+- **Prefer tabular models before neural models**
+  - the first stage should prioritize `CatBoost` / `GBDT` / `HistGradientBoosting`, not an end-to-end Transformer parser.
+  - benefit: better aligned with current gold size, structured task shape, and explainability requirements.
+- **CatBoost as the primary baseline implementation**
+  - in the current implementation, the first `DecisionModel` baseline now prefers `CatBoost`, and only falls back to the `numpy/scipy` softmax baseline when the preferred library is unavailable or fails.
+  - benefit: satisfies the “best-fit library first” requirement while preserving engineering continuity under environment constraints.
+- **Parallel baseline evaluation**
+  - the new model layer must be benchmarked in parallel with the current weight-based approach on benchmark, shadow, and fresh historical subsets.
+  - benefit: prevents “adding ML for its own sake” and keeps replacement evidence-driven.
+- **Environment-safe baseline fallback**
+  - when `sklearn/CatBoost` is not installed, the first `DecisionModel` baseline may fall back to a `numpy/scipy` softmax baseline so the offline training loop still runs.
+  - benefit: the next-generation ML rollout is not blocked by one missing dependency before dataset, feature, and label assumptions are validated.
+
+Expected code carriers:
+- `learning/trainer.py`
+- `learning/reranking_trainer.py`
+- `learning/evaluator.py`
+- `api/server.py`
+- `learning/supervised_baseline.py`
+
+Evolution rule:
+- future work must explicitly state whether it is improving:
+  - the `decision` supervised model
+  - the candidate reranking supervised model
+  - the `building_type` supervised model
+  - or a later neural reranker
+  - and whether it is improving:
+    - dataset export
+    - feature vectorization
+    - the primary CatBoost baseline
+    - baseline training fallback
+    - or parallel evaluation evidence
     - route-only/no-civic recovery
     - single-unit parser-disagreement relaxation
     - decision-calibration review batch generation
     - ordinal-street plus trailing residential-keyword recovery
     - compound residential-unit keyword recovery
+    - repeated unit-civic apartment recovery
+    - repeated civic single-unit acceptance recovery
+    - glued token spacing repair
+    - malformed explicit-unit prefix recovery
+    - leading explicit-unit and residential-keyword civic recovery
+    - no-fallback explicit-unit city-tail recovery
   - benefit: directly compresses `OVER_SENSITIVE_REVIEW` without regressing the apartment/unit mainline.
 
 Expected code carriers:
@@ -546,6 +727,7 @@ Evolution rule:
 5. Finally seed high-value fresh review/gold candidates into the later continuous-learning loop.
 6. Add balanced review-pool composition and stratified ratio control so hardest cases do not dominate the new gold mix.
 7. After the apartment/unit mainline is recovered, separately recover `decision_f1` and remove historical non-semantic task-type pollution from decision training.
+8. Implement the first supervised `decision` baseline by adding dataset export, structured-feature vectorization, and parallel benchmark comparison without replacing the runtime mainline yet.
 
 ## 12. Residual Problems That Triggered Phase 8
 
@@ -587,6 +769,15 @@ Phase 7 largely closed the canonical/reference mainline on known internal data, 
 6. **historical workflow labels may continue to pollute decision training**
    - if task labels such as `calibration_accept`, `unit_boost_accept`, or `hard_correction_pending` are still treated as semantic supervision, `decision_f1` may remain artificially low even when apartment/unit parsing recovers.
 
+7. **fresh historical review is now dominated by two recoverable parser/decision patterns**
+   - the 186k historical backfill completed with `5,728` review rows, and the dominant bucket is:
+     - `single_unit`
+     - `Parser confidence is moderate; review is safer.`
+   - early sample review shows two especially high-value sub-patterns:
+     - repeated leading unit-civic apartment rows such as `505-1000 MICMAC BLVD 505 DARTMOUTH NS`
+     - repeated civic single-unit rows such as `33 MOUNTAIN MAPLE DR 33 TIMBERLEA NS`
+   - these should be handled as a dedicated decision/parser recovery loop rather than treated as generic review noise.
+
 ## 14. Completion Criteria
 
 Phase 8 can be considered complete when all of the following are true:
@@ -599,6 +790,7 @@ Phase 8 can be considered complete when all of the following are true:
 6. fresh-gold review candidates can feed directly into later human review and training
 7. new human-review batches can be generated with explicit correction-pool vs calibration-pool composition, and the resulting gold mix is diagnosable before training.
 8. `decision_f1` recovers to a level that can compete with the active baseline without sacrificing `building_type_f1 / unit_number_f1 / unit_recall`.
+9. the first `DecisionModel baseline` can stably export training data, train an offline supervised baseline, and compare it in parallel against the current weight-based approach on benchmark / shadow evidence.
 
 ## 10. Risks And Watchpoints
 - if fresh data cannot be isolated by batch, fresh-data analysis will be distorted

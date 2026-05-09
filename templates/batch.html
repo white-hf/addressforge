@@ -50,7 +50,10 @@
                             <option value="random" data-i18n="strategy_random">随机抽样</option>
                         </select>
                     </div>
-                    <button class="btn primary w-full" onclick="generateBatch()" data-i18n="generate_batch">立即生成新批次</button>
+                    <div class="grid grid-cols-1 gap-3">
+                        <button class="btn primary w-full" onclick="generateBatch()" data-i18n="generate_batch">立即生成新批次</button>
+                        <button class="btn soft w-full" onclick="generateDecisionMinorityBatch()">Generate Decision Minority Batch</button>
+                    </div>
                 </div>
             </div>
 
@@ -154,6 +157,31 @@ async function generateBatch() {
         loadBatchStats();
     } else {
         showToast("Error generating batch.", "error");
+    }
+}
+
+async function generateDecisionMinorityBatch() {
+    const size = parseInt(document.getElementById('batch-size').value, 10);
+    const res = await fetch('/api/v1/review/seed-decision-minority-labels', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ limit: size })
+    });
+
+    if (res.ok) {
+        const result = await res.json();
+        if ((result.inserted || 0) > 0) {
+            const bucketSummary = Object.entries(result.inserted_by_bucket || {})
+                .map(([key, value]) => `${key}: ${value}`)
+                .join(', ');
+            const suffix = bucketSummary ? ` (${bucketSummary})` : '';
+            showToast(`Generated ${result.inserted} decision minority-label samples${suffix}! <a href="/review" class="underline ml-2 font-bold text-white hover:text-emerald-100">Go to Review →</a>`, "success");
+        } else {
+            showToast("No new decision minority-label samples were found.", "warn");
+        }
+        loadBatchStats();
+    } else {
+        showToast("Error generating decision minority-label batch.", "error");
     }
 }
 

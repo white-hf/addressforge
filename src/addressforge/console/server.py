@@ -122,10 +122,10 @@ async def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSP
     return {
         "workspace_name": target_workspace,
         "is_worker_active": is_worker_active,
-        "ingestion_config": get_ingestion_runtime_config(target_workspace),
         "workspace": get_workspace(target_workspace),
         "metrics": get_business_dashboard_metrics(target_workspace),
         "assets": get_asset_stats(target_workspace),
+        "raw_record_count": count_cleaning_results(target_workspace),
         "gold_labels": {
             "accepted_human": count_gold_labels(target_workspace, review_status="accepted", label_source="human"),
             "pending_human": count_gold_labels(target_workspace, review_status="pending", label_source="human"),
@@ -138,8 +138,8 @@ async def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSP
         },
         "job_counts": count_jobs(target_workspace),
         "job_kind_counts": count_jobs_by_kind(target_workspace),
-        "recent_jobs": list_jobs(target_workspace, limit=5),
-        "latest_batch_summary": summarize_latest_ingestion_cleaning_batch(target_workspace),
+        "recent_jobs": list_jobs(target_workspace, limit=10),
+        "has_shadow_model": Path("runtime/models/decision_catboost_v1.cbm").exists(),
         "continuous_mode": {
             "is_enabled": _truthy_setting(get_setting(target_workspace, "continuous_mode.enabled", False)),
             "interval_seconds": int(get_setting(target_workspace, "continuous_mode.interval_seconds", 300) or 300),
@@ -221,6 +221,14 @@ async def assets_page(request: Request):
     渲染资产与金标库页面。
     """
     return templates.TemplateResponse(request=request, name="assets.html", context={"active": "assets", "title": "Data Assets & Gold Library"})
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    """
+    Renders the System Settings page.
+    渲染系统设置页面。
+    """
+    return templates.TemplateResponse(request=request, name="settings.html", context={"active": "settings", "title": "System Settings"})
 
 @app.get("/review", response_class=HTMLResponse)
 async def review_page(request: Request):

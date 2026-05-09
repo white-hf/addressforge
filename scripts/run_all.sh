@@ -5,7 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "Stopping all existing AddressForge services..."
-ps aux | grep -E "addressforge.console.server|addressforge.control.worker" | grep -v grep | awk '{print $2}' | xargs kill || true
+ps aux | grep -E "addressforge.api.server|addressforge.console.server|addressforge.control.worker" | grep -v grep | awk '{print $2}' | xargs kill || true
+
+echo "Starting API Server..."
+"$ROOT_DIR/scripts/run_api.sh" > "$ROOT_DIR/api.log" 2>&1 &
+API_PID=$!
+echo "API PID: $API_PID"
 
 echo "Starting Console..."
 "$ROOT_DIR/scripts/run_console.sh" > "$ROOT_DIR/console.log" 2>&1 &

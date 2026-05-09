@@ -43,6 +43,7 @@ from addressforge.learning import (
     seed_active_learning_queue,
     upsert_gold_label,
 )
+from addressforge.services.model_service import get_model_service
 
 
 APP_TITLE = "Address Platform API / 地址平台 API"
@@ -620,6 +621,10 @@ class AddressPlatformService:
         self._default_profile = default_profile or DEFAULT_MODEL_PROFILE
         self._default_parsers = default_parsers or DEFAULT_PARSERS
         self._decision_policy = decision_policy or {}
+        
+        # New: ML Model Service for supervised decisioning
+        # 新增：用于监督决策的 ML 模型服务
+        self._model_service = get_model_service()
 
     def _policy_float(self, key: str, default: float) -> float:
         value = self._decision_policy.get(key, default)
@@ -901,6 +906,11 @@ class AddressPlatformService:
         )
 
         parse_score = float(best.get("score") or 0.0)
+        parsed_pattern = (
+            str(best.get("parsed", {}).get("feature_vector", {}).get("pattern") or "").strip()
+            if best
+            else ""
+        )
         close_candidate_delta = self._policy_float("close_candidate_delta", 0.08)
         close_candidates = [
             item for item in candidates if float(item.get("score") or 0.0) >= max(parse_score - close_candidate_delta, 0.0)
@@ -957,6 +967,20 @@ class AddressPlatformService:
         ):
             decision = "accept"
             reason = "Single-unit structure is complete enough to accept despite weaker parser disagreement."
+        elif (
+            building_type == "single_unit"
+            and not normalized_unit
+            and not reference
+            and parsed_pattern in {
+                "duplicate_number_before_known_city",
+                "route_only_before_city",
+                "reversed_civic_before_city",
+                "prefixed_civic_before_city",
+            }
+            and parse_score >= self._policy_float("single_unit_pattern_accept_threshold", 0.72)
+        ):
+            decision = "accept"
+            reason = "Single-unit structure matches a known recoverable review pattern."
         elif parser_disagreement and parse_score >= self._policy_float("parser_disagreement_review_threshold", 0.72):
             decision = "review"
             reason = "Strong parser candidates disagree on the structured address."
@@ -988,6 +1012,24 @@ class AddressPlatformService:
             suggested_unit = reference["reference_unit_numbers"][0]
         if not suggested_unit and close_unit_candidates:
             suggested_unit = canonicalize_unit_number(close_unit_candidates[0].get("unit_number"))
+            
+        # Shadow ML Prediction for parallel evaluation
+        # 影子 ML 预测，用于并行评估
+        ml_result = self._model_service.predict_decision(
+            request.raw_address_text,
+            parsed,
+            parser_name=best.get("parser_name", "hybrid"),
+            validation_context={
+                "confidence": confidence,
+                "hints": {
+                    "reference_score": ref_score,
+                    "gps_conflict": bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
+                    "parser_disagreement": parser_disagreement
+                }
+            },
+            reference_context=reference
+        )
+
         return {
             "profile": request.profile or self._default_profile,
             "decision": decision,
@@ -995,6 +1037,7 @@ class AddressPlatformService:
             "reason": reason,
             "building_type": building_type,
             "suggested_unit_number": suggested_unit,
+            "ml_decision": ml_result,
             "canonical": {
                 "base_address_key": canonical_base_key,
                 "full_address_key": canonical_full_key,
@@ -1034,6 +1077,9 @@ class AddressPlatformService:
             f"Confidence: {validation['confidence']}",
             f"Building type: {validation['building_type']}",
         ]
+        if validation.get("ml_decision"):
+            ml = validation["ml_decision"]
+            steps.append(f"ML Score (Shadow): {ml.get('ml_score')} -> {ml.get('ml_decision')}")
         if validation.get("suggested_unit_number"):
             steps.append(f"Suggested unit: {validation['suggested_unit_number']}")
         if validation.get("reference"):

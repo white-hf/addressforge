@@ -99,7 +99,7 @@ NUMBERED_ROAD_PATTERNS: tuple[Pattern[str], ...] = (
 )
 
 URBAN_STREET_SUFFIX_PATTERNS: tuple[Pattern[str], ...] = (
-    re.compile(r"\b(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|BLVD|BOULEVARD|PL|PLACE|LN|LANE|CRT|COURT|CRES|CRESCENT|WAY|TERR|TERRACE)\b"),
+    re.compile(r"\b(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|BLVD|BOULEVARD|PL|PLACE|LN|LANE|CRT|COURT|CRES|CRESCENT|WAY|TERR|TERRACE|CLOSE|CL)\b"),
 )
 
 RUN_TYPE_ALIASES: dict[str, str] = {
@@ -169,6 +169,10 @@ def normalize_space(val: str | None) -> str:
 def normalize_unit_signal_text(val: str | None) -> str:
     """Normalizes glued unit keywords so downstream regexes can reason on them."""
     text = normalize_space(val).upper()
+    text = re.sub(r"\b(\d{1,6})([A-Z]{3,})\b", r"\1 \2", text)
+    text = re.sub(r"\b([A-Z]{3,})(\d{1,5}[A-Z]?)\b", r"\1 \2", text)
+    text = re.sub(r"\b(UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM)\s*(\d{1,5})([A-Z]{3,})\b", r"\1 \2 \3", text)
+    text = re.sub(r"\b([A-Z]\d[A-Z])\s*(\d[A-Z]\d)(CANADA)\b", r"\1 \2 \3", text)
     text = re.sub(
         r"\b(APT|APARTMENT|SUITE|STE|UNIT|ROOM|RM|FLOOR|FL|BASEMENT|BSMT|LOWER|UPPER|PENTHOUSE|PH|GF|LEVEL|LVL)\.\s*(?=[A-Z0-9#])",
         r"\1 ",
@@ -178,6 +182,11 @@ def normalize_unit_signal_text(val: str | None) -> str:
     text = re.sub(
         r"(?<=[A-Z])(?=(?:APT|APARTMENT|SUITE|STE|UNIT|ROOM|RM|FLOOR|FL|BASEMENT|BSMT|LOWER|UPPER|PENTHOUSE|PH|GF|LEVEL|LVL)(?:\.|\b)\s*#?[0-9][A-Z0-9-]{0,7}\b)",
         " ",
+        text,
+    )
+    text = re.sub(
+        r"(\d)(?=(?:APT|APARTMENT|SUITE|STE|UNIT|ROOM|RM|FLOOR|FL|BASEMENT|BSMT|LOWER|UPPER|PENTHOUSE|PH|GF|LEVEL|LVL)\b)",
+        r"\1 ",
         text,
     )
     text = re.sub(
@@ -192,6 +201,25 @@ def canonicalize_unit_number(val: str | None) -> str | None:
     if not val: return None
     v = normalize_space(val).upper().replace("#", "").strip()
     return v if v else None
+
+
+def split_glued_unit_and_civic_token(val: str | None) -> tuple[str, str] | None:
+    token = normalize_space(val).upper()
+    if not token or not re.fullmatch(r"\d{5,10}[A-Z]?", token):
+        return None
+    suffix = ""
+    digits = token
+    if token[-1].isalpha():
+        suffix = token[-1]
+        digits = token[:-1]
+    for civic_len in (4, 3, 5):
+        if len(digits) <= civic_len:
+            continue
+        unit_part = digits[:-civic_len]
+        civic_part = digits[-civic_len:]
+        if 1 <= len(unit_part) <= 5:
+            return unit_part, f"{civic_part}{suffix}"
+    return None
 
 
 def has_numbered_road_signal(text: str | None) -> bool:
@@ -519,8 +547,110 @@ def hybrid_canadian_parse_address(
     if normalized_fallback_city and normalized_fallback_province:
         city_token = normalize_space(normalized_fallback_city).upper()
         province_token = normalize_space(normalized_fallback_province).upper()
+        duplicate_city_prefix = re.match(
+            rf"^\s*{re.escape(city_token)}\s+(.+?)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if duplicate_city_prefix:
+            text = duplicate_city_prefix.group(1) + f" {city_token} {province_token}"
         tail_pattern = re.compile(rf"\s+{re.escape(city_token)}\s+{re.escape(province_token)}\s*$", re.IGNORECASE)
         text_without_city_tail = re.sub(tail_pattern, "", text)
+        leading_explicit_unit_before_civic = re.match(
+            rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|#)\s*([A-Z0-9-]+)\s+(\d+[A-Z]?)\s+(.+?)\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if leading_explicit_unit_before_civic:
+            u_num, s_num, s_name = leading_explicit_unit_before_civic.groups()
+            if has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    u_num,
+                    normalized_fallback_city,
+                    normalized_fallback_province,
+                    postal_code,
+                    text,
+                    "leading_explicit_unit_before_civic",
+                    0.93,
+                    0.92,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "leading_explicit_unit_before_civic"},
+                )
+
+        leading_residential_keyword_before_civic = re.match(
+            rf"^\s*(BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR)\s*(\d+[A-Z]?)\s+(.+?)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if leading_residential_keyword_before_civic:
+            unit_keyword, s_num, s_name = leading_residential_keyword_before_civic.groups()
+            if has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    unit_keyword,
+                    normalized_fallback_city,
+                    normalized_fallback_province,
+                    postal_code,
+                    text,
+                    "leading_residential_keyword_before_civic",
+                    0.91,
+                    0.88,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "leading_residential_keyword_before_civic"},
+                )
+
+        leading_explicit_unit_hyphen_civic = re.match(
+            rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|#)\s*([A-Z0-9-]+)\s*-\s*(\d+[A-Z]?)\s+(.+?)\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if leading_explicit_unit_hyphen_civic:
+            u_num, s_num, s_name = leading_explicit_unit_hyphen_civic.groups()
+            return _finalize_parsed(
+                s_num,
+                s_name,
+                u_num,
+                normalized_fallback_city,
+                normalized_fallback_province,
+                postal_code,
+                text,
+                "leading_explicit_unit_hyphen_civic",
+                0.93,
+                0.92,
+                0.90,
+                profile=profile,
+                features={"pattern": "leading_explicit_unit_hyphen_civic"},
+            )
+
+        leading_civic_hyphen_street_with_unit = re.match(
+            rf"^\s*(\d+[A-Z]?)\s*-\s*(.+?)\s+\b(?:UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM)\b\s*([A-Z0-9-]+)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if leading_civic_hyphen_street_with_unit:
+            s_num, s_name, u_num = leading_civic_hyphen_street_with_unit.groups()
+            if has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    u_num,
+                    normalized_fallback_city,
+                    normalized_fallback_province,
+                    postal_code,
+                    text,
+                    "leading_civic_hyphen_street_with_unit",
+                    0.92,
+                    0.90,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "leading_civic_hyphen_street_with_unit"},
+                )
+
         explicit_unit_before_city_tail = re.match(
             rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+(?:#\s*([A-Z0-9-]+)|(?:UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM|FLOOR|FL)\s*([A-Z0-9-]+))\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
             text,
@@ -566,6 +696,63 @@ def hybrid_canadian_parse_address(
                 profile=profile,
                 features={"pattern": "inline_unit_after_street_with_city_tail"},
             )
+
+        prefixed_noise_civic_street_with_unit = re.match(
+            rf"^\s*([A-Z][A-Z0-9/&.'\- ]{{2,32}})\s+(\d+[A-Z]?)\s+(.+?)\s+\b(?:UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM)\b\s*([A-Z0-9-]+)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if prefixed_noise_civic_street_with_unit:
+            prefix, s_num, s_name, u_num = prefixed_noise_civic_street_with_unit.groups()
+            if (
+                has_urban_street_suffix_signal(s_name)
+                and not has_numbered_road_signal(s_name)
+                and normalize_space(prefix).upper() != normalize_space(s_name).upper()
+            ):
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    u_num,
+                    normalized_fallback_city,
+                    normalized_fallback_province,
+                    postal_code,
+                    text,
+                    "prefixed_noise_civic_street_with_unit",
+                    0.91,
+                    0.90,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "prefixed_noise_civic_street_with_unit"},
+                )
+
+        repeated_leading_unit_before_known_city = re.match(
+            rf"^\s*(\d{{1,5}}[A-Z]?)\s*-\s*(\d+[A-Z]?)\s+(.+?)\s+(\d{{1,5}}[A-Z]?)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if repeated_leading_unit_before_known_city:
+            u_num_1, s_num, s_name, u_num_2 = repeated_leading_unit_before_known_city.groups()
+            if (
+                normalize_space(u_num_1).upper() == normalize_space(u_num_2).upper()
+                and has_urban_street_suffix_signal(s_name)
+                and not has_numbered_road_signal(s_name)
+                and not has_numbered_road_signal(text)
+            ):
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    u_num_1,
+                    normalized_fallback_city,
+                    normalized_fallback_province,
+                    postal_code,
+                    text,
+                    "repeated_leading_unit_before_known_city",
+                    0.92,
+                    0.90,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "repeated_leading_unit_before_known_city"},
+                )
 
         duplicate_or_noise_number_before_known_city = re.match(
             rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+(\d{{1,5}}[A-Z]?)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
@@ -756,6 +943,132 @@ def hybrid_canadian_parse_address(
             profile=profile,
             features={"pattern": "route_only_before_city"},
         )
+
+    leading_explicit_unit_before_civic_no_fallback = re.match(
+        rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|#)\s*([A-Z0-9-]+)\s+(\d+[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+        text,
+        re.IGNORECASE,
+    )
+    if leading_explicit_unit_before_civic_no_fallback:
+        u_num, s_num, s_name, city, province = leading_explicit_unit_before_civic_no_fallback.groups()
+        if has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+            return _finalize_parsed(
+                s_num,
+                s_name,
+                u_num,
+                city,
+                province,
+                postal_code,
+                text,
+                "leading_explicit_unit_before_civic_no_fallback",
+                0.92,
+                0.90,
+                0.90,
+                profile=profile,
+                features={"pattern": "leading_explicit_unit_before_civic_no_fallback"},
+            )
+
+    leading_explicit_unit_glued_civic_no_fallback = re.match(
+        rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|#)\s*([0-9]{{5,10}}[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+        text,
+        re.IGNORECASE,
+    )
+    if leading_explicit_unit_glued_civic_no_fallback:
+        glued_token, s_name, city, province = leading_explicit_unit_glued_civic_no_fallback.groups()
+        split_parts = split_glued_unit_and_civic_token(glued_token)
+        if split_parts and has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+            u_num, s_num = split_parts
+            return _finalize_parsed(
+                s_num,
+                s_name,
+                u_num,
+                city,
+                province,
+                postal_code,
+                text,
+                "leading_explicit_unit_glued_civic_no_fallback",
+                0.90,
+                0.88,
+                0.90,
+                profile=profile,
+                features={"pattern": "leading_explicit_unit_glued_civic_no_fallback"},
+            )
+
+    leading_bare_unit_comma_before_civic_no_fallback = re.match(
+        rf"^\s*(\d{{1,5}}[A-Z]?)\s*,\s*(\d+[A-Z]?)\s+([^,]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s*,\s*([A-Z][A-Z .'\-]+?)(?:\s*,\s*[A-Z][A-Z .'\-]+?)*\s*,\s*({province_group})(?:\b.*)?$",
+        text,
+        re.IGNORECASE,
+    )
+    if leading_bare_unit_comma_before_civic_no_fallback:
+        u_num, s_num, s_name, city, province = leading_bare_unit_comma_before_civic_no_fallback.groups()
+        if has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+            return _finalize_parsed(
+                s_num,
+                s_name,
+                u_num,
+                city,
+                province,
+                postal_code,
+                text,
+                "leading_bare_unit_comma_before_civic_no_fallback",
+                0.91,
+                0.89,
+                0.90,
+                profile=profile,
+                features={"pattern": "leading_bare_unit_comma_before_civic_no_fallback"},
+            )
+
+    leading_residential_keyword_before_civic_no_fallback = re.match(
+        rf"^\s*(BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR)\s*(\d+[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+        text,
+        re.IGNORECASE,
+    )
+    if leading_residential_keyword_before_civic_no_fallback:
+        unit_keyword, s_num, s_name, city, province = leading_residential_keyword_before_civic_no_fallback.groups()
+        if has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+            return _finalize_parsed(
+                s_num,
+                s_name,
+                unit_keyword,
+                city,
+                province,
+                postal_code,
+                text,
+                "leading_residential_keyword_before_civic_no_fallback",
+                0.90,
+                0.86,
+                0.90,
+                profile=profile,
+                features={"pattern": "leading_residential_keyword_before_civic_no_fallback"},
+            )
+
+    prefixed_noise_civic_street_with_unit_repeated_tail = re.match(
+        rf"^\s*([A-Z][A-Z0-9/&.'\- ]{{2,48}})\s+(\d+[A-Z]?)\s+(.+?)\s+\b(?:UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM)\b\s*([A-Z0-9-]+)\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\s+[A-Z]\d[A-Z]\s*\d[A-Z]\d(?:\s+CANADA)?)?\s+\5\s+\6(?:\b.*)?$",
+        text,
+        re.IGNORECASE,
+    )
+    if prefixed_noise_civic_street_with_unit_repeated_tail:
+        prefix, s_num, s_name, u_num, city, province = prefixed_noise_civic_street_with_unit_repeated_tail.groups()
+        if (
+            has_urban_street_suffix_signal(s_name)
+            and not has_numbered_road_signal(s_name)
+            and normalize_space(prefix).upper() != normalize_space(s_name).upper()
+        ):
+            return _finalize_parsed(
+                s_num,
+                s_name,
+                u_num,
+                city,
+                province,
+                postal_code,
+                text,
+                "prefixed_noise_civic_street_with_unit_repeated_tail",
+                0.89,
+                0.88,
+                0.90,
+                profile=profile,
+                features={"pattern": "prefixed_noise_civic_street_with_unit_repeated_tail"},
+            )
 
     reversed_civic_before_city = re.match(
         rf"^\s*([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE))\s+(\d+[A-Z]?)\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",

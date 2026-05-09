@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+    .info-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        font-size: 10px;
+        color: #94a3b8;
+        background: #f1f5f9;
+        border-radius: 50%;
+        margin-left: 6px;
+        cursor: help;
+        transition: all 0.15s ease;
+    }
+    .info-icon:hover {
+        color: #3b82f6;
+        background: #eff6ff;
+    }
+</style>
+<div class="panel">
+    <div class="panel-head flex justify-between items-center">
+        <div>
+            <h2 data-i18n="nav_settings">系统设置 (Settings)</h2>
+            <p data-i18n="nav_settings_desc">配置数据源、自动化策略及全局参数。</p>
+        </div>
+    </div>
+    
+    <div class="panel-body">
+        <div class="flex flex-col gap-6">
+            <!-- Ingestion Source Config Section -->
+            <div class="card p-6 bg-white border border-slate-200">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+                    <div>
+                        <h4 class="text-xl font-bold mb-1" data-i18n="ingestion_config_title">数据摄入配置 (Ingestion Source)</h4>
+                        <p class="text-sm text-slate-500" data-i18n="ingestion_config_desc">Switch between API incremental intake and DB historical backfill.</p>
+                    </div>
+                    <div id="ingestion-config-badge" class="pill warn">Loading...</div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_mode">Mode</span>
+                            <span class="info-icon" data-i18n-title="hint_ingestion_mode">ⓘ</span>
+                        </span>
+                        <select id="ingestion-mode" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" onchange="toggleIngestionConfigFields()">
+                            <option value="api">API (Incremental)</option>
+                            <option value="db">DB (Historical Backfill)</option>
+                        </select>
+                    </label>
+                    <label class="block lg:col-span-2">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_source_name">Source Name</span>
+                            <span class="info-icon" data-i18n-title="hint_source_name">ⓘ</span>
+                        </span>
+                        <input id="ingestion-source-name" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="e.g. third_party, legacy_db" />
+                    </label>
+                </div>
+
+                <!-- API Specific Fields -->
+                <div id="ingestion-api-fields" class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_api_batch">API Batch Size</span>
+                            <span class="info-icon" data-i18n-title="hint_api_batch_size">ⓘ</span>
+                        </span>
+                        <input id="ingestion-api-batch-size" type="number" min="1" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                </div>
+
+                <!-- DB Specific Fields -->
+                <div id="ingestion-db-fields" class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6 hidden">
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_db_batch">DB Batch Size</span>
+                            <span class="info-icon" data-i18n-title="hint_db_batch_size">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-batch-size" type="number" min="1" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_table_name">Table Name</span>
+                            <span class="info-icon" data-i18n-title="hint_db_table">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-table" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_cursor_col">Cursor Column</span>
+                            <span class="info-icon" data-i18n-title="hint_cursor_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-cursor-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_tiebreaker_col">Tie-breaker Column</span>
+                            <span class="info-icon" data-i18n-title="hint_tiebreaker_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-tiebreaker-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_ext_id_col">External ID Column</span>
+                            <span class="info-icon" data-i18n-title="hint_external_id_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-external-id-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_raw_addr_col">Raw Address Column</span>
+                            <span class="info-icon" data-i18n-title="hint_raw_address_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-raw-address-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_postal_col">Postal Code Column</span>
+                            <span class="info-icon" data-i18n-title="hint_postal_code_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-postal-code-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_lat_col">Latitude Column</span>
+                            <span class="info-icon" data-i18n-title="hint_latitude_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-latitude-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_lon_col">Longitude Column</span>
+                            <span class="info-icon" data-i18n-title="hint_longitude_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-longitude-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_city_col">City Column</span>
+                            <span class="info-icon" data-i18n-title="hint_city_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-city-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                    <label class="block">
+                        <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                            <span data-i18n="settings_province_col">Province Column</span>
+                            <span class="info-icon" data-i18n-title="hint_province_column">ⓘ</span>
+                        </span>
+                        <input id="ingestion-db-province-column" class="w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                    </label>
+                </div>
+
+                <div class="flex justify-end pt-4 border-t border-slate-100">
+                    <button class="btn primary px-10 py-3 shadow-lg" onclick="saveIngestionConfig()" data-i18n="save_config">Save Configuration</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const INGESTION_DRAFT_KEY = 'addressforge.ingestionConfigDraft';
+let ingestionConfigDirty = false;
+
+function collectIngestionConfigPayload() {
+    return {
+        mode: document.getElementById('ingestion-mode').value,
+        source_name: document.getElementById('ingestion-source-name').value.trim(),
+        api: {
+            batch_size: Number(document.getElementById('ingestion-api-batch-size').value || 1000),
+        },
+        db: {
+            batch_size: Number(document.getElementById('ingestion-db-batch-size').value || 1000),
+            table: document.getElementById('ingestion-db-table').value.trim(),
+            cursor_column: document.getElementById('ingestion-db-cursor-column').value.trim(),
+            tiebreaker_column: document.getElementById('ingestion-db-tiebreaker-column').value.trim(),
+            external_id_column: document.getElementById('ingestion-db-external-id-column').value.trim(),
+            raw_address_column: document.getElementById('ingestion-db-raw-address-column').value.trim(),
+            postal_code_column: document.getElementById('ingestion-db-postal-code-column').value.trim(),
+            latitude_column: document.getElementById('ingestion-db-latitude-column').value.trim(),
+            longitude_column: document.getElementById('ingestion-db-longitude-column').value.trim(),
+            city_column: document.getElementById('ingestion-db-city-column').value.trim(),
+            province_column: document.getElementById('ingestion-db-province-column').value.trim(),
+        }
+    };
+}
+
+function markIngestionConfigDirty() {
+    ingestionConfigDirty = true;
+    localStorage.setItem(INGESTION_DRAFT_KEY, JSON.stringify(collectIngestionConfigPayload()));
+    const badge = document.getElementById('ingestion-config-badge');
+    if (badge) {
+        badge.className = 'pill warn';
+        badge.textContent = 'Unsaved Changes';
+    }
+}
+
+function clearIngestionConfigDirty() {
+    ingestionConfigDirty = false;
+    localStorage.removeItem(INGESTION_DRAFT_KEY);
+}
+
+function applyDefaultSourceNameForMode() {
+    const mode = document.getElementById('ingestion-mode').value;
+    const input = document.getElementById('ingestion-source-name');
+    const current = (input.value || '').trim();
+    if (mode === 'api') {
+        if (!current || current === 'historical_db_backfill') {
+            input.value = 'third_party';
+        }
+        return;
+    }
+    if (!current || current === 'third_party') {
+        input.value = 'historical_db_backfill';
+    }
+}
+
+async function refreshSettings() {
+    // We only need the status to get current config
+    const statusRes = await fetch('/api/v1/control/status');
+    const status = await statusRes.json();
+    
+    if (status.ingestion_config) {
+        populateIngestionConfig(status.ingestion_config);
+    }
+
+    // Apply i18n
+    if (typeof translatePage === 'function') {
+        translatePage();
+    }
+}
+
+function toggleIngestionConfigFields() {
+    const mode = document.getElementById('ingestion-mode').value;
+    document.getElementById('ingestion-api-fields').classList.toggle('hidden', mode !== 'api');
+    document.getElementById('ingestion-db-fields').classList.toggle('hidden', mode !== 'db');
+}
+
+function populateIngestionConfig(config) {
+    document.getElementById('ingestion-mode').value = config.mode || 'api';
+    document.getElementById('ingestion-source-name').value = config.source_name || '';
+    document.getElementById('ingestion-api-batch-size').value = (config.api && config.api.batch_size) || 1000;
+    document.getElementById('ingestion-db-batch-size').value = (config.db && config.db.batch_size) || 1000;
+    document.getElementById('ingestion-db-table').value = (config.db && config.db.table) || '';
+    document.getElementById('ingestion-db-cursor-column').value = (config.db && config.db.cursor_column) || '';
+    document.getElementById('ingestion-db-tiebreaker-column').value = (config.db && config.db.tiebreaker_column) || '';
+    document.getElementById('ingestion-db-external-id-column').value = (config.db && config.db.external_id_column) || '';
+    document.getElementById('ingestion-db-raw-address-column').value = (config.db && config.db.raw_address_column) || '';
+    document.getElementById('ingestion-db-postal-code-column').value = (config.db && config.db.postal_code_column) || '';
+    document.getElementById('ingestion-db-latitude-column').value = (config.db && config.db.latitude_column) || '';
+    document.getElementById('ingestion-db-longitude-column').value = (config.db && config.db.longitude_column) || '';
+    document.getElementById('ingestion-db-city-column').value = (config.db && config.db.city_column) || '';
+    document.getElementById('ingestion-db-province-column').value = (config.db && config.db.province_column) || '';
+    
+    const badge = document.getElementById('ingestion-config-badge');
+    badge.className = `pill ${config.mode === 'db' ? 'warn' : 'good'}`;
+    badge.textContent = config.mode === 'db' ? 'DB Backfill Mode' : 'API Incremental Mode';
+    
+    toggleIngestionConfigFields();
+    clearIngestionConfigDirty();
+}
+
+async function saveIngestionConfig() {
+    applyDefaultSourceNameForMode();
+    const payload = collectIngestionConfigPayload();
+    
+    showToast("Saving ingestion config...", "info");
+    const res = await fetch('/api/v1/control/ingestion-config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    
+    if (!res.ok) {
+        const detail = await res.text();
+        showToast(`Failed to save ingestion config: ${detail}`, "error");
+        return;
+    }
+    
+    const data = await res.json();
+    populateIngestionConfig(data.ingestion_config);
+    showToast("Ingestion config updated", "success");
+}
+
+function attachIngestionConfigDirtyTracking() {
+    const ids = [
+        'ingestion-mode',
+        'ingestion-source-name',
+        'ingestion-api-batch-size',
+        'ingestion-db-batch-size',
+        'ingestion-db-table',
+        'ingestion-db-cursor-column',
+        'ingestion-db-tiebreaker-column',
+        'ingestion-db-external-id-column',
+        'ingestion-db-raw-address-column',
+        'ingestion-db-postal-code-column',
+        'ingestion-db-latitude-column',
+        'ingestion-db-longitude-column',
+        'ingestion-db-city-column',
+        'ingestion-db-province-column',
+    ];
+    ids.forEach((id) => {
+        const node = document.getElementById(id);
+        if (!node) return;
+        node.addEventListener('input', markIngestionConfigDirty);
+        node.addEventListener('change', () => {
+            if (id === 'ingestion-mode') {
+                applyDefaultSourceNameForMode();
+                toggleIngestionConfigFields();
+            }
+            markIngestionConfigDirty();
+        });
+    });
+}
+
+window.addEventListener('beforeunload', (event) => {
+    if (!ingestionConfigDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+});
+
+window.addEventListener('load', () => {
+    attachIngestionConfigDirtyTracking();
+    refreshSettings();
+});
+</script>
+{% endblock %}

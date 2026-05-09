@@ -63,83 +63,6 @@
                         <button class="btn primary px-8" onclick="triggerJob('ingestion_once')" data-i18n="start_sync">Start Sync</button>
                         <button class="btn primary px-8" onclick="triggerJob('cleaning_once')" data-i18n="run_cleaning">Run Cleaning</button>
                     </div>
-                    <div class="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                        <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-                            <div>
-                                <div class="text-xs font-bold uppercase text-slate-500">Ingestion Source Config</div>
-                                <div class="text-sm text-slate-600">Switch between API incremental intake and DB historical backfill.</div>
-                            </div>
-                            <div id="ingestion-config-badge" class="pill warn">Loading...</div>
-                        </div>
-                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Mode</div>
-                                <select id="ingestion-mode" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" onchange="toggleIngestionConfigFields()">
-                                    <option value="api">API</option>
-                                    <option value="db">DB</option>
-                                </select>
-                            </label>
-                            <label class="text-sm lg:col-span-2">
-                                <div class="text-xs text-slate-500 mb-1">Source Name</div>
-                                <input id="ingestion-source-name" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                        </div>
-                        <div id="ingestion-api-fields" class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">API Batch Size</div>
-                                <input id="ingestion-api-batch-size" type="number" min="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                        </div>
-                        <div id="ingestion-db-fields" class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3 hidden">
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">DB Batch Size</div>
-                                <input id="ingestion-db-batch-size" type="number" min="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Table</div>
-                                <input id="ingestion-db-table" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Cursor Column</div>
-                                <input id="ingestion-db-cursor-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Tie-breaker Column</div>
-                                <input id="ingestion-db-tiebreaker-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">External ID Column</div>
-                                <input id="ingestion-db-external-id-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Raw Address Column</div>
-                                <input id="ingestion-db-raw-address-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Postal Code Column</div>
-                                <input id="ingestion-db-postal-code-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Latitude Column</div>
-                                <input id="ingestion-db-latitude-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Longitude Column</div>
-                                <input id="ingestion-db-longitude-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">City Column</div>
-                                <input id="ingestion-db-city-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                            <label class="text-sm">
-                                <div class="text-xs text-slate-500 mb-1">Province Column</div>
-                                <input id="ingestion-db-province-column" class="w-full rounded-lg border border-slate-300 px-3 py-2 bg-white" />
-                            </label>
-                        </div>
-                        <div class="flex gap-3">
-                            <button class="btn soft px-6" onclick="saveIngestionConfig()">Save Ingestion Config</button>
-                        </div>
-                    </div>
                 </div>
                 <div class="flex-shrink-0 w-48 border-l pl-6 hidden lg:block">
                     <div class="text-xs text-slate-400 font-bold mb-2 uppercase" data-i18n="status">Status</div>
@@ -179,7 +102,10 @@
                 </div>
                 <div class="flex-shrink-0 w-48 border-l pl-6 hidden lg:block">
                     <div class="text-xs text-slate-400 font-bold mb-2 uppercase" data-i18n="model_status">Model</div>
-                    <div class="text-sm font-mono text-orange-600" id="status-model">IDLE</div>
+                    <div class="text-sm font-mono text-orange-600 mb-2" id="status-model">IDLE</div>
+                    <div id="shadow-model-badge" class="hidden">
+                        <span class="pill good text-[10px] py-0.5 px-2">Shadow ML Active</span>
+                    </div>
                 </div>
             </div>
 
@@ -227,23 +153,58 @@
 
 <script>
 let isWorkerOnline = false;
-let currentIngestionConfig = null;
+const INGESTION_DRAFT_KEY = 'addressforge.ingestionConfigDraft';
+
+async function syncPendingIngestionConfigIfNeeded(action) {
+    if (action !== 'ingestion_once') {
+        return true;
+    }
+    const rawDraft = localStorage.getItem(INGESTION_DRAFT_KEY);
+    if (!rawDraft) {
+        return true;
+    }
+    let payload;
+    try {
+        payload = JSON.parse(rawDraft);
+    } catch (error) {
+        localStorage.removeItem(INGESTION_DRAFT_KEY);
+        return true;
+    }
+    showToast('Saving pending ingestion config before sync...', 'info');
+    const res = await fetch('/api/v1/control/ingestion-config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+        const detail = await res.text();
+        showToast(`Failed to save pending ingestion config: ${detail}`, 'error');
+        return false;
+    }
+    localStorage.removeItem(INGESTION_DRAFT_KEY);
+    showToast('Pending ingestion config saved', 'success');
+    return true;
+}
 
 async function triggerJob(action) {
+    const btn = event?.target?.closest('button');
+    const originalText = btn ? btn.innerHTML : "";
+
     // PRE-FLIGHT CHECK: Automated Worker Recovery
     // 事前检查：自动化 Worker 恢复
     if (!isWorkerOnline) {
         const shouldStart = confirm("🤖 BACKGROUND WORKER OFFLINE\n\nNo active worker detected. Would you like the system to automatically start the background service for you?\n\n------------------\n\n🤖 后台执行器离线\n\n检测到当前无人干活。是否需要系统为您自动拉起后台服务并继续下达任务？");
         
         if (shouldStart) {
+            if (btn) btn.disabled = true;
             showToast("System: Spawning worker process...", "info");
             const startRes = await fetch('/api/v1/control/worker/start', { method: 'POST' });
             if (startRes.ok) {
                 showToast("Service started! Waiting for heartbeat...", "success");
-                // Wait briefly for process to initialize before dispatching
                 await new Promise(r => setTimeout(r, 1500));
             } else {
                 showToast("Automation failed. Please check server permissions.", "error");
+                if (btn) btn.disabled = false;
                 return;
             }
         } else {
@@ -251,24 +212,44 @@ async function triggerJob(action) {
         }
     }
 
+    const configReady = await syncPendingIngestionConfigIfNeeded(action);
+    if (!configReady) {
+        return;
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = `<span class="animate-spin inline-block mr-2">↻</span> Processing...`;
+    }
+
     showToast(`Dispatching job: ${action}...`, "info");
-    const res = await fetch('/api/v1/jobs/trigger', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            job_action: action,
-            payload: {}
-        })
-    });
-    
-    if (res.ok) {
-        showToast("Job successfully dispatched", "success");
-        if (action === 'evaluation_once') {
-            showToast(`Stability & evaluation run started. <a href="/reports" class="underline ml-2 font-bold text-white hover:text-emerald-100" data-i18n="check_reports">Check Reports →</a>`, "info");
+    try {
+        const res = await fetch('/api/v1/jobs/trigger', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                job_action: action,
+                payload: {}
+            })
+        });
+        
+        if (res.ok) {
+            showToast("Job successfully dispatched", "success");
+            if (action === 'evaluation_once') {
+                showToast(`Stability & evaluation run started. <a href="/reports" class="underline ml-2 font-bold text-white hover:text-emerald-100" data-i18n="check_reports">Check Reports →</a>`, "info");
+            }
+            refreshStatus();
+        } else if (res.status === 409) {
+            const detail = await res.json();
+            showToast(detail.detail || "Job already active", "warn");
+        } else {
+            showToast("Failed to dispatch job", "error");
         }
-        refreshStatus();
-    } else {
-        showToast("Failed to dispatch job", "error");
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        }
     }
 }
 
@@ -301,14 +282,26 @@ async function refreshStatus() {
     document.getElementById('metric-gold-growth').textContent = goldLabels.accepted_human || '0';
 
     // Update Step Status
-    document.getElementById('status-cleaning').textContent = (status.job_kind_counts.cleaning_once || 0) > 0 ? "ACTIVE" : "READY";
+    const rawPoolMsg = `Raw Pool: ${status.raw_record_count || 0}`;
+    const rawPoolMsgZh = `原始池: ${status.raw_record_count || 0}`;
+    const isCleaning = (status.job_kind_counts.cleaning_once || 0) > 0;
+    
+    document.getElementById('status-cleaning').innerHTML = `
+        <div class="${isCleaning ? 'text-blue-600 font-bold' : ''}">${isCleaning ? "ACTIVE" : "READY"}</div>
+        <div class="text-[10px] text-slate-400 mt-1">${localStorage.getItem('addressforge_lang') === 'zh' ? rawPoolMsgZh : rawPoolMsg}</div>
+    `;
+    
     document.getElementById('status-review').textContent = (activeLearning.queued || 0) > 0 ? `${activeLearning.queued} PENDING` : "CLEAR";
     document.getElementById('status-model').textContent = (status.job_kind_counts.training_once || 0) > 0 ? "EVOLVING" : "IDLE";
     document.getElementById('status-assets').textContent = `${assets.total_buildings + assets.total_units} Assets`;
 
-    currentIngestionConfig = status.ingestion_config || null;
-    if (currentIngestionConfig) {
-        populateIngestionConfig(currentIngestionConfig);
+    // New: Toggle Shadow Model Badge
+    // 新增：切换影子模型徽章
+    const shadowBadge = document.getElementById('shadow-model-badge');
+    if (status.has_shadow_model) {
+        shadowBadge.classList.remove('hidden');
+    } else {
+        shadowBadge.classList.add('hidden');
     }
 
     // Smart Nudge Logic
@@ -348,71 +341,6 @@ async function refreshStatus() {
     if (typeof translatePage === 'function') {
         translatePage();
     }
-}
-
-function toggleIngestionConfigFields() {
-    const mode = document.getElementById('ingestion-mode').value;
-    document.getElementById('ingestion-api-fields').classList.toggle('hidden', mode !== 'api');
-    document.getElementById('ingestion-db-fields').classList.toggle('hidden', mode !== 'db');
-}
-
-function populateIngestionConfig(config) {
-    document.getElementById('ingestion-mode').value = config.mode || 'api';
-    document.getElementById('ingestion-source-name').value = config.source_name || '';
-    document.getElementById('ingestion-api-batch-size').value = (config.api && config.api.batch_size) || 1000;
-    document.getElementById('ingestion-db-batch-size').value = (config.db && config.db.batch_size) || 1000;
-    document.getElementById('ingestion-db-table').value = (config.db && config.db.table) || '';
-    document.getElementById('ingestion-db-cursor-column').value = (config.db && config.db.cursor_column) || '';
-    document.getElementById('ingestion-db-tiebreaker-column').value = (config.db && config.db.tiebreaker_column) || '';
-    document.getElementById('ingestion-db-external-id-column').value = (config.db && config.db.external_id_column) || '';
-    document.getElementById('ingestion-db-raw-address-column').value = (config.db && config.db.raw_address_column) || '';
-    document.getElementById('ingestion-db-postal-code-column').value = (config.db && config.db.postal_code_column) || '';
-    document.getElementById('ingestion-db-latitude-column').value = (config.db && config.db.latitude_column) || '';
-    document.getElementById('ingestion-db-longitude-column').value = (config.db && config.db.longitude_column) || '';
-    document.getElementById('ingestion-db-city-column').value = (config.db && config.db.city_column) || '';
-    document.getElementById('ingestion-db-province-column').value = (config.db && config.db.province_column) || '';
-    const badge = document.getElementById('ingestion-config-badge');
-    badge.className = `pill ${config.mode === 'db' ? 'warn' : 'good'}`;
-    badge.textContent = config.mode === 'db' ? 'DB Backfill Mode' : 'API Incremental Mode';
-    toggleIngestionConfigFields();
-}
-
-async function saveIngestionConfig() {
-    const mode = document.getElementById('ingestion-mode').value;
-    const payload = {
-        mode: mode,
-        source_name: document.getElementById('ingestion-source-name').value.trim(),
-        api: {
-            batch_size: Number(document.getElementById('ingestion-api-batch-size').value || 1000),
-        },
-        db: {
-            batch_size: Number(document.getElementById('ingestion-db-batch-size').value || 1000),
-            table: document.getElementById('ingestion-db-table').value.trim(),
-            cursor_column: document.getElementById('ingestion-db-cursor-column').value.trim(),
-            tiebreaker_column: document.getElementById('ingestion-db-tiebreaker-column').value.trim(),
-            external_id_column: document.getElementById('ingestion-db-external-id-column').value.trim(),
-            raw_address_column: document.getElementById('ingestion-db-raw-address-column').value.trim(),
-            postal_code_column: document.getElementById('ingestion-db-postal-code-column').value.trim(),
-            latitude_column: document.getElementById('ingestion-db-latitude-column').value.trim(),
-            longitude_column: document.getElementById('ingestion-db-longitude-column').value.trim(),
-            city_column: document.getElementById('ingestion-db-city-column').value.trim(),
-            province_column: document.getElementById('ingestion-db-province-column').value.trim(),
-        }
-    };
-    showToast("Saving ingestion config...", "info");
-    const res = await fetch('/api/v1/control/ingestion-config', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload)
-    });
-    if (!res.ok) {
-        const detail = await res.text();
-        showToast(`Failed to save ingestion config: ${detail}`, "error");
-        return;
-    }
-    const data = await res.json();
-    populateIngestionConfig(data.ingestion_config);
-    showToast("Ingestion config updated", "success");
 }
 
 async function freezeVersionModal() {

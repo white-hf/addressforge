@@ -139,24 +139,27 @@ def _ensure_historical_replay_tables() -> None:
 
 
 def _ensure_review_prescreen_table() -> None:
+    # Table is created by schema SQL. This hook is reserved for forward migrations.
+    return None
+
+
+def _ensure_notes_column_size() -> None:
+    tables = ["etl_run", "model_registry", "gold_label", "gold_set_snapshot"]
     with db_cursor() as (conn, cursor):
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS review_prescreen_cache (
-                prescreen_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                workspace_name VARCHAR(64) NOT NULL,
-                source_name VARCHAR(64) NOT NULL,
-                source_id VARCHAR(128) NOT NULL,
-                task_type VARCHAR(64) NOT NULL,
-                llm_json JSON NOT NULL,
-                llm_model VARCHAR(128) DEFAULT NULL,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY uq_review_prescreen_source (workspace_name, source_name, source_id, task_type),
-                KEY idx_review_prescreen_workspace (workspace_name, updated_at)
+        for table in tables:
+            rows = fetch_all(
+                """
+                SELECT DATA_TYPE
+                FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = %s
+                  AND COLUMN_NAME = 'notes'
+                """,
+                (table,),
             )
-            """
-        )
+            if rows and rows[0]["DATA_TYPE"] == "text":
+                print(f"Upgrading {table}.notes from TEXT to MEDIUMTEXT...")
+                cursor.execute(f"ALTER TABLE {table} MODIFY COLUMN notes MEDIUMTEXT DEFAULT NULL")
         conn.commit()
 
 
@@ -165,7 +168,15 @@ def init_schema() -> dict[str, str]:
     schema_path = Path(os.getenv("ADDRESSFORGE_SCHEMA_PATH", root_dir / "sql" / "addressforge_schema.sql"))
     if not schema_path.exists():
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
-    execute_sql_script(schema_path)
+    
+    try:
+        execute_sql_script(schema_path)
+    except Exception as exc:
+        # Ignore "Table already exists" errors
+        if "already exists" not in str(exc):
+            raise
+    
+    _ensure_notes_column_size()
     _ensure_workspace_scoped_tables()
     _ensure_historical_replay_tables()
     _ensure_review_prescreen_table()
