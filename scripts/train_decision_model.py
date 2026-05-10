@@ -62,13 +62,18 @@ def train_decision_model(workspace_name="default"):
         validation_ctx = json.loads(row["validation_json"]) if row.get("validation_json") else {}
         reference_ctx = json.loads(row["reference_json"]) if row.get("reference_json") else {}
 
+        # For decision model, we assume semantic alignment is high for accepted/reviewed samples 
+        # that had a reference match
+        semantic_alignment = 1.0 if reference_ctx.get("external_id") else 0.0
+
         # Extract features
         features = extractor.extract_features(
             raw_text, 
             parsed, 
             parser_name="hybrid",
             validation_context=validation_ctx,
-            reference_context=reference_ctx
+            reference_context=reference_ctx,
+            semantic_alignment=semantic_alignment
         )
         vector = extractor.vectorize(features)
         
@@ -112,8 +117,9 @@ def train_decision_model(workspace_name="default"):
         "has_city", "has_postal", "is_province_valid", 
         "is_city_valid", "is_unit_redundant", "has_double_number", 
         "is_numbered_road", "has_hwy_keyword", "has_explicit_unit_hint",
+        "has_org_indicator", "excess_token_count", "has_heavy_excess",
         "confidence", "reference_score", "gps_conflict", "parser_disagreement",
-        "parse_confidence", "score_delta"
+        "parse_confidence", "score_delta", "semantic_alignment"
     ]
     fi_df = pd.DataFrame({'feature': feature_names, 'importance': importance}).sort_values('importance', ascending=False)
     print("\nFeature Importance:")

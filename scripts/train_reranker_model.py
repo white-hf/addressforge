@@ -52,6 +52,7 @@ def train_reranker_model(workspace_name="default"):
         gold_sn = str(gold_json.get("street_number") or "").strip()
         gold_st = normalize_street_name(gold_json.get("street_name"))
         gold_un = canonicalize_unit_number(gold_json.get("unit_number"))
+        gold_base_key = gold_json.get("base_address_key")
         
         # First pass: find the top heuristic score for this sample
         best_h_score = max([float(c.get("score") or 0.5) for c in candidates])
@@ -61,16 +62,21 @@ def train_reranker_model(workspace_name="default"):
             cand_sn = str(parsed.get("street_number") or "").strip()
             cand_st = normalize_street_name(parsed.get("street_name"))
             cand_un = canonicalize_unit_number(parsed.get("unit_number"))
+            cand_base_key = parsed.get("base_address_key")
             
             # Match logic
             is_match = (cand_sn == gold_sn and cand_st == gold_st and cand_un == gold_un)
             
+            # Phase 13: Simulate semantic alignment
+            semantic_alignment = 1.0 if gold_base_key and cand_base_key and gold_base_key == cand_base_key else 0.0
+
             # Extract features for this candidate
             features = extractor.extract_features(
                 raw_text, 
                 parsed, 
                 parser_name=cand.get("parser_name", "unknown"),
-                best_candidate_score=best_h_score
+                best_candidate_score=best_h_score,
+                semantic_alignment=semantic_alignment
             )
             vector = extractor.vectorize(features)
             
@@ -114,8 +120,9 @@ def train_reranker_model(workspace_name="default"):
         "has_city", "has_postal", "is_province_valid", 
         "is_city_valid", "is_unit_redundant", "has_double_number", 
         "is_numbered_road", "has_hwy_keyword", "has_explicit_unit_hint",
+        "has_org_indicator", "excess_token_count", "has_heavy_excess",
         "confidence", "reference_score", "gps_conflict", "parser_disagreement",
-        "parse_confidence", "score_delta"
+        "parse_confidence", "score_delta", "semantic_alignment"
     ]
     fi_df = pd.DataFrame({'feature': feature_names, 'importance': importance}).sort_values('importance', ascending=False)
     print("\nFeature Importance:")
