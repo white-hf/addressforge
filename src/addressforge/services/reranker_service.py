@@ -36,7 +36,12 @@ class RerankerService:
         else:
             logger.warning("Reranker model not found at %s. Using heuristic fallback.", self.model_path)
 
-    def rerank_candidates(self, raw_text: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def rerank_candidates(
+        self, 
+        raw_text: str, 
+        candidates: List[Dict[str, Any]],
+        semantic_anchors: List[Dict[str, Any]] | None = None
+    ) -> List[Dict[str, Any]]:
         """
         Reranks a list of parser candidates using the ML model.
         使用 ML 模型对解析候选列表进行重排。
@@ -53,6 +58,17 @@ class RerankerService:
                 parsed = cand.get("parsed", {})
                 parser_name = cand.get("parser_name", "unknown")
                 
+                # Phase 13: Calculate semantic alignment score if anchors available
+                # 第 13 阶段：如果锚点可用，计算语义对齐分
+                semantic_alignment = 0.0
+                if semantic_anchors:
+                    # Compare cand base key with top anchor base keys
+                    cand_base = str(parsed.get("base_address_key") or "")
+                    for anchor in semantic_anchors:
+                        anchor_base = str(anchor.get("base_address_key") or "")
+                        if cand_base == anchor_base:
+                            semantic_alignment = max(semantic_alignment, anchor.get("vector_score", 0.9))
+                
                 # Extract features for this candidate
                 features = self.feature_extractor.extract_features(
                     raw_text, 
@@ -60,6 +76,11 @@ class RerankerService:
                     parser_name,
                     best_candidate_score=best_h_score
                 )
+                
+                # New Phase 13 Feature: Semantic Alignment
+                # 新增第 13 阶段特征：语义对齐度
+                features["semantic_alignment"] = float(semantic_alignment)
+                
                 vector = self.feature_extractor.vectorize(features)
                 
                 # Predict probability of being the correct one
@@ -69,8 +90,11 @@ class RerankerService:
                 # Add rerank_score to the candidate
                 cand_copy = dict(cand)
                 cand_copy["rerank_score"] = round(prob, 4)
-                # Weighted blend of original score and reranker score (for stability)
-                cand_copy["final_score"] = round(0.3 * cand.get("score", 0.5) + 0.7 * prob, 4)
+                cand_copy["semantic_alignment"] = round(semantic_alignment, 4)
+                
+                # Weighted blend: Original + ML + Semantic
+                # 加权融合：原始分 + ML 分 + 语义分
+                cand_copy["final_score"] = round(0.2 * cand.get("score", 0.5) + 0.5 * prob + 0.3 * semantic_alignment, 4)
                 scored_candidates.append(cand_copy)
             
             # Sort by final score

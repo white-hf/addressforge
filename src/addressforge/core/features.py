@@ -46,7 +46,8 @@ class AddressFeatureExtractor:
         parser_name: str = "unknown",
         validation_context: Dict[str, Any] | None = None,
         reference_context: Dict[str, Any] | None = None,
-        best_candidate_score: float | None = None
+        best_candidate_score: float | None = None,
+        semantic_alignment: float | None = None
     ) -> Dict[str, Any]:
         """
         Main entry point for feature extraction.
@@ -124,6 +125,10 @@ class AddressFeatureExtractor:
         # 新重排特征：与最佳启发式得分的差值
         current_score = float(parsed.get("score") or parsed.get("parse_confidence") or 0.5)
         features["score_delta"] = (best_candidate_score - current_score) if best_candidate_score is not None else 0.0
+        
+        # Phase 13: Semantic Alignment Feature
+        # 第 13 阶段：语义对齐度特征
+        features["semantic_alignment"] = float(semantic_alignment or 0.0)
 
         return features
 
@@ -141,7 +146,7 @@ class AddressFeatureExtractor:
             "is_numbered_road", "has_hwy_keyword", "has_explicit_unit_hint",
             "has_org_indicator", "excess_token_count", "has_heavy_excess",
             "confidence", "reference_score", "gps_conflict", "parser_disagreement",
-            "parse_confidence", "score_delta"
+            "parse_confidence", "score_delta", "semantic_alignment"
         ]
         return [float(feature_dict.get(k, 0)) for k in ordered_keys]
 

@@ -45,6 +45,7 @@ from addressforge.learning import (
 )
 from addressforge.services.model_service import get_model_service
 from addressforge.services.reranker_service import get_reranker_service
+from addressforge.core.retrieval import get_vector_engine
 
 
 APP_TITLE = "Address Platform API / 地址平台 API"
@@ -627,6 +628,7 @@ class AddressPlatformService:
         # 新增：用于监督决策的 ML 模型服务
         self._model_service = get_model_service()
         self._reranker_service = get_reranker_service()
+        self._vector_engine = get_vector_engine()
 
     def _policy_float(self, key: str, default: float) -> float:
         value = self._decision_policy.get(key, default)
@@ -831,12 +833,35 @@ class AddressPlatformService:
 
     def validate(self, request: AddressRequest) -> dict[str, Any]:
         profile = get_profile(request.profile or self._default_profile or request.country_code or "CA")
-        parsed_result = self.parse(request)
+        
+        # New: Phase 13 - Step 1: Building Anchor Retrieval (Vector Bedrock)
+        # 新增：第 13 阶段 - 步骤 1：建筑锚点检索（向量基石）
+        semantic_anchors = self._vector_engine.retrieve(request.raw_address_text, top_k=3)
+        
+        # Inject semantic anchors into request for parser guidance
+        # 将语义锚点注入请求以指导解析器
+        request_with_context = request
+        if semantic_anchors:
+            # We can use the top anchor to provide 'hints' to the existing parsers
+            best_anchor = semantic_anchors[0]
+            # If the user didn't provide city/province, use the anchor's
+            if not request.city:
+                request_with_context.city = best_anchor.get("city")
+            if not request.province:
+                request_with_context.province = best_anchor.get("province")
+
+        parsed_result = self.parse(request_with_context)
         candidates = parsed_result.get("candidates") or []
         
         # New: Phase 10 - ML Candidate Reranking
         # 新增：第 10 阶段 - ML 候选人重排
-        reranked_candidates = self._reranker_service.rerank_candidates(request.raw_address_text, candidates)
+        # Enhanced for Phase 13: Pass semantic anchors to reranker for 'Entity Alignment' score
+        # 第 13 阶段增强：将语义锚点传递给重排器以获得“实体对齐”分数
+        reranked_candidates = self._reranker_service.rerank_candidates(
+            request.raw_address_text, 
+            candidates,
+            semantic_anchors=semantic_anchors
+        )
         best = reranked_candidates[0] if reranked_candidates else {}
         
         parsed = best.get("parsed") or {}
