@@ -61,6 +61,7 @@ CONTROL_JOB_KINDS = (
     "gold_freeze_once",
     "active_learning_once",
     "promote_assets_once",
+    "evolution_once",
     "bootstrap_registry",
 )
 CONTROL_JOB_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
@@ -1369,6 +1370,36 @@ def _run_promote_assets_job(job: dict[str, Any]) -> dict[str, Any]:
         "result": result
     }
 
+def _run_evolution_job(job: dict[str, Any]) -> dict[str, Any]:
+    """
+    Executes the full ML evolution cycle via shell script.
+    通过 shell 脚本执行完整的 ML 演进周期。
+    """
+    import subprocess
+    from pathlib import Path
+    
+    # Resolve the absolute path to the script
+    script_path = Path(__file__).resolve().parents[3] / "scripts" / "run_evolution_cycle.sh"
+    
+    if not script_path.exists():
+        raise FileNotFoundError(f"Evolution script not found at {script_path}")
+        
+    logger.info("Starting ML evolution cycle via %s", script_path)
+    
+    # Run the script and capture output
+    result = subprocess.run(
+        [str(script_path)],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    
+    return {
+        "status": "success",
+        "stdout": result.stdout[-1000:], # Return last 1k chars
+        "message": "Full ML evolution cycle completed and services restarted."
+    }
+
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
     job_kind = str(job.get("job_kind") or "")
     ensure_etl_run_types()
@@ -1396,6 +1427,8 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             result = _run_active_learning_job(job)
         elif job_kind == "promote_assets_once":
             result = _run_promote_assets_job(job)
+        elif job_kind == "evolution_once":
+            result = _run_evolution_job(job)
         else:
             raise ValueError(f"Unsupported job kind: {job_kind}")
         _store_job_result(job["job_id"], status="succeeded", result=result, etl_run_id=run_id)

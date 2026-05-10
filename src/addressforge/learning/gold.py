@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 import re
 from typing import Any
 
-from addressforge.core.common import create_run, db_cursor, dumps_payload, fetch_all, finish_run, stable_holdout_bucket
+from addressforge.core.common import create_run, db_cursor, dumps_payload, fetch_all, finish_run, normalize_space, stable_holdout_bucket
 from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
 from addressforge.core.utils import logger
 
@@ -116,6 +116,47 @@ def _existing_reviewed_or_queued_source_ids(
         tuple([workspace_name, *cleaned, workspace_name, *cleaned]),
     )
     return {str(row["source_id"]).strip() for row in rows if row.get("source_id") is not None}
+
+
+def _normalized_review_text_key(raw_text: str | None) -> str:
+    return normalize_space(raw_text).upper()
+
+
+def _existing_reviewed_or_queued_text_keys(
+    workspace_name: str,
+    source_ids: list[str],
+) -> set[str]:
+    cleaned = [str(source_id).strip() for source_id in source_ids if str(source_id).strip()]
+    if not cleaned:
+        return set()
+    placeholders = ", ".join(["%s"] * len(cleaned))
+    rows = fetch_all(
+        f"""
+        SELECT DISTINCT r.raw_address_text
+        FROM gold_label g
+        JOIN address_cleaning_result r
+          ON g.workspace_name = r.workspace_name
+         AND g.source_id = CAST(r.raw_id AS CHAR)
+        WHERE g.workspace_name = %s
+          AND g.review_status = 'accepted'
+          AND g.label_source = 'human'
+          AND g.source_id IN ({placeholders})
+        UNION
+        SELECT DISTINCT r.raw_address_text
+        FROM active_learning_queue q
+        JOIN address_cleaning_result r
+          ON q.workspace_name = r.workspace_name
+         AND q.source_id = CAST(r.raw_id AS CHAR)
+        WHERE q.workspace_name = %s
+          AND q.source_id IN ({placeholders})
+        """,
+        tuple([workspace_name, *cleaned, workspace_name, *cleaned]),
+    )
+    return {
+        _normalized_review_text_key(row.get("raw_address_text"))
+        for row in rows
+        if _normalized_review_text_key(row.get("raw_address_text"))
+    }
 
 
 def _looks_like_residential_unit_relabel_candidate(raw_text: str, building_type: str) -> bool:

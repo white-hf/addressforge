@@ -26,6 +26,10 @@ _NUMBERED_ROAD_RE = re.compile(r"\b(HWY|HIGHWAY|ROUTE|RTE|TRUNK|NS|CANADA)\s+\d+
 _DIRECTIONAL_RE = re.compile(r"\b(N|S|E|W|NORTH|SOUTH|EAST|WEST|NW|NE|SW|SE)\b", re.I)
 _DIGIT_BLOCK_RE = re.compile(r"\b\d+\b")
 
+# New: Business/Organization Indicators
+# 新增：商业/组织机构标识符
+_ORG_SUFFIX_RE = re.compile(r"\b(INC|CORP|LTD|CO|LLP|PLC|INTL|GLOBAL|BISTRO|CAFE|RESTAURANT|CLINIC|HOSPITAL|SCHOOL|OFFICE|PLAZA|MALL|SQUARE|CENTRE|CENTER)\b", re.I)
+
 class AddressFeatureExtractor:
     """
     Extracts a high-dimensional feature vector from an address parsing attempt.
@@ -89,17 +93,30 @@ class AddressFeatureExtractor:
         # Suspicion: Numbered Road vs Unit Number
         features["is_numbered_road"] = 1 if _NUMBERED_ROAD_RE.search(raw_text) else 0
         features["has_hwy_keyword"] = 1 if re.search(r"\b(HWY|HIGHWAY)\b", raw_text, re.I) else 0
+
+        # 5. New: Business/Commercial Semantic Signals
+        # 5. 新增：商业/贸易语义信号
+        features["has_org_indicator"] = 1 if _ORG_SUFFIX_RE.search(raw_text) else 0
         
-        # 5. Validation & Reference Signals (验证与参考信号)
+        # Excess Token Analysis: tokens that don't fit in standard fields
+        # 多余标记分析：不属于标准字段的标记
+        tokens = raw_text.replace(",", " ").split()
+        structured_text = f"{parsed.get('street_number', '')} {parsed.get('street_name', '')} {parsed.get('unit_number', '')} {parsed.get('city', '')} {parsed.get('province', '')} {parsed.get('postal_code', '')}"
+        structured_tokens = set(structured_text.upper().split())
+        excess_tokens = [t for t in tokens if t.upper() not in structured_tokens]
+        features["excess_token_count"] = len(excess_tokens)
+        features["has_heavy_excess"] = 1 if len(excess_tokens) >= 3 else 0
+        
+        # 6. Validation & Reference Signals (验证与参考信号)
         features["confidence"] = float(val_ctx.get("confidence", 0.5))
         features["reference_score"] = float(hints.get("reference_score", 0.0))
         features["gps_conflict"] = 1 if hints.get("gps_conflict") else 0
         features["parser_disagreement"] = 1 if hints.get("parser_disagreement") else 0
         
-        # 6. Semantic Hints (语义暗示)
+        # 7. Semantic Hints (语义暗示)
         features["has_explicit_unit_hint"] = 1 if _UNIT_HINT_RE.search(raw_text) else 0
         
-        # 7. Parser Provenance & Score Delta (解释器来源与得分增量)
+        # 8. Parser Provenance & Score Delta (解释器来源与得分增量)
         features["parser_source"] = parser_name
         features["parse_confidence"] = float(parsed.get("parse_confidence", 0.5))
         
@@ -122,6 +139,7 @@ class AddressFeatureExtractor:
             "has_city", "has_postal", "is_province_valid", 
             "is_city_valid", "is_unit_redundant", "has_double_number", 
             "is_numbered_road", "has_hwy_keyword", "has_explicit_unit_hint",
+            "has_org_indicator", "excess_token_count", "has_heavy_excess",
             "confidence", "reference_score", "gps_conflict", "parser_disagreement",
             "parse_confidence", "score_delta"
         ]

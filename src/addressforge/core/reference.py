@@ -241,6 +241,43 @@ class GeoNovaReferenceMatcher:
             unit_numbers=tuple(sorted(unit_numbers)),
         )
 
+    def diagnose_gap(
+        self,
+        street_number: str | None,
+        street_name: str | None,
+        province: str | None,
+        city: str | None = None,
+        municipality: str | None = None,
+        county: str | None = None,
+        lat: float | None = None,
+        lon: float | None = None,
+    ) -> str:
+        """
+        Diagnoses why a reference match failed.
+        诊断参考匹配失败的原因。
+        """
+        if not street_number or not street_name or not province:
+            return "MISSING_KEY_FIELDS"
+        key = "|".join([street_number.upper(), street_name.upper(), province.upper()])
+        candidates = self._load_reference_map().get(key, [])
+        if not candidates:
+            return "NO_REFERENCE_CANDIDATE"
+
+        observed_localities = tuple(value for value in {normalize_city(city), normalize_city(municipality), normalize_city(county)} if value)
+        
+        # Check if it's purely a locality mismatch
+        # 检查是否纯粹是局部位置不匹配
+        has_locality_match = False
+        for reference in candidates:
+            if any(self._city_compatible(locality, reference.get("city") or reference.get("municipality") or reference.get("county")) for locality in observed_localities or (normalize_city(city),)):
+                has_locality_match = True
+                break
+                
+        if not has_locality_match:
+            return "LOCALITY_MISMATCH"
+            
+        return "LOW_SCORE_MATCH"
+
 
 def _to_reference_row(row: dict[str, str], workspace_name: str) -> ExternalBuildingReferenceRow | None:
     street_number = normalize_space(row.get("CIVICNUM")).upper()

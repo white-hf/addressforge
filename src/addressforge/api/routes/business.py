@@ -28,12 +28,17 @@ async def asset_stats(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME):
 
 
 @router.get("/asset-quality")
-async def asset_quality(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, confidence_threshold: float = 0.85):
+async def asset_quality(
+    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME, 
+    confidence_threshold: float = 0.85,
+    source_name: str | None = None
+):
     """
     Returns canonical/reference asset quality diagnostics and generates a report.
-    返回标准资产/参考融合质量诊断并生成报表。
+    Can be filtered by source_name for fresh-data analysis.
+    返回标准资产/参考融合质量诊断并生成报表。可以按 source_name 过滤以进行新数据分析。
     """
-    return generate_asset_quality_report(workspace_name, confidence_threshold)
+    return generate_asset_quality_report(workspace_name, confidence_threshold, source_name)
 
 from addressforge.services.replay_service import get_release_readiness_report
 

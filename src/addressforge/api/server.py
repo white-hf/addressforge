@@ -877,6 +877,8 @@ class AddressPlatformService:
         postal_code = parsed.get("postal_code") or request.postal_code
         reference = None
         ref_score = 0.0
+        reference_gap_reason = None
+        
         if street_number and street_name and normalized_province:
             try:
                 match = self._reference_matcher.match(
@@ -892,6 +894,7 @@ class AddressPlatformService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Reference match failed in public API: %s", exc)
                 match = None
+                
             if match:
                 reference = dict(match.reference)
                 reference.update(
@@ -903,6 +906,19 @@ class AddressPlatformService:
                     }
                 )
                 ref_score = float(match.score)
+            else:
+                # Diagnose reference gap
+                # 诊断参考差距
+                reference_gap_reason = self._reference_matcher.diagnose_gap(
+                    street_number,
+                    street_name,
+                    normalized_province,
+                    city=normalized_city,
+                    municipality=normalized_city,
+                    county=None,
+                    lat=request.latitude,
+                    lon=request.longitude,
+                )
 
         building_type = infer_structure_type(
             raw_address_text=request.raw_address_text,
@@ -1071,6 +1087,7 @@ class AddressPlatformService:
                 ),
                 "reference_available": bool(reference),
                 "reference_score": round(ref_score, 4),
+                "reference_gap_reason": reference_gap_reason,
                 "parser_disagreement": parser_disagreement,
                 "alternate_unit_candidates": [
                     canonicalize_unit_number(item.get("unit_number"))
@@ -1098,6 +1115,11 @@ class AddressPlatformService:
             steps.append(
                 f"Reference: {ref.get('source_name')} {ref.get('external_id')} (score={ref.get('reference_confidence')})"
             )
+        else:
+            gap_reason = validation.get("hints", {}).get("reference_gap_reason")
+            if gap_reason:
+                steps.append(f"Reference Gap: {gap_reason}")
+        
         if validation.get("canonical", {}).get("base_address_key"):
             steps.append(f"Canonical key: {validation['canonical']['base_address_key']}")
         return {

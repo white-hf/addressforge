@@ -31,10 +31,16 @@
                     <span class="badge good">Latest</span>
                 </div>
                 <h3 class="font-bold text-lg mb-2" data-i18n="report_quality_title">质量汇总报表</h3>
-                <p class="text-sm text-slate-500 mb-6 flex-grow" data-i18n="report_quality_desc">包含地址清洗的全量统计、成功率分析及常见的错误聚类分布。</p>
+                <p class="text-sm text-slate-500 mb-2 flex-grow" data-i18n="report_quality_desc">包含地址清洗的全量统计、成功率分析及常见的错误聚类分布。</p>
+                <div class="mb-4">
+                    <input type="text" id="fresh-data-source" placeholder="Source Name (Optional)" class="w-full text-xs p-2 border rounded" title="Enter source_name to filter for fresh data">
+                </div>
                 <div class="mt-auto pt-4 border-t flex justify-between items-center">
                     <span class="text-xs text-slate-400" id="report-quality-date">Updating...</span>
-                    <button class="btn soft py-2 px-4" onclick="viewReport('quality')" data-i18n="view_now">立即查看</button>
+                    <div class="flex gap-2">
+                        <button class="btn primary py-1 px-3 text-xs" onclick="generateQualityReport()">Generate</button>
+                        <button class="btn soft py-1 px-3 text-xs" onclick="viewReport('quality')" data-i18n="view_now">立即查看</button>
+                    </div>
                 </div>
             </div>
 
@@ -163,6 +169,31 @@ function viewReport(type) {
         }
     });
 }
+
+// Generate new asset quality report, optionally filtered by source_name
+// 生成新的资产质量报表，可选择按 source_name 过滤
+async function generateQualityReport() {
+    const sourceName = document.getElementById('fresh-data-source').value.trim();
+    let url = '/api/v1/business/asset-quality';
+    if (sourceName) {
+        url += `?source_name=${encodeURIComponent(sourceName)}`;
+    }
+    
+    if (typeof showToast === 'function') showToast("Generating report...", "info");
+    
+    try {
+        const res = await fetch(url);
+        if (res.ok) {
+            if (typeof showToast === 'function') showToast("Report generated successfully.", "success");
+            loadReportList(); // Refresh the list
+        } else {
+            if (typeof showToast === 'function') showToast("Failed to generate report.", "error");
+        }
+    } catch (e) {
+        if (typeof showToast === 'function') showToast("Error connecting to server.", "error");
+    }
+}
+
 
 function translatePage() {
     if (typeof setLanguage === 'function') {

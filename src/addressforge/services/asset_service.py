@@ -1244,7 +1244,10 @@ def _derive_asset_quality_diagnostics(
 def generate_asset_quality_report(
     workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
     confidence_threshold: float = 0.85,
+    source_name: str | None = None,
 ) -> dict[str, Any]:
+    # Add source_name filter logic
+    # 添加 source_name 过滤逻辑
     query = """
         SELECT
             acr.raw_id,
@@ -1265,7 +1268,12 @@ def generate_asset_quality_report(
           AND acr.confidence >= %s
           AND acr.checkpoint_status = 'completed'
     """
-    rows = fetch_all(query, (workspace_name, confidence_threshold))
+    params = [workspace_name, confidence_threshold]
+    if source_name:
+        query += " AND r.source_name = %s"
+        params.append(source_name)
+
+    rows = fetch_all(query, tuple(params))
     stats = get_asset_stats(workspace_name)
     city_province_map = _load_city_to_province_map(workspace_name)
     diagnostics = _derive_asset_quality_diagnostics(

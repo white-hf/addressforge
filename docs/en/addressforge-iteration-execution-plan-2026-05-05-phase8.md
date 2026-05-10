@@ -343,6 +343,9 @@ Planned technical methods:
 - **Existing-source exclusion before limit truncation**
   - `decision minority-label` seeding must exclude already reviewed/queued source_ids before applying the final limit cut.
   - benefit: prevents false-empty behavior where the pool still has new samples but the first N candidates are already consumed.
+- **Address-text deduplication for minority-label samples**
+  - `decision minority-label` seeding must not dedupe only by `source_id`; it must also dedupe by normalized `raw_address_text`.
+  - benefit: prevents the same address from entering human review multiple times through different `raw_id` values or repeated imports, protecting minority-label training quality.
 
 ### Task 10: Structured field correction support in the review page
 - Expected benefit:

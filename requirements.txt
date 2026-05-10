@@ -9,3 +9,5 @@ pandas
 scipy
 catboost
 postal
+sentence-transformers
+faiss-cpu
