@@ -387,6 +387,78 @@ def _decision_assist_rollout_readiness(shadow_summary: dict[str, Any] | None) ->
     }
 
 
+def _decision_threshold_tuning_hints(
+    shadow_summary: dict[str, Any] | None,
+    readiness: dict[str, Any] | None,
+) -> dict[str, Any]:
+    shadow_summary = shadow_summary if isinstance(shadow_summary, dict) else {}
+    readiness = readiness if isinstance(readiness, dict) else {}
+    bucket_counts = shadow_summary.get("bucket_counts") or {}
+    assist = shadow_summary.get("assist_readiness") or {}
+    guard_reason_counts = assist.get("guard_reason_counts") or {}
+
+    hints: list[dict[str, Any]] = []
+    if int(bucket_counts.get("MODEL_MORE_AGGRESSIVE_ACCEPT") or 0) > 0:
+        hints.append(
+            {
+                "priority": "high",
+                "target_bucket": "MODEL_MORE_AGGRESSIVE_ACCEPT",
+                "policy_area": "assist_accept",
+                "suggestion": "tighten accept-recovery assist thresholds or expand parser/reference safety guards before enabling assist.",
+                "candidate_thresholds": [
+                    "assist_accept_score_threshold",
+                    "assist_accept_parse_score_threshold",
+                ],
+            }
+        )
+    if int(bucket_counts.get("MODEL_MORE_CONSERVATIVE_REVIEW") or 0) > 0:
+        hints.append(
+            {
+                "priority": "high",
+                "target_bucket": "MODEL_MORE_CONSERVATIVE_REVIEW",
+                "policy_area": "assist_review",
+                "suggestion": "tighten review-escalation assist eligibility so only disagreement cases with real guard triggers are surfaced.",
+                "candidate_thresholds": [
+                    "assist_review_score_threshold",
+                    "assist_review_parse_score_threshold",
+                    "assist_review_reference_score_threshold",
+                ],
+            }
+        )
+    if int(bucket_counts.get("MODEL_REJECT_ESCALATION") or 0) > 0:
+        hints.append(
+            {
+                "priority": "medium",
+                "target_bucket": "MODEL_REJECT_ESCALATION",
+                "policy_area": "reject_override",
+                "suggestion": "keep reject override disabled until explicit reject calibration and minority-label evidence improves.",
+                "candidate_thresholds": [],
+            }
+        )
+    if int(guard_reason_counts.get("parser_disagreement_guard") or 0) > 0:
+        hints.append(
+            {
+                "priority": "medium",
+                "target_bucket": "PARSER_DISAGREEMENT_GUARD",
+                "policy_area": "guard_coverage",
+                "suggestion": "parser disagreement is still blocking assist candidates; improve parser recovery before relaxing review boundaries.",
+                "candidate_thresholds": [],
+            }
+        )
+
+    overall_status = str(readiness.get("status") or "shadow_only")
+    next_action = (
+        "hold shadow-only and continue boundary calibration"
+        if overall_status != "ready_for_assist_trial"
+        else "prepare a narrow assist trial on guarded accept/review transitions"
+    )
+    return {
+        "status": overall_status,
+        "next_action": next_action,
+        "hints": hints,
+    }
+
+
 def _load_gold_comparison_rows(workspace_name: str) -> list[dict[str, Any]]:
     return fetch_all(
         """
@@ -708,6 +780,10 @@ def run_baseline_evaluation(
             metrics_json["decision_assist_rollout_readiness"] = _decision_assist_rollout_readiness(
                 metrics_json["decision_shadow_assist"]
             )
+            metrics_json["decision_threshold_tuning_hints"] = _decision_threshold_tuning_hints(
+                metrics_json["decision_shadow_assist"],
+                metrics_json["decision_assist_rollout_readiness"],
+            )
         if building_metrics:
             metrics_json["building_type"] = building_metrics
             errors = _field_error_samples(gold_rows, "building_type")
@@ -922,6 +998,20 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
             f"| Eligible Assist Samples | {int(assist_readiness.get('eligible_count') or 0)} | {'PASS' if (assist_readiness.get('checks') or {}).get('eligible_sample_count_sufficient') else 'FAIL'} |",
             f"| Assist Gold Match Rate | {float(assist_readiness.get('assist_gold_match_rate') or 0.0):.4f} | {'PASS' if (assist_readiness.get('checks') or {}).get('assist_gold_match_rate_sufficient') else 'FAIL'} |",
         ])
+    tuning_hints = metrics.get("decision_threshold_tuning_hints") or {}
+    if tuning_hints:
+        report.extend([
+            "",
+            "## 1.3 Decision Threshold Tuning Hints",
+            f"- Overall Status: `{tuning_hints.get('status') or 'unknown'}`",
+            f"- Next Action: {tuning_hints.get('next_action') or 'n/a'}",
+        ])
+        for hint in tuning_hints.get("hints") or []:
+            thresholds = ", ".join(hint.get("candidate_thresholds") or [])
+            threshold_text = f" Candidate thresholds: `{thresholds}`." if thresholds else ""
+            report.append(
+                f"- [{hint.get('priority')}] `{hint.get('target_bucket')}` -> {hint.get('suggestion')}{threshold_text}"
+            )
 
     # --- Historical Replay & Stability Section ---
     report.extend([

@@ -107,6 +107,14 @@ Current implementation progress (2026-05-13):
     - `disagreement_rate`
     - `eligible_count`
     - `assist_gold_match_rate`
+- evaluator now also emits:
+  - `decision_threshold_tuning_hints`
+  - which maps dominant disagreement buckets directly to candidate tuning points such as:
+    - `assist_accept_score_threshold`
+    - `assist_accept_parse_score_threshold`
+    - `assist_review_score_threshold`
+    - `assist_review_parse_score_threshold`
+    - `assist_review_reference_score_threshold`
 
 The purpose is not to enable override yet. The purpose is to answer:
 - which disagreement cases are now safe candidates for assist

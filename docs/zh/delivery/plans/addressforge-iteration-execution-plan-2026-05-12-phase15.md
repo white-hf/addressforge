@@ -112,6 +112,15 @@
     - `disagreement_rate`
     - `eligible_count`
     - `assist_gold_match_rate`
+- evaluator 现在还会进一步产出：
+  - `decision_threshold_tuning_hints`
+  - 用于把主分桶直接映射到：
+    - `assist_accept_score_threshold`
+    - `assist_accept_parse_score_threshold`
+    - `assist_review_score_threshold`
+    - `assist_review_parse_score_threshold`
+    - `assist_review_reference_score_threshold`
+  等候选调参点
 
 这一切的目的不是立即启用 override，而是回答：
 - 哪些 disagreement 已具备进入 assist 的安全前提
