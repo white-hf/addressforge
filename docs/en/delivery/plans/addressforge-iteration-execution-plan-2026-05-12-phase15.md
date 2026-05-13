@@ -161,6 +161,18 @@ Current implementation progress (continued):
   so each training run can be audited directly by comparing:
   - thresholds before calibration
   - thresholds after calibration
+- to make iterative training/evaluation loops faster and more stable, a formal environment switch now exists:
+  - `ADDRESSFORGE_SKIP_CANADA_BENCHMARK=1`
+- it applies to:
+  - training
+  - evaluation
+- purpose:
+  - skip Canada benchmark
+  - validate more quickly:
+    - `decision_shadow_assist`
+    - `assist_rollout_readiness`
+    - `assist_trial`
+    - `decision_policy_calibration`
 
 The purpose is not to enable override yet. The purpose is to answer:
 - which disagreement cases are now safe candidates for assist

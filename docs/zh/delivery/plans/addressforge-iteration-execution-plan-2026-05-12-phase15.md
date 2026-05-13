@@ -167,6 +167,18 @@
   这样每轮训练后都可以直接比较：
   - calibration 前阈值
   - calibration 后阈值
+- 为了让后续快速循环训练/评测更稳定，现在已新增正式环境开关：
+  - `ADDRESSFORGE_SKIP_CANADA_BENCHMARK=1`
+- 该开关可用于：
+  - training
+  - evaluation
+- 作用：
+  - 跳过 Canada benchmark
+  - 先更快验证：
+    - `decision_shadow_assist`
+    - `assist_rollout_readiness`
+    - `assist_trial`
+    - `decision_policy_calibration`
 
 这一切的目的不是立即启用 override，而是回答：
 - 哪些 disagreement 已具备进入 assist 的安全前提

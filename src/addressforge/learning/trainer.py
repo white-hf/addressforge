@@ -59,6 +59,10 @@ def _artifact_dir() -> Path:
     return Path(os.getenv("ADDRESSFORGE_MODEL_ARTIFACT_DIR", ADDRESSFORGE_MODEL_ARTIFACT_DIR)).expanduser()
 
 
+def _skip_canada_benchmark() -> bool:
+    return str(os.getenv("ADDRESSFORGE_SKIP_CANADA_BENCHMARK", "0")).strip().lower() in {"1", "true", "yes"}
+
+
 def _safe_float(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -430,7 +434,7 @@ def _derive_parser_weights(
 ) -> dict[str, float]:
     benchmark_path = Path(__file__).resolve().parents[3] / "examples" / "canada_address_benchmark.jsonl"
     parsers = ("simple_rule", "hybrid_canada", "libpostal")
-    if not benchmark_path.exists():
+    if _skip_canada_benchmark() or not benchmark_path.exists():
         return {parser_name: round(1.0 / len(parsers), 4) for parser_name in parsers}
     scores: dict[str, float] = {}
     for parser_name in parsers:
@@ -1168,7 +1172,7 @@ def run_baseline_training(
         artifact_path = artifact_dir / f"{model_name}_{model_version}_training.json"
         benchmark_summary: dict[str, Any] | None = None
         benchmark_path = Path(__file__).resolve().parents[3] / "examples" / "canada_address_benchmark.jsonl"
-        if benchmark_path.exists():
+        if benchmark_path.exists() and not _skip_canada_benchmark():
             benchmark_summary = run_canada_address_benchmark(
                 benchmark_path,
                 workspace_name=workspace_name,

@@ -46,6 +46,10 @@ def _default_canada_benchmark_path() -> Path:
     return Path(__file__).resolve().parents[3] / "examples" / "canada_address_benchmark.jsonl"
 
 
+def _skip_canada_benchmark() -> bool:
+    return str(os.getenv("ADDRESSFORGE_SKIP_CANADA_BENCHMARK", "0")).strip().lower() in {"1", "true", "yes"}
+
+
 def _normalize_label_json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -901,7 +905,7 @@ def run_baseline_evaluation(
         if commercial_metrics:
             metrics_json["commercial"] = commercial_metrics
         benchmark_path = _default_canada_benchmark_path()
-        if benchmark_path.exists():
+        if benchmark_path.exists() and not _skip_canada_benchmark():
             try:
                 from addressforge.learning.canada_benchmark import run_canada_address_benchmark
                 target_profile, target_parsers, target_decision_policy, _target_model_service = _resolve_model_runtime(
