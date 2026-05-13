@@ -115,6 +115,16 @@ Current implementation progress (2026-05-13):
     - `assist_review_score_threshold`
     - `assist_review_parse_score_threshold`
     - `assist_review_reference_score_threshold`
+- evaluator now also runs:
+  - `assist trial simulation`
+  - meaning it simulates the decision outcome that would occur if the current
+    `assist_eligible + assist_recommended_decision`
+    logic were enabled, without changing the live final decision
+- this adds:
+  - `assist_trial`
+  - `assist_trial_advantage`
+  - readiness check:
+    - `assist_trial_not_worse_than_shadow`
 
 The purpose is not to enable override yet. The purpose is to answer:
 - which disagreement cases are now safe candidates for assist

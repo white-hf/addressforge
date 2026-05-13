@@ -121,6 +121,16 @@
     - `assist_review_parse_score_threshold`
     - `assist_review_reference_score_threshold`
   等候选调参点
+- evaluator 现在还会做：
+  - `assist trial simulation`
+  - 也就是在不改线上 final decision 的前提下，模拟：
+    - 如果按当前 `assist_eligible + assist_recommended_decision`
+      试运行 assist，decision 指标会如何变化
+- 当前会新增：
+  - `assist_trial`
+  - `assist_trial_advantage`
+  - readiness check:
+    - `assist_trial_not_worse_than_shadow`
 
 这一切的目的不是立即启用 override，而是回答：
 - 哪些 disagreement 已具备进入 assist 的安全前提

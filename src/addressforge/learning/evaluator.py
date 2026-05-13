@@ -65,7 +65,7 @@ def _metrics_json_dict(model_row: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _extract_gold_value(label_json: dict[str, Any], field_name: str) -> str | None:
-    if field_name in {"decision", "heuristic_decision", "ml_shadow_decision"}:
+    if field_name in {"decision", "heuristic_decision", "ml_shadow_decision", "assist_trial_decision"}:
         value = label_json.get("decision")
         if isinstance(value, str) and value.strip().lower() == "correct":
             value = "accept"
@@ -269,6 +269,7 @@ def _categorize_shadow_disagreement(row: dict[str, Any]) -> str:
 def _decision_shadow_assist_summary(rows: list[dict[str, Any]], limit: int = 50) -> dict[str, Any]:
     heuristic_metrics = _field_metrics(rows, "heuristic_decision") if rows else None
     model_metrics = _field_metrics(rows, "ml_shadow_decision") if rows else None
+    assist_trial_rows: list[dict[str, Any]] = []
     disagreements: list[dict[str, Any]] = []
     bucket_counts: dict[str, int] = {}
     assist_guard_counts: dict[str, int] = {}
@@ -288,6 +289,17 @@ def _decision_shadow_assist_summary(rows: list[dict[str, Any]], limit: int = 50)
         assist_is_eligible = bool(row.get("assist_eligible"))
         if heuristic is None:
             continue
+        assist_trial_decision = (
+            assist_recommended_decision
+            if assist_is_eligible and assist_recommended_decision is not None
+            else heuristic
+        )
+        assist_trial_rows.append(
+            {
+                **row,
+                "assist_trial_decision": assist_trial_decision,
+            }
+        )
         compared += 1
         if model is not None:
             model_available += 1
@@ -326,13 +338,17 @@ def _decision_shadow_assist_summary(rows: list[dict[str, Any]], limit: int = 50)
     ordered_assist_guards = sorted(assist_guard_counts.items(), key=lambda item: (-item[1], item[0]))
     heuristic_f1 = float((heuristic_metrics or {}).get("f1") or 0.0)
     model_f1 = float((model_metrics or {}).get("f1") or 0.0)
+    assist_trial_metrics = _field_metrics(assist_trial_rows, "assist_trial_decision") if assist_trial_rows else None
+    assist_trial_f1 = float((assist_trial_metrics or {}).get("f1") or 0.0)
     return {
         "heuristic": heuristic_metrics,
         "ml_shadow": model_metrics,
+        "assist_trial": assist_trial_metrics,
         "compared": compared,
         "model_available": model_available,
         "disagreement_rate": round(disagreed / compared, 4) if compared else 0.0,
         "shadow_advantage": round(model_f1 - heuristic_f1, 4),
+        "assist_trial_advantage": round(assist_trial_f1 - heuristic_f1, 4),
         "bucket_counts": dict(ordered_buckets),
         "top_buckets": [{"bucket": bucket, "count": count} for bucket, count in ordered_buckets[:10]],
         "assist_readiness": {
@@ -350,11 +366,14 @@ def _decision_assist_rollout_readiness(shadow_summary: dict[str, Any] | None) ->
     shadow_summary = shadow_summary if isinstance(shadow_summary, dict) else {}
     heuristic = shadow_summary.get("heuristic") or {}
     ml_shadow = shadow_summary.get("ml_shadow") or {}
+    assist_trial = shadow_summary.get("assist_trial") or {}
     assist = shadow_summary.get("assist_readiness") or {}
 
     heuristic_f1 = float(heuristic.get("f1") or 0.0)
     shadow_f1 = float(ml_shadow.get("f1") or 0.0)
+    assist_trial_f1 = float(assist_trial.get("f1") or 0.0)
     shadow_advantage = float(shadow_summary.get("shadow_advantage") or 0.0)
+    assist_trial_advantage = float(shadow_summary.get("assist_trial_advantage") or 0.0)
     disagreement_rate = float(shadow_summary.get("disagreement_rate") or 0.0)
     eligible_count = int(assist.get("eligible_count") or 0)
     gold_match_rate = float(assist.get("gold_match_rate") or 0.0)
@@ -362,6 +381,7 @@ def _decision_assist_rollout_readiness(shadow_summary: dict[str, Any] | None) ->
 
     checks = {
         "shadow_beats_heuristic": shadow_f1 > heuristic_f1 and shadow_advantage > 0.0,
+        "assist_trial_not_worse_than_shadow": assist_trial_f1 >= shadow_f1,
         "disagreement_rate_safe": disagreement_rate <= 0.15,
         "eligible_sample_count_sufficient": eligible_count >= 10,
         "assist_gold_match_rate_sufficient": gold_compared >= 5 and gold_match_rate >= 0.80,
@@ -379,7 +399,9 @@ def _decision_assist_rollout_readiness(shadow_summary: dict[str, Any] | None) ->
         "checks": checks,
         "heuristic_f1": round(heuristic_f1, 4),
         "ml_shadow_f1": round(shadow_f1, 4),
+        "assist_trial_f1": round(assist_trial_f1, 4),
         "shadow_advantage": round(shadow_advantage, 4),
+        "assist_trial_advantage": round(assist_trial_advantage, 4),
         "disagreement_rate": round(disagreement_rate, 4),
         "eligible_count": eligible_count,
         "assist_gold_compared": gold_compared,
@@ -974,15 +996,17 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
     if shadow_assist:
         heuristic = shadow_assist.get("heuristic") or {}
         ml_shadow = shadow_assist.get("ml_shadow") or {}
+        assist_trial = shadow_assist.get("assist_trial") or {}
         report.extend([
             "",
             "## 1.1 DecisionModel Shadow-Assist",
-            "| Metric | Heuristic | ML Shadow |",
-            "| :--- | :--- | :--- |",
-            f"| Decision F1 | {float(heuristic.get('f1') or 0.0):.4f} | {float(ml_shadow.get('f1') or 0.0):.4f} |",
-            f"| Decision Precision | {float(heuristic.get('precision') or 0.0):.4f} | {float(ml_shadow.get('precision') or 0.0):.4f} |",
-            f"| Decision Recall | {float(heuristic.get('recall') or 0.0):.4f} | {float(ml_shadow.get('recall') or 0.0):.4f} |",
+            "| Metric | Heuristic | ML Shadow | Assist Trial |",
+            "| :--- | :--- | :--- | :--- |",
+            f"| Decision F1 | {float(heuristic.get('f1') or 0.0):.4f} | {float(ml_shadow.get('f1') or 0.0):.4f} | {float(assist_trial.get('f1') or 0.0):.4f} |",
+            f"| Decision Precision | {float(heuristic.get('precision') or 0.0):.4f} | {float(ml_shadow.get('precision') or 0.0):.4f} | {float(assist_trial.get('precision') or 0.0):.4f} |",
+            f"| Decision Recall | {float(heuristic.get('recall') or 0.0):.4f} | {float(ml_shadow.get('recall') or 0.0):.4f} | {float(assist_trial.get('recall') or 0.0):.4f} |",
             f"| Shadow Advantage | - | {float(shadow_assist.get('shadow_advantage') or 0.0):+.4f} |",
+            f"| Assist Trial Advantage | - | - | {float(shadow_assist.get('assist_trial_advantage') or 0.0):+.4f} |",
             f"| Disagreement Rate | - | {float(shadow_assist.get('disagreement_rate') or 0.0):.4f} |",
         ])
     assist_readiness = metrics.get("decision_assist_rollout_readiness") or {}
@@ -994,6 +1018,7 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
             "| :--- | :--- | :--- |",
             f"| Rollout Status | {assist_readiness.get('status') or 'unknown'} | {'PASS' if assist_readiness.get('status') == 'ready_for_assist_trial' else 'HOLD'} |",
             f"| Shadow Advantage | {float(assist_readiness.get('shadow_advantage') or 0.0):+.4f} | {'PASS' if (assist_readiness.get('checks') or {}).get('shadow_beats_heuristic') else 'FAIL'} |",
+            f"| Assist Trial Advantage | {float(assist_readiness.get('assist_trial_advantage') or 0.0):+.4f} | {'PASS' if (assist_readiness.get('checks') or {}).get('assist_trial_not_worse_than_shadow') else 'FAIL'} |",
             f"| Disagreement Rate | {float(assist_readiness.get('disagreement_rate') or 0.0):.4f} | {'PASS' if (assist_readiness.get('checks') or {}).get('disagreement_rate_safe') else 'FAIL'} |",
             f"| Eligible Assist Samples | {int(assist_readiness.get('eligible_count') or 0)} | {'PASS' if (assist_readiness.get('checks') or {}).get('eligible_sample_count_sufficient') else 'FAIL'} |",
             f"| Assist Gold Match Rate | {float(assist_readiness.get('assist_gold_match_rate') or 0.0):.4f} | {'PASS' if (assist_readiness.get('checks') or {}).get('assist_gold_match_rate_sufficient') else 'FAIL'} |",
