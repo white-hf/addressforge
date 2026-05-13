@@ -35,9 +35,15 @@
                 <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
                     <div>
                         <h4 class="text-xl font-bold mb-1" data-i18n="ingestion_config_title">数据摄入配置 (Ingestion Source)</h4>
-                        <p class="text-sm text-slate-500" data-i18n="ingestion_config_desc">Switch between API incremental intake and DB historical backfill.</p>
+                        <div class="flex items-center gap-2">
+                            <p class="text-sm text-slate-500" data-i18n="ingestion_config_desc">Switch between API incremental intake and DB historical backfill.</p>
+                            <span id="active-mode-label" class="px-2 py-0.5 rounded bg-blue-50 text-blue-600 text-[10px] font-bold border border-blue-100 uppercase">Current: API</span>
+                        </div>
                     </div>
-                    <div id="ingestion-config-badge" class="pill warn">Loading...</div>
+                    <div class="flex flex-col items-end">
+                        <div id="ingestion-config-badge" class="pill good">Saved</div>
+                        <span id="pending-save-notice" class="text-[10px] text-orange-500 font-bold mt-1 hidden">UNSAVED CHANGES</span>
+                    </div>
                 </div>
 
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
@@ -193,13 +199,15 @@ function markIngestionConfigDirty() {
     const badge = document.getElementById('ingestion-config-badge');
     if (badge) {
         badge.className = 'pill warn';
-        badge.textContent = 'Unsaved Changes';
+        badge.textContent = 'Modified';
     }
+    document.getElementById('pending-save-notice').classList.remove('hidden');
 }
 
 function clearIngestionConfigDirty() {
     ingestionConfigDirty = false;
     localStorage.removeItem(INGESTION_DRAFT_KEY);
+    document.getElementById('pending-save-notice').classList.add('hidden');
 }
 
 function applyDefaultSourceNameForMode() {
@@ -234,13 +242,28 @@ async function refreshSettings() {
 
 function toggleIngestionConfigFields() {
     const mode = document.getElementById('ingestion-mode').value;
-    document.getElementById('ingestion-api-fields').classList.toggle('hidden', mode !== 'api');
-    document.getElementById('ingestion-db-fields').classList.toggle('hidden', mode !== 'db');
+    const apiFields = document.getElementById('ingestion-api-fields');
+    const dbFields = document.getElementById('ingestion-db-fields');
+    
+    apiFields.classList.toggle('hidden', mode !== 'api');
+    dbFields.classList.toggle('hidden', mode !== 'db');
+
+    // Visual Cue for Inactive Mode
+    // 非活动模式的视觉提示
+    apiFields.style.opacity = mode === 'api' ? '1' : '0.4';
+    dbFields.style.opacity = mode === 'db' ? '1' : '0.4';
 }
 
 function populateIngestionConfig(config) {
     document.getElementById('ingestion-mode').value = config.mode || 'api';
     document.getElementById('ingestion-source-name').value = config.source_name || '';
+    
+    // Update the 'Current' mode label to reflect actual DB state
+    // 更新“当前”模式标签以反映实际数据库状态
+    const activeLabel = document.getElementById('active-mode-label');
+    activeLabel.textContent = `Current: ${config.mode.toUpperCase()}`;
+    activeLabel.className = `px-2 py-0.5 rounded text-[10px] font-bold border border-blue-100 uppercase ${config.mode === 'db' ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`;
+
     document.getElementById('ingestion-api-batch-size').value = (config.api && config.api.batch_size) || 1000;
     document.getElementById('ingestion-db-batch-size').value = (config.db && config.db.batch_size) || 1000;
     document.getElementById('ingestion-db-table').value = (config.db && config.db.table) || '';

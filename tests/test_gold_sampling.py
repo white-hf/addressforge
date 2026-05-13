@@ -228,7 +228,16 @@ class TestGoldSampling(unittest.TestCase):
     @patch("addressforge.learning.gold.create_run", return_value=299)
     @patch("addressforge.learning.gold.finish_run")
     @patch("addressforge.learning.gold._existing_reviewed_or_queued_source_ids", return_value=set())
-    def test_seed_decision_minority_label_review_queue(self, mock_existing, mock_finish, mock_create, mock_db, mock_fetch):
+    @patch("addressforge.learning.gold._existing_reviewed_or_queued_text_keys", return_value=set())
+    def test_seed_decision_minority_label_review_queue(
+        self,
+        mock_text_keys,
+        mock_existing,
+        mock_finish,
+        mock_create,
+        mock_db,
+        mock_fetch,
+    ):
         mock_fetch.side_effect = [
             [
                 {
@@ -309,7 +318,8 @@ class TestGoldSampling(unittest.TestCase):
         "addressforge.learning.gold._existing_reviewed_or_queued_source_ids",
         return_value={"701", "702", "703"},
     )
-    def test_seed_decision_minority_label_skips_existing_before_limit(self, mock_existing, mock_finish, mock_create, mock_db, mock_fetch):
+    @patch("addressforge.learning.gold._existing_reviewed_or_queued_text_keys", return_value=set())
+    def test_seed_decision_minority_label_skips_existing_before_limit(self, mock_text_keys, mock_existing, mock_finish, mock_create, mock_db, mock_fetch):
         mock_fetch.side_effect = [
             [
                 {
@@ -378,6 +388,53 @@ class TestGoldSampling(unittest.TestCase):
         ]
         inserted_source_ids = [call.args[1][2] for call in insert_calls]
         self.assertEqual(inserted_source_ids, ["704", "705"])
+
+    @patch("addressforge.learning.gold.fetch_all")
+    @patch("addressforge.learning.gold.db_cursor")
+    @patch("addressforge.learning.gold.create_run", return_value=499)
+    @patch("addressforge.learning.gold.finish_run")
+    @patch("addressforge.learning.gold._existing_reviewed_or_queued_source_ids", return_value=set())
+    @patch("addressforge.learning.gold._existing_reviewed_or_queued_text_keys", return_value=set())
+    def test_seed_decision_minority_label_dedupes_duplicate_address_text(self, mock_text_keys, mock_existing, mock_finish, mock_create, mock_db, mock_fetch):
+        mock_fetch.side_effect = [
+            [],
+            [
+                {
+                    "raw_id": 801,
+                    "decision": "review",
+                    "confidence": 0.41,
+                    "reason": "Address is incomplete and needs manual confirmation.",
+                    "building_type": "single_unit",
+                    "raw_address_text": "Mountain view road coldbrook 2738",
+                    "suggested_unit_number": None,
+                },
+                {
+                    "raw_id": 802,
+                    "decision": "review",
+                    "confidence": 0.42,
+                    "reason": "Address is incomplete and needs manual confirmation.",
+                    "building_type": "single_unit",
+                    "raw_address_text": "Mountain view road coldbrook 2738",
+                    "suggested_unit_number": None,
+                },
+            ],
+            [],
+            [],
+            [],
+        ]
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_db.return_value.__enter__.return_value = (mock_conn, mock_cursor)
+
+        result = seed_decision_minority_label_review_queue(workspace_name="default", limit=10)
+
+        self.assertEqual(result["inserted"], 1)
+        insert_calls = [
+            call for call in mock_cursor.execute.call_args_list
+            if "INSERT INTO active_learning_queue" in call.args[0]
+        ]
+        self.assertEqual(len(insert_calls), 1)
+        self.assertEqual(insert_calls[0].args[1][2], "801")
 
 if __name__ == "__main__":
     unittest.main()

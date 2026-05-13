@@ -17,6 +17,7 @@ from addressforge.core.utils import logger
 from addressforge.models import get_active_model, get_model, get_workspace, register_model_version
 from addressforge.learning.gold import count_gold_labels
 from addressforge.learning.reporter import generate_markdown_report
+from addressforge.services.model_service import build_model_service_from_manifest
 
 
 @dataclass(frozen=True)
@@ -57,8 +58,14 @@ def _normalize_label_json(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _metrics_json_dict(model_row: dict[str, Any] | None) -> dict[str, Any]:
+    if not model_row:
+        return {}
+    return _normalize_label_json(model_row.get("metrics_json"))
+
+
 def _extract_gold_value(label_json: dict[str, Any], field_name: str) -> str | None:
-    if field_name == "decision":
+    if field_name in {"decision", "heuristic_decision", "ml_shadow_decision"}:
         value = label_json.get("decision")
         if isinstance(value, str) and value.strip().lower() == "correct":
             value = "accept"
@@ -81,6 +88,10 @@ def _extract_gold_value(label_json: dict[str, Any], field_name: str) -> str | No
 def _extract_predicted_value(row: dict[str, Any], field_name: str) -> str | None:
     if field_name == "decision":
         value = row.get("decision")
+    elif field_name == "heuristic_decision":
+        value = row.get("heuristic_decision")
+    elif field_name == "ml_shadow_decision":
+        value = row.get("ml_shadow_decision")
     elif field_name == "building_type":
         value = row.get("building_type")
     elif field_name == "unit_number":
@@ -239,6 +250,73 @@ def _generate_bucket_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _categorize_shadow_disagreement(row: dict[str, Any]) -> str:
+    heuristic = _extract_predicted_value(row, "heuristic_decision") or "unknown"
+    model = _extract_predicted_value(row, "ml_shadow_decision") or "unknown"
+    if heuristic == model:
+        return "AGREE"
+    if heuristic == "accept" and model == "review":
+        return "MODEL_MORE_CONSERVATIVE_REVIEW"
+    if heuristic == "review" and model == "accept":
+        return "MODEL_MORE_AGGRESSIVE_ACCEPT"
+    if model == "reject" and heuristic != "reject":
+        return "MODEL_REJECT_ESCALATION"
+    if heuristic == "reject" and model != "reject":
+        return "MODEL_REJECT_RECOVERY"
+    return "GENERAL_DISAGREEMENT"
+
+
+def _decision_shadow_assist_summary(rows: list[dict[str, Any]], limit: int = 50) -> dict[str, Any]:
+    heuristic_metrics = _field_metrics(rows, "heuristic_decision") if rows else None
+    model_metrics = _field_metrics(rows, "ml_shadow_decision") if rows else None
+    disagreements: list[dict[str, Any]] = []
+    bucket_counts: dict[str, int] = {}
+    compared = 0
+    disagreed = 0
+    model_available = 0
+    for row in rows:
+        heuristic = _extract_predicted_value(row, "heuristic_decision")
+        model = _extract_predicted_value(row, "ml_shadow_decision")
+        if heuristic is None:
+            continue
+        compared += 1
+        if model is not None:
+            model_available += 1
+        if heuristic == model:
+            continue
+        disagreed += 1
+        bucket = _categorize_shadow_disagreement(row)
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+        if len(disagreements) < limit:
+            disagreements.append(
+                {
+                    "source_id": row.get("source_id"),
+                    "raw_text": row.get("raw_address_text"),
+                    "gold": _extract_gold_value(_normalize_label_json(row.get("label_json")), "decision"),
+                    "heuristic": heuristic,
+                    "model": model,
+                    "bucket": bucket,
+                    "model_score": row.get("ml_shadow_score"),
+                    "model_status": row.get("ml_shadow_status"),
+                    "disagreement_reason": row.get("shadow_disagreement_reason"),
+                }
+            )
+    ordered_buckets = sorted(bucket_counts.items(), key=lambda item: (-item[1], item[0]))
+    heuristic_f1 = float((heuristic_metrics or {}).get("f1") or 0.0)
+    model_f1 = float((model_metrics or {}).get("f1") or 0.0)
+    return {
+        "heuristic": heuristic_metrics,
+        "ml_shadow": model_metrics,
+        "compared": compared,
+        "model_available": model_available,
+        "disagreement_rate": round(disagreed / compared, 4) if compared else 0.0,
+        "shadow_advantage": round(model_f1 - heuristic_f1, 4),
+        "bucket_counts": dict(ordered_buckets),
+        "top_buckets": [{"bucket": bucket, "count": count} for bucket, count in ordered_buckets[:10]],
+        "disagreement_samples": disagreements,
+    }
+
+
 def _load_gold_comparison_rows(workspace_name: str) -> list[dict[str, Any]]:
     return fetch_all(
         """
@@ -284,9 +362,10 @@ def _resolve_model_runtime(
     workspace_name: str,
     model_name: str,
     model_version: str,
-) -> tuple[str, tuple[str, ...], dict[str, Any] | None]:
+) -> tuple[str, tuple[str, ...], dict[str, Any] | None, Any]:
     workspace = get_workspace(workspace_name) or {}
     target_model = get_model(workspace_name, model_name, model_version) or {}
+    metrics_json = _metrics_json_dict(target_model)
     target_profile = (
         target_model.get("default_profile")
         or workspace.get("default_profile")
@@ -294,6 +373,20 @@ def _resolve_model_runtime(
     )
     target_parsers: tuple[str, ...] = ("simple_rule", "hybrid_canada", "libpostal")
     target_decision_policy: dict[str, Any] | None = None
+    decision_model_artifact: dict[str, Any] = {}
+    runtime_binding = metrics_json.get("runtime_binding") if isinstance(metrics_json.get("runtime_binding"), dict) else {}
+    if runtime_binding:
+        runtime_profile = runtime_binding.get("profile")
+        runtime_parsers = runtime_binding.get("parsers")
+        runtime_policy = runtime_binding.get("decision_policy")
+        if isinstance(runtime_profile, str) and runtime_profile.strip():
+            target_profile = runtime_profile.strip()
+        if isinstance(runtime_parsers, list) and runtime_parsers:
+            target_parsers = tuple(str(item) for item in runtime_parsers if str(item).strip())
+        if isinstance(runtime_policy, dict):
+            target_decision_policy = runtime_policy
+    if isinstance(metrics_json.get("decision_model_artifact"), dict):
+        decision_model_artifact = metrics_json["decision_model_artifact"]
     target_artifact_path = target_model.get("artifact_path")
     if target_artifact_path:
         try:
@@ -307,9 +400,11 @@ def _resolve_model_runtime(
                 target_parsers = tuple(str(item) for item in artifact_parsers if str(item).strip())
             if isinstance(artifact_decision_policy, dict):
                 target_decision_policy = artifact_decision_policy
+            if not decision_model_artifact and isinstance(artifact_payload.get("decision_model_artifact"), dict):
+                decision_model_artifact = artifact_payload["decision_model_artifact"]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to load target model artifact for runtime binding: %s", exc)
-    return target_profile, target_parsers, target_decision_policy
+    return target_profile, target_parsers, target_decision_policy, build_model_service_from_manifest(decision_model_artifact)
 
 
 def _predict_gold_rows_with_runtime(
@@ -322,7 +417,7 @@ def _predict_gold_rows_with_runtime(
         return rows
     from addressforge.api.server import AddressPlatformService, AddressRequest
 
-    target_profile, target_parsers, target_decision_policy = _resolve_model_runtime(
+    target_profile, target_parsers, target_decision_policy, target_model_service = _resolve_model_runtime(
         workspace_name,
         model_name,
         model_version,
@@ -331,6 +426,7 @@ def _predict_gold_rows_with_runtime(
         default_profile=target_profile,
         default_parsers=target_parsers,
         decision_policy=target_decision_policy,
+        model_service=target_model_service,
     )
     predicted_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -351,13 +447,25 @@ def _predict_gold_rows_with_runtime(
                     )
                 )
                 current["decision"] = result.get("decision")
+                current["heuristic_decision"] = result.get("decision")
                 current["building_type"] = result.get("building_type")
                 current["suggested_unit_number"] = result.get("suggested_unit_number")
+                ml_shadow = result.get("ml_decision") if isinstance(result.get("ml_decision"), dict) else {}
+                shadow_assist = result.get("shadow_assist") if isinstance(result.get("shadow_assist"), dict) else {}
+                current["ml_shadow_decision"] = ml_shadow.get("ml_decision")
+                current["ml_shadow_score"] = ml_shadow.get("ml_score")
+                current["ml_shadow_status"] = ml_shadow.get("status")
+                current["shadow_disagreement_reason"] = shadow_assist.get("disagreement_reason")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Runtime gold prediction failed for source_id=%s: %s", row.get("source_id"), exc)
                 current["decision"] = None
+                current["heuristic_decision"] = None
                 current["building_type"] = None
                 current["suggested_unit_number"] = None
+                current["ml_shadow_decision"] = None
+                current["ml_shadow_score"] = None
+                current["ml_shadow_status"] = "error"
+                current["shadow_disagreement_reason"] = "runtime_error"
         predicted_rows.append(current)
     return predicted_rows
 
@@ -520,6 +628,7 @@ def run_baseline_evaluation(
             errors = _field_error_samples(gold_rows, "decision")
             metrics_json["decision_errors"] = errors
             metrics_json["decision_error_buckets"] = _generate_bucket_summary(errors)
+            metrics_json["decision_shadow_assist"] = _decision_shadow_assist_summary(gold_rows)
         if building_metrics:
             metrics_json["building_type"] = building_metrics
             errors = _field_error_samples(gold_rows, "building_type")
@@ -536,7 +645,7 @@ def run_baseline_evaluation(
         if benchmark_path.exists():
             try:
                 from addressforge.learning.canada_benchmark import run_canada_address_benchmark
-                target_profile, target_parsers, target_decision_policy = _resolve_model_runtime(
+                target_profile, target_parsers, target_decision_policy, _target_model_service = _resolve_model_runtime(
                     workspace_name,
                     model_name,
                     model_version,
@@ -649,6 +758,8 @@ def run_baseline_evaluation(
         artifact_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifact_dir / f"{model_name}_{model_version}_eval.json"
         artifact_path.write_text(json.dumps(asdict(artifact), ensure_ascii=False, indent=2), encoding="utf-8")
+        existing_model = get_model(workspace_name, model_name, model_version)
+        existing_metrics = _metrics_json_dict(existing_model)
         registry_row = register_model_version(
             workspace_name=workspace_name,
             model_name=model_name,
@@ -659,6 +770,7 @@ def run_baseline_evaluation(
             evaluation_run_id=run_id,
             artifact_path=str(artifact_path),
             metrics_json={
+                **existing_metrics,
                 "metric_name": artifact.metric_name,
                 "metric_value": metric_value,
                 **metrics_json,
@@ -702,6 +814,22 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
     benchmark = metrics.get("release_benchmark", {})
     report.append(f"| Decision F1 | {benchmark.get('decision_f1', 0.0):.4f} | {'PASS' if benchmark.get('decision_f1', 0.0) >= 0.90 else 'FAIL'} |")
     report.append(f"| Unit Recall | {benchmark.get('unit_recall', 0.0):.4f} | {'PASS' if benchmark.get('unit_recall', 0.0) >= 0.85 else 'FAIL'} |")
+
+    shadow_assist = metrics.get("decision_shadow_assist") or {}
+    if shadow_assist:
+        heuristic = shadow_assist.get("heuristic") or {}
+        ml_shadow = shadow_assist.get("ml_shadow") or {}
+        report.extend([
+            "",
+            "## 1.1 DecisionModel Shadow-Assist",
+            "| Metric | Heuristic | ML Shadow |",
+            "| :--- | :--- | :--- |",
+            f"| Decision F1 | {float(heuristic.get('f1') or 0.0):.4f} | {float(ml_shadow.get('f1') or 0.0):.4f} |",
+            f"| Decision Precision | {float(heuristic.get('precision') or 0.0):.4f} | {float(ml_shadow.get('precision') or 0.0):.4f} |",
+            f"| Decision Recall | {float(heuristic.get('recall') or 0.0):.4f} | {float(ml_shadow.get('recall') or 0.0):.4f} |",
+            f"| Shadow Advantage | - | {float(shadow_assist.get('shadow_advantage') or 0.0):+.4f} |",
+            f"| Disagreement Rate | - | {float(shadow_assist.get('disagreement_rate') or 0.0):.4f} |",
+        ])
 
     # --- Historical Replay & Stability Section ---
     report.extend([

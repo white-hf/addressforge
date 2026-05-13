@@ -20,6 +20,8 @@ from .gold import (
 )
 from .shadow import run_baseline_shadow
 from .supervised_baseline import (
+    build_decision_inference_feature_row,
+    build_decision_inference_frame,
     compare_decision_baseline_against_current,
     export_decision_training_dataset,
     run_decision_baseline_pipeline,
@@ -32,6 +34,8 @@ __all__ = [
     "run_baseline_training",
     "run_baseline_evaluation",
     "run_baseline_shadow",
+    "build_decision_inference_feature_row",
+    "build_decision_inference_frame",
     "compare_decision_baseline_against_current",
     "export_decision_training_dataset",
     "run_decision_baseline_pipeline",

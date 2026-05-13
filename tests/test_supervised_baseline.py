@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from addressforge.learning.supervised_baseline import (
+    build_decision_inference_feature_row,
+    build_decision_inference_frame,
     _extract_decision_training_feature_row,
     _predict_with_softmax_model,
     _train_softmax_baseline,
@@ -14,6 +16,47 @@ from unittest.mock import patch
 
 
 class TestSupervisedBaseline(unittest.TestCase):
+    def test_build_decision_inference_frame_matches_training_schema(self):
+        row = build_decision_inference_feature_row(
+            "241 Broad Street 105 Bedford NS",
+            {
+                "street_number": "241",
+                "street_name": "BROAD STREET",
+                "unit_number": "105",
+                "unit_source": "trailing_unit",
+                "feature_vector": {
+                    "pattern": "bare_trailing_unit_before_city",
+                    "has_explicit_unit_hint": False,
+                    "has_residential_unit_hint": True,
+                    "has_commercial_unit_hint": False,
+                    "has_geographic_modifier_only": False,
+                    "has_double_number_pattern": True,
+                    "has_bare_trailing_unit_city_pattern": True,
+                    "is_numbered_road_name": False,
+                },
+            },
+            parser_name="hybrid",
+            validation_context={
+                "confidence": 0.84,
+                "reason": "Parser confidence is moderate; review is safer.",
+                "hints": {
+                    "reference_score": 0.67,
+                    "parser_disagreement": True,
+                    "gps_conflict": False,
+                },
+            },
+            reference_context={"candidates": [{"unit_number": "105"}]},
+            building_type="multi_unit",
+            current_decision="review",
+        )
+
+        frame = build_decision_inference_frame(row)
+        self.assertEqual(frame.iloc[0]["pattern"], "bare_trailing_unit_before_city")
+        self.assertEqual(frame.iloc[0]["unit_source"], "trailing_unit")
+        self.assertEqual(frame.iloc[0]["decision_reason"], "parser confidence is moderate; review is safer.")
+        self.assertEqual(frame.iloc[0]["building_type_multi_unit"], 1.0)
+        self.assertEqual(frame.iloc[0]["reference_has_unit_hint"], 1.0)
+
     def test_extract_decision_training_feature_row_uses_runtime_signals(self):
         row = {
             "source_id": "42",

@@ -6,7 +6,7 @@
 - 负责人：AddressForge 产品 / 工程
 - 状态：Planned
 - 关联文档：
-  - [AddressForge 迭代版本计划](./addressforge-version-plan.md)
+  - [AddressForge 迭代版本计划](../../product/addressforge-version-plan.md)
 
 ## 1. 文档目的
 本文件只记录 **2026-04-29 当天计划实施的优化任务**，用于指导当天执行。

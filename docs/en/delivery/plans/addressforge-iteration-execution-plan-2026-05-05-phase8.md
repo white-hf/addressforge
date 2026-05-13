@@ -345,6 +345,7 @@ Planned technical methods:
   - benefit: prevents false-empty behavior where the pool still has new samples but the first N candidates are already consumed.
 - **Address-text deduplication for minority-label samples**
   - `decision minority-label` seeding must not dedupe only by `source_id`; it must also dedupe by normalized `raw_address_text`.
+  - the comparison scope must cover all already reviewed/queued address texts in the workspace, not only the current candidate `source_id` subset.
   - benefit: prevents the same address from entering human review multiple times through different `raw_id` values or repeated imports, protecting minority-label training quality.
 
 ### Task 10: Structured field correction support in the review page
@@ -367,6 +368,45 @@ Planned technical methods:
 - **Number-word address correction loop**
   - for examples like `two Heritage Court ...` or `Fourteen fifty six ...`, the corrected civic number and street can become formal gold.
   - benefit: provides real supervision for future number-word normalization and parser-learning work.
+
+### Task 11: Post-minority-batch DecisionModel retraining and effect validation
+- Expected benefit:
+  - verify whether the two reviewed minority-label batches actually improve minority-class learning in the `DecisionModel`
+- Primary metrics:
+  - normalized decision label balance
+  - `model_macro_f1`
+  - per-label precision-recall-f1 for `review` and `reject`
+- Secondary metrics:
+  - heuristic-vs-model delta
+  - minority-label support count
+
+Planned technical methods:
+- **Immediate baseline rerun after reviewed minority labels**
+  - rerun the decision baseline training and comparison as soon as the new human gold lands instead of relying on pre-review conclusions.
+  - benefit: ensures the ML evaluation reflects the newest supervision distribution rather than an outdated snapshot.
+- **Minority-label balance re-audit**
+  - emit a dedicated balance artifact for the normalized `accept/review/reject` distribution.
+  - benefit: avoids confusing “many reviews were completed” with “the DecisionModel actually learned review/reject boundaries”.
+
+Current implementation and validation status:
+- the latest normalized human-gold `decision` distribution has improved to:
+  - `accept = 1322`
+  - `review = 47`
+  - `reject = 36`
+- the live `CatBoost` baseline has been retrained and compared:
+  - `eval_macro_f1 = 0.4908`
+  - `model_accuracy = 0.8512`
+  - `model_macro_f1 = 0.5536`
+  - `heuristic_accuracy = 0.7120`
+  - `heuristic_macro_f1 = 0.2818`
+- this confirms a real ML gain from the reviewed minority-label batches:
+  - the model now clearly outperforms the current heuristic `decision` logic
+  - `review/reject` minority classes are starting to be learned instead of only `accept`
+
+Next closure direction:
+- improve minority-class precision, especially false-positive control for `review/reject`
+- connect the `DecisionModel` to shadow-assist / compare before any runtime replacement
+- continue minority-label reinforcement, but prevent repeated addresses from re-entering review
 
 ## 6. Technical Implementation Evolution
 

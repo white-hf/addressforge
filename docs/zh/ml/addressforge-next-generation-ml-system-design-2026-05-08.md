@@ -43,6 +43,45 @@ AddressForge 下一代 ML 设计应采用：
 - **在其上新增监督学习模型层**
 - **优先引入表格监督模型，而不是直接引入神经网络主模型**
 
+### 3.1.1 当前实现状态（截至 2026-05-13）
+
+下一代 ML 设计目前已经从“纯设计”进入“部分落地”阶段：
+
+1. `DecisionModel` 离线监督学习 baseline 已落地
+   - 训练库：`CatBoost`
+   - 已具备：
+     - training artifact
+     - label balance artifact
+     - heuristic vs model compare artifact
+     - minority-label review seeding
+
+2. `DecisionModel` 训练/推理 schema 已收口
+   - 共享特征定义已抽到：
+     - `src/addressforge/core/decision_features.py`
+   - 训练与在线 serving 都已使用同一套结构化特征 schema
+
+3. `DecisionModel` 已进入 runtime shadow-assist
+   - `validate()` 当前同时输出：
+     - heuristic decision
+     - ml shadow decision
+     - disagreement reason
+   - evaluator 已能基于最新 human gold 直接比较：
+     - heuristic `decision_f1`
+     - ml shadow `decision_f1`
+     - disagreement buckets
+     - shadow advantage
+
+4. active runtime serving contract 已完成 sidecar 化
+   - 标准 runtime artifact：
+     - `decision_catboost_v1.json`
+     - `decision_catboost_v1.pkl`
+   - legacy `decision_catboost_v1.cbm` 仍保留，但仅作为兼容 fallback
+
+5. 当前仍未完成的部分
+   - `CandidateRerankerModel` 还没有完成真正监督式闭环
+   - `BuildingTypeModel` 还没有进入独立 baseline / runtime
+   - assist / guarded override 还未真正上线，只到 shadow-assist
+
 ### 3.2 第一阶段优先目标
 
 下一代 ML 第一阶段只做 3 个任务：
@@ -181,6 +220,42 @@ AddressForge 当前已经有：
 
 下一代 ML 系统建议拆成 5 层。
 
+### 6.0 整体架构图
+
+```mermaid
+flowchart TD
+    A[Raw Address Input] --> B[Layer A<br/>Parsing & Normalization]
+    B --> C[Layer B<br/>Reference & Canonical]
+    B --> D[Layer C<br/>Feature Construction]
+    C --> D
+    D --> E1[DecisionModel]
+    D --> E2[CandidateRerankerModel]
+    D --> E3[BuildingTypeModel]
+    B --> F[Heuristic / Safety Guard]
+    C --> F
+    E1 --> G[Layer E<br/>Policy & Serving]
+    E2 --> G
+    E3 --> G
+    F --> G
+    G --> H[Validate Response<br/>final decision + ml shadow]
+
+    H --> I[Human Review]
+    I --> J[Accepted Human Gold]
+    J --> K[Freeze Snapshot]
+    K --> L[Training]
+    L --> M[Training Artifact + Runtime Sidecar]
+    M --> N[Evaluator / Replay / Shadow]
+    N --> O[Release Gate]
+    O --> P[Promote / Keep Active]
+    P --> G
+```
+
+这张图体现的是当前正确的演进方式：
+
+- parser / reference / canonical 仍然是主骨架
+- ML 模型层叠加在其上，不是替代其存在
+- human review / gold / freeze / training / gate 仍然构成正式学习闭环
+
 ### 6.1 Layer A：Parsing & Normalization Layer
 
 职责：
@@ -239,6 +314,23 @@ AddressForge 当前已经有：
 - decision model
 - building_type model
 - reranking model
+
+当前实现说明：
+
+- 这一层已经开始正式化，不再只是零散训练函数里的临时拼装。
+- 当前已落地的共享特征层是：
+  - `src/addressforge/core/decision_features.py`
+- 当前它主要服务于：
+  - `DecisionModel`
+- 已统一的内容包括：
+  - 数值特征集合
+  - 类别特征集合
+  - inference feature row 构造
+  - inference frame 构造
+
+这意味着：
+- `DecisionModel` 已不再是“训练一套特征、在线另一套特征”
+- training-serving skew 的第一阶段问题已被修复
 
 ### 6.4 Layer D：Supervised Model Layer
 
@@ -417,6 +509,21 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 - `OVER_SENSITIVE_REVIEW`
 - historical review -> accept residual
 
+当前实现状态：
+
+- 已完成：
+  - `CatBoost` baseline training
+  - minority-label sampling / review / retraining
+  - live gold compare
+  - runtime shadow-assist
+- 当前运行方式仍是：
+  - heuristic 输出 final `decision`
+  - `DecisionModel` 作为 shadow-assist 并行输出
+- 当前关键 runtime / artifact 字段已存在：
+  - `runtime_binding`
+  - `decision_model_artifact`
+  - `decision_shadow_assist`
+
 ---
 
 ### 9.2 CandidateRerankerModel
@@ -453,6 +560,18 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 - candidate 排序不稳
 - wrong best candidate 导致 building_type/unit 错误
 
+当前实现状态：
+
+- 这一层还没有完成真正监督式闭环。
+- 当前系统已有：
+  - reranker service
+  - vector retrieval assist
+  - 历史 candidate/pair weight 逻辑
+- 但还没有形成：
+  - versioned supervised reranker artifact
+  - stable runtime sidecar contract
+  - benchmark/shadow/release 一致评估闭环
+
 ---
 
 ### 9.3 BuildingTypeModel
@@ -487,6 +606,15 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 - 先做 baseline
 - 看是否明显优于当前 rule + weight 混合逻辑
 
+当前实现状态：
+
+- 仍未进入独立监督模型阶段。
+- 当前 `building_type` 结果主要仍由：
+  - parser
+  - reranked candidate
+  - runtime decision/pattern logic
+ 共同决定。
+
 ---
 
 ## 10. 特征系统设计
@@ -501,6 +629,56 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 2. 特征有版本
 3. 特征可解释
 4. 特征可落到 artifact
+
+当前实现状态：
+
+- `DecisionModel` 的 feature schema 已具备正式落 artifact 的能力：
+  - metadata json
+  - feature names
+  - present labels
+  - model type
+- 但“统一 FeatureSchema registry”还没有对所有模型层完成。
+- 当前真正已经落地的，是：
+  - `DecisionModel` 的共享特征 schema
+  - 不是全模型族统一 schema registry
+
+### 10.1.1 子模块结构与依赖图
+
+```mermaid
+graph TD
+    A[src/addressforge/core/decision_features.py]
+    B[src/addressforge/learning/supervised_baseline.py]
+    C[src/addressforge/services/model_service.py]
+    D[src/addressforge/api/server.py]
+    E[src/addressforge/learning/trainer.py]
+    F[src/addressforge/learning/evaluator.py]
+    G[src/addressforge/services/replay_service.py]
+    H[src/addressforge/learning/shadow.py]
+    I[model_registry.metrics_json<br/>runtime_binding + decision_model_artifact]
+
+    A --> B
+    A --> C
+    C --> D
+    E --> B
+    E --> I
+    F --> I
+    G --> I
+    H --> I
+    F --> C
+    G --> C
+    H --> C
+    F --> D
+    G --> D
+    H --> D
+```
+
+这张依赖图表达的是：
+
+- `decision_features.py` 是训练和 serving 共用的 schema 中心
+- `trainer.py` 负责把 runtime sidecar 与 binding 元数据写入 artifact 与 registry
+- `model_service.py` 负责按 sidecar / manifest 加载版本化 `DecisionModel`
+- `server.py` 负责把 heuristic 和 ML shadow 一起暴露到 runtime response
+- `evaluator.py` / `replay_service.py` / `shadow.py` 必须按模型版本绑定对应 runtime，而不是共享一个全局 singleton
 
 ### 10.2 特征分类
 
@@ -625,6 +803,35 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 - feature importance
 - training sample composition
 
+当前实现状态：
+
+`DecisionModel` 这一层已经开始满足该要求。
+
+当前已落地的产物分成两类：
+
+1. 训练产物
+- training artifact json
+- compare artifact
+- label balance artifact
+- model pickle
+
+2. runtime sidecar
+- `decision_catboost_v1.json`
+- `decision_catboost_v1.pkl`
+- legacy `decision_catboost_v1.cbm` 仅保留为兼容 fallback
+
+此外，训练后 registry `metrics_json` 中已补入：
+- `runtime_binding`
+- `decision_model_artifact`
+
+这使得：
+- replay
+- shadow
+- evaluator
+- runtime service binding
+
+都可以不再依赖单一固定路径的隐式约定。
+
 ---
 
 ## 12. Runtime Serving 设计
@@ -639,6 +846,15 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 
 - 让模型接管所有决策
 
+当前实现状态：
+
+- 这一条已经被严格执行。
+- 当前 `DecisionModel` 仍未接管 final `decision`。
+- 当前 runtime 已进入：
+  - **Shadow-assist**
+  而不是：
+  - full override
+
 ### 12.2 Serving 模式建议
 
 #### 模式 A：Shadow-only model output
@@ -649,6 +865,14 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 
 - 验证模型是否稳定
 
+当前实现状态：
+
+- 已完成，并且已经有 live gold compare 结果。
+- `validate()` 当前已输出：
+  - heuristic decision
+  - ml shadow decision
+  - disagreement reason
+
 #### 模式 B：Decision assist mode
 
 模型参与 `decision`，但仍受 safety guard 约束。
@@ -657,6 +881,14 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 
 - reference strong mismatch 仍优先 review
 - address incomplete 仍优先 review
+
+当前实现状态：
+
+- 尚未正式启用。
+- 但已具备进入 assist 评估的前提：
+  - sidecar serving contract
+  - gold-backed shadow-assist compare
+  - disagreement buckets
 
 #### 模式 C：Candidate reranking assist mode
 
@@ -670,6 +902,35 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 - strong reference mismatch hard review
 - impossible canonical structure hard review
 - severe parser inconsistency hard review
+
+当前实现状态：
+
+- 这些 guard 仍然由 heuristic / parser 主链持有。
+- 这是当前正确的设计，不是落后设计。
+- 在 `DecisionModel` 尚未进入 assist override 之前，安全 guard 不应交给 ML 取代。
+
+### 12.4 在线请求核心流程图
+
+```mermaid
+flowchart TD
+    A[Incoming Address] --> B[Parse / Normalize]
+    B --> C[Reference / Canonical Assist]
+    C --> D[Best Candidate + Runtime Features]
+    D --> E[Heuristic Decision Chain]
+    D --> F[DecisionModel Shadow]
+    E --> G[Final decision]
+    F --> H[ml_decision / shadow_assist]
+    G --> I[API Response]
+    H --> I
+```
+
+当前实现要点：
+
+- `Final decision` 仍由 heuristic 主链决定
+- `DecisionModel Shadow` 当前只输出：
+  - `ml_decision`
+  - `shadow_assist`
+- 这是当前阶段最安全、也最符合设计初衷的上线方式
 
 ---
 
@@ -707,6 +968,13 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 
 - 是否适合替换 active
 
+当前实现状态：
+
+- `DecisionModel` 已经进入：
+  - gold-backed shadow-assist compare
+- 还没有进入：
+  - release gate 驱动的 assist/override rollout
+
 ### 13.3 必须做错误桶评估
 
 特别要跟踪：
@@ -716,6 +984,57 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 - `MULTI_UNIT_UNDER_COUNT`
 - `REFERENCE_MISSING_UNIT`
 - commercial residual buckets
+
+当前实现状态：
+
+除历史 parser/building/unit 桶之外，`DecisionModel` 当前已经新增可观测桶：
+
+- `MODEL_MORE_AGGRESSIVE_ACCEPT`
+- `MODEL_MORE_CONSERVATIVE_REVIEW`
+- `MODEL_REJECT_ESCALATION`
+- `MODEL_REJECT_RECOVERY`
+
+### 13.4 训练到评估闭环流程图
+
+```mermaid
+flowchart TD
+    A[Review Queue] --> B[Human Review]
+    B --> C[Accepted Human Gold]
+    C --> D[Freeze Snapshot]
+    D --> E[DecisionModel Training]
+    E --> F[Training Artifact]
+    E --> G[Runtime Sidecar<br/>json + pkl]
+    F --> H[Registry metrics_json]
+    G --> H
+    H --> I[Evaluator / Shadow / Replay]
+    I --> J[decision_shadow_assist]
+    J --> K[Release Gate / Iteration Decision]
+```
+
+这个流程图强调两件事：
+
+1. 训练产物和 runtime sidecar 必须同时存在，不能只留离线训练结果。
+2. `decision_shadow_assist` 是当前 `DecisionModel` 从离线 baseline 走向可上线证据的关键产物。
+
+### 13.5 Active / Candidate 运行时绑定流程图
+
+```mermaid
+flowchart TD
+    A[Active Model Registry Row] --> C[runtime_binding + decision_model_artifact]
+    B[Candidate Model Registry Row] --> D[runtime_binding + decision_model_artifact]
+    C --> E[build_model_service_from_manifest]
+    D --> F[build_model_service_from_manifest]
+    E --> G[AddressPlatformService Active]
+    F --> H[AddressPlatformService Candidate]
+    G --> I[Active Eval / Replay / Shadow]
+    H --> J[Candidate Eval / Replay / Shadow]
+```
+
+这个绑定流程是 `Phase 14/15` 的核心实现结果：
+
+- active 与 candidate 不再共享一个全局 `DecisionModel`
+- 每个 runtime 都能绑定自己模型版本对应的 sidecar
+- 这解决了早期 training-serving skew 和 fixed-file drift 问题
 
 ---
 
@@ -732,6 +1051,10 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 
 - 在 benchmark 上不弱于当前权重法
 
+当前状态：
+
+- 已完成，而且实际结果已经超过“不弱于”。
+
 ### Phase B：Decision Shadow Assist
 
 产出：
@@ -743,12 +1066,25 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 - `decision_f1` 改善
 - 不伤 apartment/unit 主线
 
+当前状态：
+
+- 已基本完成。
+- live gold compare 已证明：
+  - ml shadow `decision_f1` 高于 heuristic
+- 但还未进入：
+  - assist-mode 开关
+  - guarded override rollout
+
 ### 14.4 Phase C：Candidate Reranking Model
 产出：
 - reranking model 并行对比当前 pair weights
 
 成功标准：
 - best candidate quality 提升
+
+当前状态：
+
+- 尚未完成，仍属于后续迭代主目标。
 
 ### 14.5 Phase D: The Neural Leap (神经网络跨越)
 
@@ -818,6 +1154,23 @@ AddressForge 当前最有价值的输入不是原始长文本本身，而是：
 ### 第四优先级
 
 - 后续再考虑 neural reranker
+
+当前已实现顺序修正说明：
+
+根据真实开发进展，当前系统已完成的部分是：
+
+1. 统一 `DecisionModel` 共享特征 schema
+2. 完成 `DecisionModel` baseline
+3. 完成 minority-label 人工审核闭环
+4. 完成 `DecisionModel` runtime shadow-assist
+5. 完成 active runtime sidecar serving contract
+
+因此，文档中下一步的实际主任务顺序应理解为：
+
+1. `DecisionModel` assist rollout readiness
+2. `CandidateRerankerModel` 真正监督化
+3. `BuildingTypeModel` baseline
+4. 神经网络阶段（仍非当前阶段优先）
 
 ---
 
@@ -905,6 +1258,38 @@ baseline 的上线顺序必须是：
 这样后续每一步都能解释：
 - 是模型变强了
 - 还是只是 gold 分布变化了
+
+### Step 7：完成 runtime serving contract sidecar 化
+
+真实工程实现后来又暴露出一个关键问题：
+
+- 即使 baseline 更好
+- 如果 runtime 仍依赖固定文件名或 legacy `.cbm`
+- 那么 active/candidate/compare/shadow 仍可能吃到错误模型版本
+
+因此新增一个必要步骤：
+
+- 为 `DecisionModel` 引入标准 runtime sidecar
+  - `.json`
+  - `.pkl`
+- 并把：
+  - `runtime_binding`
+  - `decision_model_artifact`
+  固定写入训练产物与 registry `metrics_json`
+
+### Step 8：进入 gold-backed shadow-assist compare
+
+在完成 sidecar serving contract 之后，系统当前已经能够：
+
+- 用 live human gold 直接比较：
+  - heuristic decision
+  - ml shadow decision
+- 并输出：
+  - shadow advantage
+  - disagreement rate
+  - disagreement buckets
+
+这是从“有 baseline”进入“有可上线证据”的关键一步。
 
 ---
 

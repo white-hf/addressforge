@@ -58,9 +58,9 @@ src/addressforge/
 
 ## 📖 Deep Dives
 
-- [Operation Subsystem Product Manual (ZH)](docs/zh/operation-subsystem-guide.md)
-- [Operation Subsystem Product Manual (EN)](docs/en/operation-subsystem-guide.md)
-- [Iteration Roadmap](docs/en/addressforge-version-plan.md)
+- [Operation Subsystem Product Manual (ZH)](docs/zh/operations/operation-subsystem-guide.md)
+- [Operation Subsystem Product Manual (EN)](docs/en/operations/operation-subsystem-guide.md)
+- [Iteration Roadmap](docs/en/product/addressforge-version-plan.md)
 
 ---
 *AddressForge: Turning messy strings into intelligent business assets.*

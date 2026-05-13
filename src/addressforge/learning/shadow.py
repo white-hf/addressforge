@@ -76,11 +76,13 @@ def run_baseline_shadow(
             default_profile=candidate_runtime[1],
             default_parsers=candidate_runtime[2],
             decision_policy=candidate_runtime[3],
+            model_service=candidate_runtime[4],
         )
         active_service = AddressPlatformService(
             default_profile=active_runtime[1],
             default_parsers=active_runtime[2],
             decision_policy=active_runtime[3],
+            model_service=active_runtime[4],
         )
 
         shadow_rows = fetch_all(

@@ -14,6 +14,41 @@ AddressForge 是一个开源、自部署的地址智能平台。
 
 这份文档按实际操作顺序回答这三个问题。
 
+## 1.1 当前项目的治理方式
+
+当前 AddressForge 项目已正式采用两层 skill 治理：
+
+1. **项目专用 skill**
+   - `addressforge-agile-delivery`
+   - 用于：
+     - 当前 repo 的文档分层
+     - phase/iteration 开闭规则
+     - ML 开发闭环
+     - AGENTS 规则对齐
+
+2. **通用项目交付 skill**
+   - `codex-agile-product-delivery`
+   - 用于：
+     - 项目全生命周期敏捷交付
+     - 项目骨架/规范生成
+     - 测试/发布/回滚治理
+     - agent 自主循环推进总目标
+
+当前项目内的使用原则是：
+- AddressForge 日常开发、phase 规划、ML 迭代：优先遵循 `addressforge-agile-delivery`
+- 涉及项目骨架、跨阶段流程治理、通用敏捷方法：补充遵循 `codex-agile-product-delivery`
+
+这意味着：
+- 新需求、新 phase、新 ML 主线，不应只看代码
+- 必须同时按 skill 规则检查：
+  - 应先更新哪个文档层
+  - 该不该开新 iteration
+  - 是否已经具备足够验证证据
+  - 是否需要继续自主迭代直到总目标达成
+
+目录结构规范见：
+- [addressforge-project-structure.md](../governance/addressforge-project-structure.md)
+
 ## 2. 推荐的项目形态
 
 建议把自己的私有数据放在仓库外部，例如：

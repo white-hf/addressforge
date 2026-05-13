@@ -345,6 +345,7 @@
   - 收益：避免“候选池实际还有新样本，但因为前 N 个都已用过而错误返回 0”的假空问题。
 - **按地址文本去重 minority-label 样本**
   - `decision minority-label` seeding 不能只按 `source_id` 去重，还必须按标准化后的 `raw_address_text` 去重。
+  - 去重对比范围必须覆盖全工作区已审核/已入队地址文本，不能只局限于当前候选 `source_id` 子集。
   - 收益：避免同一地址因为不同 `raw_id` 或重复导入而多次进入人工审核，保护少数类训练样本质量。
 
 ### 任务 10：审核页结构字段修正支持
@@ -367,6 +368,45 @@
 - **文字数字地址修正闭环**
   - 对 “two Heritage Court ... / Fourteen fifty six ...” 这类样本，人工修正的门牌号与街道名能够正式沉淀为 gold。
   - 收益：为 number-word normalization 这类下一阶段 parser/ML 能力提供可学习监督。
+
+### 任务 11：decision minority-label 审核后基线重训练与效果复核
+- 预期收益：
+  - 验证两批 minority-label 审核样本是否真正改善了 `DecisionModel` 的少数类学习能力
+- 主要指标：
+  - normalized decision label balance
+  - `model_macro_f1`
+  - `review` / `reject` per-label precision-recall-f1
+- 次级指标：
+  - heuristic-vs-model delta
+  - minority-label support count
+
+拟采用的技术方法包括：
+- **审核后立即重跑 DecisionModel baseline**
+  - 在新的 human gold 写入后，重新执行 decision baseline 训练与对比，不再沿用审核前的结论。
+  - 收益：确保 ML 评估依据的是最新监督分布，而不是陈旧快照。
+- **少数类标签分布复核**
+  - 对 `accept/review/reject` 的 normalized 分布单独出 balance artifact。
+  - 收益：避免把“审核做了很多”误判为“DecisionModel 真正学到了 review/reject”。
+
+当前实现与验证状态：
+- 最新 normalized `decision` human gold 分布已提升到：
+  - `accept = 1322`
+  - `review = 47`
+  - `reject = 36`
+- live `CatBoost` baseline 已完成重训练与对比：
+  - `eval_macro_f1 = 0.4908`
+  - `model_accuracy = 0.8512`
+  - `model_macro_f1 = 0.5536`
+  - `heuristic_accuracy = 0.7120`
+  - `heuristic_macro_f1 = 0.2818`
+- 说明 minority-label 审核已带来真实 ML 收益：
+  - 模型已明显优于当前 heuristic `decision` 逻辑
+  - `review/reject` 少数类开始被学习，而不再只有 `accept` 被学住
+
+下一步收口方向：
+- 提升 minority 类 precision，尤其是 `review/reject` 误报控制
+- 将 `DecisionModel` 先接入 shadow-assist / compare，不直接替换 runtime
+- 继续补高价值少数类样本，但避免重复地址再次进入审核
 
 ## 6. 技术实现演进说明
 

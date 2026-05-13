@@ -44,6 +44,7 @@ from addressforge.learning import (
     upsert_gold_label,
 )
 from addressforge.services.model_service import get_model_service
+from addressforge.services.model_service import ModelService
 from addressforge.services.reranker_service import get_reranker_service
 from addressforge.core.retrieval import get_vector_engine
 
@@ -618,6 +619,7 @@ class AddressPlatformService:
         default_profile: str | None = None,
         default_parsers: tuple[str, ...] | None = None,
         decision_policy: dict[str, Any] | None = None,
+        model_service: ModelService | None = None,
     ) -> None:
         self._reference_matcher = GeoNovaReferenceMatcher()
         self._default_profile = default_profile or DEFAULT_MODEL_PROFILE
@@ -626,7 +628,7 @@ class AddressPlatformService:
         
         # New: ML Model Service for supervised decisioning
         # 新增：用于监督决策的 ML 模型服务
-        self._model_service = get_model_service()
+        self._model_service = model_service or get_model_service()
         self._reranker_service = get_reranker_service()
         self._vector_engine = get_vector_engine()
 
@@ -1069,14 +1071,33 @@ class AddressPlatformService:
             parser_name=best.get("parser_name", "hybrid"),
             validation_context={
                 "confidence": confidence,
+                "reason": reason,
                 "hints": {
                     "reference_score": ref_score,
                     "gps_conflict": bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
                     "parser_disagreement": parser_disagreement
                 }
             },
-            reference_context=reference
+            reference_context=reference,
+            building_type=building_type,
+            current_decision=decision,
         )
+        ml_shadow_decision = str(ml_result.get("ml_decision") or "").strip().lower()
+        shadow_agrees = bool(ml_shadow_decision) and ml_shadow_decision == decision
+        if not ml_shadow_decision:
+            disagreement_reason = "model_unavailable"
+        elif shadow_agrees:
+            disagreement_reason = "agree"
+        elif decision == "accept" and ml_shadow_decision == "review":
+            disagreement_reason = "model_more_conservative_review"
+        elif decision == "review" and ml_shadow_decision == "accept":
+            disagreement_reason = "model_more_aggressive_accept"
+        elif ml_shadow_decision == "reject" and decision != "reject":
+            disagreement_reason = "model_reject_escalation"
+        elif decision == "reject" and ml_shadow_decision != "reject":
+            disagreement_reason = "model_reject_recovery"
+        else:
+            disagreement_reason = "general_disagreement"
 
         return {
             "profile": request.profile or self._default_profile,
@@ -1086,6 +1107,14 @@ class AddressPlatformService:
             "building_type": building_type,
             "suggested_unit_number": suggested_unit,
             "ml_decision": ml_result,
+            "shadow_assist": {
+                "heuristic_decision": decision,
+                "model_decision": ml_shadow_decision or None,
+                "agrees_with_heuristic": shadow_agrees,
+                "disagreement_reason": disagreement_reason,
+                "model_status": ml_result.get("status"),
+                "model_score": ml_result.get("ml_score"),
+            },
             "canonical": {
                 "base_address_key": canonical_base_key,
                 "full_address_key": canonical_full_key,
@@ -1133,6 +1162,12 @@ class AddressPlatformService:
         if validation.get("ml_decision"):
             ml = validation["ml_decision"]
             steps.append(f"ML Score (Shadow): {ml.get('ml_score')} -> {ml.get('ml_decision')}")
+        if validation.get("shadow_assist"):
+            shadow = validation["shadow_assist"]
+            if not shadow.get("agrees_with_heuristic"):
+                steps.append(
+                    f"Shadow Disagreement: {shadow.get('heuristic_decision')} vs {shadow.get('model_decision')} ({shadow.get('disagreement_reason')})"
+                )
         if validation.get("suggested_unit_number"):
             steps.append(f"Suggested unit: {validation['suggested_unit_number']}")
         if validation.get("reference"):

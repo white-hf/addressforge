@@ -14,49 +14,19 @@ from scipy.special import logsumexp
 
 from addressforge.core.common import canonicalize_unit_number, create_run, fetch_all, finish_run
 from addressforge.core.config import ADDRESSFORGE_MODEL_ARTIFACT_DIR, ADDRESSFORGE_WORKSPACE_NAME
-
-DECISION_LABELS = ("accept", "review", "reject")
-
-_CATEGORICAL_FEATURES = (
-    "pattern",
-    "unit_source",
-    "decision_reason",
-    "task_type",
-    "sample_pool",
-)
-
-_NUMERIC_FEATURES = (
-    "confidence",
-    "reference_score",
-    "reference_candidate_count",
-    "reference_has_unit_hint",
-    "gps_conflict",
-    "parser_disagreement",
-    "street_number_present",
-    "street_name_present",
-    "unit_present",
-    "explicit_unit_hint",
-    "residential_unit_hint",
-    "commercial_unit_hint",
-    "geographic_modifier_only",
-    "double_number_pattern",
-    "bare_trailing_unit_city_pattern",
-    "numbered_road_name",
-    "building_type_multi_unit",
-    "building_type_commercial",
-    "raw_text_length",
+from addressforge.core.decision_features import (
+    DECISION_CATEGORICAL_FEATURES as _CATEGORICAL_FEATURES,
+    DECISION_LABELS,
+    DECISION_NUMERIC_FEATURES as _NUMERIC_FEATURES,
+    build_decision_inference_feature_row,
+    build_decision_inference_frame,
+    rows_to_feature_frame as _rows_to_feature_frame,
+    safe_float as _safe_float,
 )
 
 
 def _artifact_dir() -> Path:
     return Path(os.getenv("ADDRESSFORGE_MODEL_ARTIFACT_DIR", ADDRESSFORGE_MODEL_ARTIFACT_DIR)).expanduser()
-
-
-def _safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _json_dict(value: Any) -> dict[str, Any]:
@@ -89,30 +59,6 @@ def _normalize_task_type(value: Any) -> str:
     if normalized.startswith(("calibration_", "unit_boost_", "hard_correction_")):
         return "review"
     return normalized or "unknown"
-
-
-def _reference_candidate_count(reference_json: dict[str, Any]) -> int:
-    for key in ("candidates", "matches", "reference_candidates"):
-        value = reference_json.get(key)
-        if isinstance(value, list):
-            return len(value)
-    return 0
-
-
-def _reference_has_unit_hint(reference_json: dict[str, Any]) -> int:
-    candidates = reference_json.get("candidates")
-    if not isinstance(candidates, list):
-        candidates = reference_json.get("matches")
-    if not isinstance(candidates, list):
-        return 0
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        if canonicalize_unit_number(item.get("unit_number")):
-            return 1
-        if canonicalize_unit_number((item.get("canonical") or {}).get("unit_number")):
-            return 1
-    return 0
 
 
 def _normalize_label_decision(label_json: dict[str, Any]) -> str:
@@ -155,8 +101,15 @@ def _extract_decision_training_feature_row(row: dict[str, Any]) -> dict[str, Any
         "sample_pool": _extract_sample_pool(row.get("notes")),
         "confidence": _safe_float(validation_json.get("confidence"), 0.0),
         "reference_score": _safe_float(hints.get("reference_score"), 0.0),
-        "reference_candidate_count": float(_reference_candidate_count(reference_json)),
-        "reference_has_unit_hint": float(_reference_has_unit_hint(reference_json)),
+        "reference_candidate_count": float(len(reference_json.get("candidates") or reference_json.get("matches") or [])),
+        "reference_has_unit_hint": float(
+            any(
+                canonicalize_unit_number((item or {}).get("unit_number"))
+                or canonicalize_unit_number(((item or {}).get("canonical") or {}).get("unit_number"))
+                for item in (reference_json.get("candidates") or reference_json.get("matches") or [])
+                if isinstance(item, dict)
+            )
+        ),
         "gps_conflict": 1.0 if bool(hints.get("gps_conflict")) else 0.0,
         "parser_disagreement": 1.0 if bool(hints.get("parser_disagreement")) else 0.0,
         "street_number_present": 1.0 if str(parsed.get("street_number") or "").strip() else 0.0,
@@ -271,18 +224,12 @@ def export_decision_training_dataset(
 
 
 def _rows_to_tabular_frame(rows: list[dict[str, Any]]) -> tuple[pd.DataFrame, np.ndarray]:
-    frame_rows: list[dict[str, Any]] = []
+    frame = _rows_to_feature_frame(rows)
     labels: list[int] = []
     label_index = {label: idx for idx, label in enumerate(DECISION_LABELS)}
     for row in rows:
-        frame_row: dict[str, Any] = {}
-        for feature_name in _NUMERIC_FEATURES:
-            frame_row[feature_name] = _safe_float(row.get(feature_name), 0.0)
-        for feature_name in _CATEGORICAL_FEATURES:
-            frame_row[feature_name] = str(row.get(feature_name) or "")
-        frame_rows.append(frame_row)
         labels.append(label_index[str(row["label"])])
-    return pd.DataFrame(frame_rows), np.asarray(labels, dtype=int)
+    return frame, np.asarray(labels, dtype=int)
 
 
 def _predict_with_model_payload(
@@ -686,6 +633,7 @@ def train_decision_baseline(
             "metadata_path": str(metadata_path),
             "model_path": str(model_path),
             "model_type": model_payload.get("model_type"),
+            "estimator": model_payload.get("estimator"),
             "metrics": metrics,
         }
     except Exception as exc:
@@ -695,6 +643,8 @@ def train_decision_baseline(
 
 __all__ = [
     "DECISION_LABELS",
+    "build_decision_inference_feature_row",
+    "build_decision_inference_frame",
     "compare_decision_baseline_against_current",
     "collect_decision_training_dataset",
     "export_decision_training_dataset",

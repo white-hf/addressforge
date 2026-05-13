@@ -164,6 +164,9 @@ class IngestionService:
     def _upsert_records(self, records: list[IngestionRecord]) -> int:
         if not records:
             return 0
+        
+        logger.info("Ingestion [%s]: Upserting batch of %d records into %s", self.source_name, len(records), self.target_table)
+        
         query = f"""
             INSERT INTO {self.target_table} (
                 workspace_name, source_name, external_id, raw_address_text, city, province, postal_code,
@@ -213,9 +216,16 @@ class IngestionService:
     def run_once(self, batch_size: int = 1000, cursor_override: str | None = None, attempt: int = 0) -> IngestionResult:
         run_id = create_run("ingestion", notes=f"{self.source_name} batch_size={batch_size}")
         current_cursor = cursor_override
+        
+        logger.info("--- Ingestion Process Started [Run ID: %s] ---", run_id)
+        logger.info("Source: %s | Mode: %s | Target: %s", self.source_name, self.provider.__class__.__name__, self.target_table)
+
         try:
             if current_cursor in (None, ""):
                 current_cursor = get_ingestion_cursor(self.source_name, self.cursor_type, self.workspace_name)
+            
+            logger.info("Resuming from cursor: %s", current_cursor)
+            
             page: IngestionPage = self._retry("fetch_page", self.provider.fetch_page, current_cursor, batch_size)
             ingested = self._retry("upsert_records", self._upsert_records, page.records)
             if page.next_cursor:

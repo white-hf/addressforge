@@ -1,0 +1,102 @@
+# AddressForge Iteration Execution Plan - 2026-05-12 (Phase 15: DecisionModel Runtimeization)
+
+## Document Info
+- Document type: Execution Plan / ML Runtime Delivery Plan
+- Effective date: 2026-05-12
+- Owner: AddressForge Architecture / Senior Engineering
+- Status: Planned
+- Goal: move `DecisionModel` from offline baseline to controlled online capability
+
+## 1. Background And Problem Definition
+`DecisionModel` already proves itself offline, but still mainly lives in:
+- baseline training
+- compare artifacts
+- shadow-level validation
+
+It has not yet become part of the actual runtime assist/override flow.
+
+## 2. Main Goal
+1. connect `DecisionModel` to shadow-assist serving
+2. build a disagreement loop for model vs heuristic
+3. tighten `review/reject` minority-class boundaries
+
+## 3. Requirements
+
+### Requirement 15-1: DecisionModel shadow-assist serving
+Delivery requirements:
+- runtime must emit:
+  - heuristic decision
+  - model decision
+  - disagreement reason
+- all requests must enter shadow logging
+
+### Requirement 15-2: Decision boundary calibration
+Delivery requirements:
+- continue improving:
+  - false review
+  - false reject
+  - over-sensitive review
+
+### Requirement 15-3: Decision rollout policy
+Delivery requirements:
+- define the rules for:
+  - shadow
+  - assist
+  - guarded override
+
+## 4. Technical Methods
+- **Shadow-assist policy layer**
+- **Disagreement bucket logging**
+- **Minority-label reinforcement**
+- **Threshold tuning with safety guards**
+
+Current priority slice:
+- **Gold-backed DecisionModel shadow-assist compare**
+  - runtime must return:
+    - heuristic decision
+    - ml shadow decision
+    - disagreement reason
+  - evaluator must compute directly against latest human gold:
+    - heuristic decision metrics
+    - ml shadow decision metrics
+    - disagreement buckets
+    - shadow advantage
+  - benefit: first prove that online shadow behavior matches the offline baseline, then move into assist / guarded override.
+
+Current validation result (2026-05-12):
+- live gold compare on the active runtime is now working:
+  - heuristic `decision_f1 = 0.6268`
+  - ml shadow `decision_f1 = 0.6752`
+  - `shadow_advantage = +0.0484`
+  - `disagreement_rate = 0.0861`
+- main disagreement buckets:
+  - `MODEL_MORE_AGGRESSIVE_ACCEPT = 100`
+  - `MODEL_MORE_CONSERVATIVE_REVIEW = 21`
+- current blocker:
+  - the code-level serving contract switch is now complete
+  - after live retraining, logs confirm the active runtime is loading from:
+    - `runtime/models/decision_catboost_v1.json`
+    - `runtime/models/decision_catboost_v1.pkl`
+    and no longer falling back to legacy `.cbm` compatibility mode
+  - remaining work:
+    - wait for the current lightweight evaluation artifact to complete
+    - then use that artifact to judge assist rollout readiness
+
+## 5. Expected Benefit
+- evolve ML from “offline is better” to “online is observable and comparable”
+- build evidence for later heuristic replacement
+
+## 6. Deliverables
+- DecisionModel shadow-assist runtime
+- disagreement report
+- threshold tuning artifact
+- rollout readiness summary
+
+## 7. Completion Criteria
+1. DecisionModel is online in shadow-assist mode
+2. disagreement can be measured, reviewed, and fed back
+3. assist-mode enablement criteria are defined
+
+## 8. Next Dependency
+After Phase 15:
+- `Phase 16: CandidateRerankerModel Completion`

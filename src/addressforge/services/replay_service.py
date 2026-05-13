@@ -7,6 +7,19 @@ from addressforge.core.common import create_run, db_cursor, fetch_all, finish_ru
 from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
 from addressforge.core.utils import logger
 from addressforge.models import get_active_model
+from addressforge.services.model_service import build_model_service_from_manifest
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            data = json.loads(value)
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
 
 def _load_model_runtime(workspace_name: str, model_version: str) -> Any:
     """
@@ -30,7 +43,8 @@ def _load_model_runtime(workspace_name: str, model_version: str) -> Any:
     else:
         model_row = get_active_model(workspace_name)
     if not model_row:
-        return (False, None, None, None)
+        return (False, None, None, None, None)
+    metrics_json = _json_dict(model_row.get("metrics_json"))
     artifact_path = model_row.get("artifact_path")
     artifact_payload: dict[str, Any] = {}
     if artifact_path:
@@ -43,10 +57,34 @@ def _load_model_runtime(workspace_name: str, model_version: str) -> Any:
                     artifact_payload = json.load(handle)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to load model artifact for runtime %s: %s", model_version, exc)
-    profile = artifact_payload.get("profile") or model_row.get("default_profile") or "base_canada"
-    parsers = tuple(artifact_payload.get("parsers") or ("simple_rule", "hybrid_canada", "libpostal"))
-    decision_policy = artifact_payload.get("decision_policy") if isinstance(artifact_payload.get("decision_policy"), dict) else {}
-    return (True, profile, parsers, decision_policy)
+    runtime_binding = metrics_json.get("runtime_binding") if isinstance(metrics_json.get("runtime_binding"), dict) else {}
+    profile = (
+        runtime_binding.get("profile")
+        or artifact_payload.get("profile")
+        or model_row.get("default_profile")
+        or "base_canada"
+    )
+    parsers = tuple(
+        runtime_binding.get("parsers")
+        or artifact_payload.get("parsers")
+        or ("simple_rule", "hybrid_canada", "libpostal")
+    )
+    decision_policy = (
+        runtime_binding.get("decision_policy")
+        if isinstance(runtime_binding.get("decision_policy"), dict)
+        else artifact_payload.get("decision_policy")
+        if isinstance(artifact_payload.get("decision_policy"), dict)
+        else {}
+    )
+    decision_model_artifact = (
+        metrics_json.get("decision_model_artifact")
+        if isinstance(metrics_json.get("decision_model_artifact"), dict)
+        else artifact_payload.get("decision_model_artifact")
+        if isinstance(artifact_payload.get("decision_model_artifact"), dict)
+        else {}
+    )
+    model_service = build_model_service_from_manifest(decision_model_artifact)
+    return (True, profile, parsers, decision_policy, model_service)
 
 def run_historical_replay(
     workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
@@ -85,11 +123,13 @@ def run_historical_replay(
             default_profile=candidate_runtime[1],
             default_parsers=candidate_runtime[2],
             decision_policy=candidate_runtime[3],
+            model_service=candidate_runtime[4],
         )
         active_service = AddressPlatformService(
             default_profile=active_runtime[1],
             default_parsers=active_runtime[2],
             decision_policy=active_runtime[3],
+            model_service=active_runtime[4],
         )
 
         # 2. Fetch historical records

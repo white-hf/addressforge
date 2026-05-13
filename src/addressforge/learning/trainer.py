@@ -1036,9 +1036,29 @@ def run_baseline_training(
                 cb_model_path = Path("runtime/models/decision_catboost_v1.cbm")
                 cb_model_path.parent.mkdir(parents=True, exist_ok=True)
                 cb_model.save_model(str(cb_model_path))
+                metadata_src = Path(str(ml_model_result.get("metadata_path") or ""))
+                model_src = Path(str(ml_model_result.get("model_path") or ""))
+                runtime_metadata_path = Path("runtime/models/decision_catboost_v1.json")
+                runtime_model_path = Path("runtime/models/decision_catboost_v1.pkl")
+                if metadata_src.exists():
+                    runtime_metadata_path.write_text(metadata_src.read_text(encoding="utf-8"), encoding="utf-8")
+                if model_src.exists():
+                    runtime_model_path.write_bytes(model_src.read_bytes())
                 logger.info("Shadow CatBoost model saved to %s", cb_model_path)
+            decision_model_artifact = {
+                "model_type": ml_model_result.get("model_type"),
+                "metadata_path": str(ml_model_result.get("metadata_path") or ""),
+                "model_path": str(ml_model_result.get("model_path") or ""),
+                "legacy_model_path": str(cb_model_path) if ml_model_result.get("model_type") == "catboost" else "",
+            }
         except Exception as ml_exc:
             logger.warning("Failed to train shadow CatBoost model: %s", ml_exc)
+            decision_model_artifact = {
+                "model_type": "",
+                "metadata_path": "",
+                "model_path": "",
+                "legacy_model_path": "",
+            }
 
         parser_weights = _derive_parser_weights(
             workspace_name,
@@ -1079,6 +1099,12 @@ def run_baseline_training(
             "profile": profile,
             "parsers": ["simple_rule", "hybrid_canada", "libpostal"],
             "decision_policy": decision_policy,
+            "runtime_binding": {
+                "profile": profile,
+                "parsers": ["simple_rule", "hybrid_canada", "libpostal"],
+                "decision_policy": decision_policy,
+            },
+            "decision_model_artifact": decision_model_artifact,
             "training_run_id": run_id,
             "sample_count": sample_count,
             "gold_count": gold_count,
@@ -1104,6 +1130,12 @@ def run_baseline_training(
                 "sample_count": sample_count,
                 "gold_count": gold_count,
                 "decision_policy": decision_policy,
+                "runtime_binding": {
+                    "profile": profile,
+                    "parsers": ["simple_rule", "hybrid_canada", "libpostal"],
+                    "decision_policy": decision_policy,
+                },
+                "decision_model_artifact": decision_model_artifact,
                 "hard_sample_profile": hard_sample_profile,
                 "label_consistency_diagnostics": label_consistency_diagnostics,
                 "decision_label_balance": decision_label_balance,

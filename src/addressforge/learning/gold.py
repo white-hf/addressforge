@@ -124,14 +124,9 @@ def _normalized_review_text_key(raw_text: str | None) -> str:
 
 def _existing_reviewed_or_queued_text_keys(
     workspace_name: str,
-    source_ids: list[str],
 ) -> set[str]:
-    cleaned = [str(source_id).strip() for source_id in source_ids if str(source_id).strip()]
-    if not cleaned:
-        return set()
-    placeholders = ", ".join(["%s"] * len(cleaned))
     rows = fetch_all(
-        f"""
+        """
         SELECT DISTINCT r.raw_address_text
         FROM gold_label g
         JOIN address_cleaning_result r
@@ -140,7 +135,6 @@ def _existing_reviewed_or_queued_text_keys(
         WHERE g.workspace_name = %s
           AND g.review_status = 'accepted'
           AND g.label_source = 'human'
-          AND g.source_id IN ({placeholders})
         UNION
         SELECT DISTINCT r.raw_address_text
         FROM active_learning_queue q
@@ -148,9 +142,8 @@ def _existing_reviewed_or_queued_text_keys(
           ON q.workspace_name = r.workspace_name
          AND q.source_id = CAST(r.raw_id AS CHAR)
         WHERE q.workspace_name = %s
-          AND q.source_id IN ({placeholders})
         """,
-        tuple([workspace_name, *cleaned, workspace_name, *cleaned]),
+        (workspace_name, workspace_name),
     )
     return {
         _normalized_review_text_key(row.get("raw_address_text"))
@@ -1680,6 +1673,7 @@ def seed_decision_minority_label_review_queue(
                         "confidence": row.get("confidence"),
                         "reason": f"Decision minority label seeding [{bucket}]: {reason or 'review/reject label enrichment candidate'}",
                         "bucket": bucket,
+                        "raw_address_text": row.get("raw_address_text"),
                     }
                 )
             bucketed_candidates[bucket] = prepared
@@ -1691,9 +1685,11 @@ def seed_decision_minority_label_review_queue(
             workspace_name,
             all_candidate_source_ids,
         )
+        existing_text_keys = _existing_reviewed_or_queued_text_keys(workspace_name)
 
         deduped: list[dict[str, Any]] = []
         seen_source_ids: set[str] = set()
+        seen_text_keys: set[str] = set()
         ordered_buckets = [bucket for bucket, _priority, _query, _params in bucket_queries]
         bucket_positions: dict[str, int] = {bucket: 0 for bucket in ordered_buckets}
         while len(deduped) < limit:
@@ -1705,9 +1701,18 @@ def seed_decision_minority_label_review_queue(
                     item = items[position]
                     position += 1
                     source_id = str(item["source_id"]).strip()
-                    if not source_id or source_id in seen_source_ids or source_id in existing_source_ids:
+                    text_key = _normalized_review_text_key(item.get("raw_address_text"))
+                    if (
+                        not source_id
+                        or source_id in seen_source_ids
+                        or source_id in existing_source_ids
+                        or (text_key and text_key in seen_text_keys)
+                        or (text_key and text_key in existing_text_keys)
+                    ):
                         continue
                     seen_source_ids.add(source_id)
+                    if text_key:
+                        seen_text_keys.add(text_key)
                     deduped.append(item)
                     made_progress = True
                     break

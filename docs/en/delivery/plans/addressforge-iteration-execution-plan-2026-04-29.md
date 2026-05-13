@@ -6,7 +6,7 @@
 - Owner: AddressForge Product / Engineering
 - Status: Planned
 - Related Document:
-  - [AddressForge Version Plan](./addressforge-version-plan.md)
+  - [AddressForge Version Plan](../../product/addressforge-version-plan.md)
 
 ## 1. Purpose
 This document records only the **optimization work planned for 2026-04-29** and is intended to guide execution for the day.

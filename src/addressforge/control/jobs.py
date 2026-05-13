@@ -66,7 +66,9 @@ CONTROL_JOB_KINDS = (
 )
 CONTROL_JOB_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
 WORKER_HEARTBEAT_TIMEOUT_SECONDS = 30
-STALE_RUNNING_JOB_TIMEOUT_SECONDS = 120
+# Increased to 15 minutes for slow ML tasks
+# 增加到 15 分钟，以适应缓慢的 ML 任务
+STALE_RUNNING_JOB_TIMEOUT_SECONDS = 900
 
 
 @dataclass(frozen=True)
@@ -260,7 +262,14 @@ def _summarize_job_result(job: dict[str, Any]) -> str:
     kind = str(job.get("job_kind") or "")
     parts: list[str] = []
     if kind == "ingestion_once":
-        ingested = result.get("result", {}).get("records_ingested") if isinstance(result.get("result"), dict) else None
+        # Robustly try to find ingested count from nested result or top level
+        # 稳健地尝试从嵌套结果或顶层寻找摄取数量
+        ingested = None
+        if isinstance(result.get("result"), dict):
+            ingested = result["result"].get("records_ingested")
+        if ingested is None:
+            ingested = result.get("records_ingested")
+            
         parts.append(f"records_ingested={ingested if ingested is not None else 'n/a'}")
         if result.get("followup_job"):
             parts.append(f"followup_job_id={result['followup_job'].get('job_id')}")

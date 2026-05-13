@@ -14,6 +14,41 @@ New developers usually ask three questions:
 
 This guide answers those questions in execution order.
 
+## 1.1 Current Project Governance
+
+The AddressForge project now formally uses two governance skills:
+
+1. **Project-specific skill**
+   - `addressforge-agile-delivery`
+   - Used for:
+     - repo-specific document layering
+     - phase/iteration opening and closing rules
+     - ML delivery loops
+     - AGENTS-aligned execution
+
+2. **General project-delivery skill**
+   - `codex-agile-product-delivery`
+   - Used for:
+     - full-lifecycle agile delivery
+     - project scaffold and standards generation
+     - testing/release/rollback governance
+     - autonomous goal-driven iteration by agents
+
+The usage rule for this project is:
+- for day-to-day AddressForge development, phase planning, and ML iteration, follow `addressforge-agile-delivery` first
+- for project scaffolding, cross-phase process governance, and general agile structure, supplement with `codex-agile-product-delivery`
+
+This means:
+- new requirements, new phases, and new ML workstreams must not be driven by code changes alone
+- the team must also check, through the skills, whether:
+  - the right document layer was updated first
+  - a new iteration should be opened
+  - enough validation evidence exists
+  - autonomous iteration should continue until the project-level goal is reached
+
+For the formal project structure standard, see:
+- [addressforge-project-structure.md](../governance/addressforge-project-structure.md)
+
 ## 2. Recommended project layout
 
 Keep private data outside the repository, for example:
