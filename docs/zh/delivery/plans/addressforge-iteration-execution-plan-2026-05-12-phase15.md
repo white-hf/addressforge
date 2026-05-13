@@ -87,6 +87,27 @@
     - 等本轮轻量 evaluation 产出完整 artifact
     - 再基于新 artifact 进入 assist rollout 门槛判断
 
+当前实现推进（2026-05-13）：
+- 已新增 `guarded assist recommendation`，但仍保持 `shadow-only`
+- runtime 现在除了输出：
+  - `heuristic_decision`
+  - `model_decision`
+  - `disagreement_reason`
+  之外，还会输出：
+  - `assist_eligible`
+  - `assist_recommended_decision`
+  - `assist_guard_reason`
+  - `assist_policy_mode`
+- evaluator 现在会额外统计：
+  - `assist_readiness.eligible_count`
+  - `assist_readiness.recommended_decision_counts`
+  - `assist_readiness.guard_reason_counts`
+  - `assist_readiness.gold_match_rate`
+
+这一切的目的不是立即启用 override，而是回答：
+- 哪些 disagreement 已具备进入 assist 的安全前提
+- 这些 assist recommendation 在最新 human gold 上的命中率如何
+
 ## 5. 预期收益
 - 让 ML 从“离线更好”进化成“在线可观察、可对比”
 - 为后续真正替代 heuristic 做证据积累

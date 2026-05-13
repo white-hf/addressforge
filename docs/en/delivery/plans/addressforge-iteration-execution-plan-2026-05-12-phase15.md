@@ -82,6 +82,27 @@ Current validation result (2026-05-12):
     - wait for the current lightweight evaluation artifact to complete
     - then use that artifact to judge assist rollout readiness
 
+Current implementation progress (2026-05-13):
+- `guarded assist recommendation` has been added while keeping the system in `shadow-only` mode
+- runtime now emits, in addition to:
+  - `heuristic_decision`
+  - `model_decision`
+  - `disagreement_reason`
+  also:
+  - `assist_eligible`
+  - `assist_recommended_decision`
+  - `assist_guard_reason`
+  - `assist_policy_mode`
+- evaluator now also tracks:
+  - `assist_readiness.eligible_count`
+  - `assist_readiness.recommended_decision_counts`
+  - `assist_readiness.guard_reason_counts`
+  - `assist_readiness.gold_match_rate`
+
+The purpose is not to enable override yet. The purpose is to answer:
+- which disagreement cases are now safe candidates for assist
+- how often those assist recommendations match the latest human gold
+
 ## 5. Expected Benefit
 - evolve ML from “offline is better” to “online is observable and comparable”
 - build evidence for later heuristic replacement

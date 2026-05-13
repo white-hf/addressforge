@@ -655,6 +655,128 @@ class AddressPlatformService:
         value = self._decision_policy.get("candidate_pair_weights") or {}
         return value if isinstance(value, dict) else {}
 
+    def _shadow_assist_recommendation(
+        self,
+        *,
+        heuristic_decision: str,
+        ml_result: dict[str, Any],
+        reason: str,
+        parse_score: float,
+        ref_score: float,
+        building_type: str,
+        parser_disagreement: bool,
+        gps_conflict: bool,
+    ) -> dict[str, Any]:
+        ml_decision = str(ml_result.get("ml_decision") or "").strip().lower()
+        ml_score = float(ml_result.get("ml_score") or 0.0)
+        reason_text = str(reason or "").strip().lower()
+        if not ml_decision:
+            return {
+                "eligible": False,
+                "recommended_decision": None,
+                "guard_reason": "model_unavailable",
+                "policy_mode": "shadow_only",
+            }
+        if ml_decision == heuristic_decision:
+            return {
+                "eligible": False,
+                "recommended_decision": None,
+                "guard_reason": "agree_with_heuristic",
+                "policy_mode": "shadow_only",
+            }
+        if ml_decision == "reject":
+            return {
+                "eligible": False,
+                "recommended_decision": None,
+                "guard_reason": "reject_override_not_enabled",
+                "policy_mode": "shadow_only",
+            }
+
+        if heuristic_decision == "review" and ml_decision == "accept":
+            if building_type == "commercial":
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "commercial_guard",
+                    "policy_mode": "shadow_only",
+                }
+            if parser_disagreement:
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "parser_disagreement_guard",
+                    "policy_mode": "shadow_only",
+                }
+            if gps_conflict:
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "gps_conflict_guard",
+                    "policy_mode": "shadow_only",
+                }
+            if "incomplete" in reason_text:
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "incomplete_guard",
+                    "policy_mode": "shadow_only",
+                }
+            if parse_score < self._policy_float("assist_accept_parse_score_threshold", 0.68):
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "low_parse_score_for_accept",
+                    "policy_mode": "shadow_only",
+                }
+            if ml_score < self._policy_float("assist_accept_score_threshold", 0.70):
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "low_model_score_for_accept",
+                    "policy_mode": "shadow_only",
+                }
+            return {
+                "eligible": True,
+                "recommended_decision": "accept",
+                "guard_reason": "eligible_accept_recovery",
+                "policy_mode": "shadow_only",
+            }
+
+        if heuristic_decision == "accept" and ml_decision == "review":
+            if ml_score < self._policy_float("assist_review_score_threshold", 0.55):
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "low_model_score_for_review",
+                    "policy_mode": "shadow_only",
+                }
+            if not (
+                parser_disagreement
+                or building_type == "commercial"
+                or gps_conflict
+                or parse_score < self._policy_float("assist_review_parse_score_threshold", 0.80)
+                or ref_score < self._policy_float("assist_review_reference_score_threshold", 0.60)
+            ):
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "no_guard_trigger_for_review",
+                    "policy_mode": "shadow_only",
+                }
+            return {
+                "eligible": True,
+                "recommended_decision": "review",
+                "guard_reason": "eligible_review_escalation",
+                "policy_mode": "shadow_only",
+            }
+
+        return {
+            "eligible": False,
+            "recommended_decision": None,
+            "guard_reason": "unsupported_transition",
+            "policy_mode": "shadow_only",
+        }
+
     def model_info(self) -> dict[str, Any]:
         reference_count = 0
         try:
@@ -1098,6 +1220,16 @@ class AddressPlatformService:
             disagreement_reason = "model_reject_recovery"
         else:
             disagreement_reason = "general_disagreement"
+        assist_recommendation = self._shadow_assist_recommendation(
+            heuristic_decision=decision,
+            ml_result=ml_result,
+            reason=reason,
+            parse_score=parse_score,
+            ref_score=ref_score,
+            building_type=building_type,
+            parser_disagreement=parser_disagreement,
+            gps_conflict=bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
+        )
 
         return {
             "profile": request.profile or self._default_profile,
@@ -1114,6 +1246,10 @@ class AddressPlatformService:
                 "disagreement_reason": disagreement_reason,
                 "model_status": ml_result.get("status"),
                 "model_score": ml_result.get("ml_score"),
+                "assist_eligible": assist_recommendation.get("eligible"),
+                "assist_recommended_decision": assist_recommendation.get("recommended_decision"),
+                "assist_guard_reason": assist_recommendation.get("guard_reason"),
+                "assist_policy_mode": assist_recommendation.get("policy_mode"),
             },
             "canonical": {
                 "base_address_key": canonical_base_key,

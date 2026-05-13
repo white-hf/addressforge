@@ -17,6 +17,9 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
                 "ml_shadow_score": 0.82,
                 "ml_shadow_status": "success",
                 "shadow_disagreement_reason": "model_more_aggressive_accept",
+                "assist_eligible": True,
+                "assist_recommended_decision": "accept",
+                "assist_guard_reason": "eligible_accept_recovery",
             },
             {
                 "source_id": "2",
@@ -27,6 +30,9 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
                 "ml_shadow_score": 0.77,
                 "ml_shadow_status": "success",
                 "shadow_disagreement_reason": "agree",
+                "assist_eligible": False,
+                "assist_recommended_decision": None,
+                "assist_guard_reason": "agree_with_heuristic",
             },
             {
                 "source_id": "3",
@@ -37,6 +43,9 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
                 "ml_shadow_score": 0.66,
                 "ml_shadow_status": "success",
                 "shadow_disagreement_reason": "model_reject_escalation",
+                "assist_eligible": False,
+                "assist_recommended_decision": None,
+                "assist_guard_reason": "reject_override_not_enabled",
             },
         ]
 
@@ -49,6 +58,10 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
         self.assertAlmostEqual(summary["disagreement_rate"], 0.6667)
         self.assertEqual(summary["bucket_counts"]["MODEL_MORE_AGGRESSIVE_ACCEPT"], 1)
         self.assertEqual(summary["bucket_counts"]["MODEL_REJECT_ESCALATION"], 1)
+        self.assertEqual(summary["assist_readiness"]["eligible_count"], 1)
+        self.assertEqual(summary["assist_readiness"]["recommended_decision_counts"]["accept"], 1)
+        self.assertEqual(summary["assist_readiness"]["guard_reason_counts"]["eligible_accept_recovery"], 1)
+        self.assertAlmostEqual(summary["assist_readiness"]["gold_match_rate"], 1.0)
         self.assertEqual(len(summary["disagreement_samples"]), 2)
 
 

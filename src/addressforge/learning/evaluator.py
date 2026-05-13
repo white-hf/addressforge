@@ -271,17 +271,35 @@ def _decision_shadow_assist_summary(rows: list[dict[str, Any]], limit: int = 50)
     model_metrics = _field_metrics(rows, "ml_shadow_decision") if rows else None
     disagreements: list[dict[str, Any]] = []
     bucket_counts: dict[str, int] = {}
+    assist_guard_counts: dict[str, int] = {}
+    assist_recommended_counts: dict[str, int] = {}
     compared = 0
     disagreed = 0
     model_available = 0
+    assist_eligible = 0
+    assist_compared = 0
+    assist_gold_matches = 0
     for row in rows:
         heuristic = _extract_predicted_value(row, "heuristic_decision")
         model = _extract_predicted_value(row, "ml_shadow_decision")
+        gold = _extract_gold_value(_normalize_label_json(row.get("label_json")), "decision")
+        assist_recommended_decision = _extract_predicted_value(row, "assist_recommended_decision")
+        assist_guard_reason = str(row.get("assist_guard_reason") or "unknown")
+        assist_is_eligible = bool(row.get("assist_eligible"))
         if heuristic is None:
             continue
         compared += 1
         if model is not None:
             model_available += 1
+        if assist_is_eligible:
+            assist_eligible += 1
+            assist_guard_counts[assist_guard_reason] = assist_guard_counts.get(assist_guard_reason, 0) + 1
+            if assist_recommended_decision is not None:
+                assist_recommended_counts[assist_recommended_decision] = assist_recommended_counts.get(assist_recommended_decision, 0) + 1
+                if gold is not None:
+                    assist_compared += 1
+                    if assist_recommended_decision == gold:
+                        assist_gold_matches += 1
         if heuristic == model:
             continue
         disagreed += 1
@@ -299,9 +317,13 @@ def _decision_shadow_assist_summary(rows: list[dict[str, Any]], limit: int = 50)
                     "model_score": row.get("ml_shadow_score"),
                     "model_status": row.get("ml_shadow_status"),
                     "disagreement_reason": row.get("shadow_disagreement_reason"),
+                    "assist_eligible": assist_is_eligible,
+                    "assist_recommended_decision": assist_recommended_decision,
+                    "assist_guard_reason": assist_guard_reason,
                 }
             )
     ordered_buckets = sorted(bucket_counts.items(), key=lambda item: (-item[1], item[0]))
+    ordered_assist_guards = sorted(assist_guard_counts.items(), key=lambda item: (-item[1], item[0]))
     heuristic_f1 = float((heuristic_metrics or {}).get("f1") or 0.0)
     model_f1 = float((model_metrics or {}).get("f1") or 0.0)
     return {
@@ -313,6 +335,13 @@ def _decision_shadow_assist_summary(rows: list[dict[str, Any]], limit: int = 50)
         "shadow_advantage": round(model_f1 - heuristic_f1, 4),
         "bucket_counts": dict(ordered_buckets),
         "top_buckets": [{"bucket": bucket, "count": count} for bucket, count in ordered_buckets[:10]],
+        "assist_readiness": {
+            "eligible_count": assist_eligible,
+            "recommended_decision_counts": assist_recommended_counts,
+            "guard_reason_counts": dict(ordered_assist_guards),
+            "gold_compared": assist_compared,
+            "gold_match_rate": round(assist_gold_matches / assist_compared, 4) if assist_compared else 0.0,
+        },
         "disagreement_samples": disagreements,
     }
 
@@ -456,6 +485,9 @@ def _predict_gold_rows_with_runtime(
                 current["ml_shadow_score"] = ml_shadow.get("ml_score")
                 current["ml_shadow_status"] = ml_shadow.get("status")
                 current["shadow_disagreement_reason"] = shadow_assist.get("disagreement_reason")
+                current["assist_eligible"] = shadow_assist.get("assist_eligible")
+                current["assist_recommended_decision"] = shadow_assist.get("assist_recommended_decision")
+                current["assist_guard_reason"] = shadow_assist.get("assist_guard_reason")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Runtime gold prediction failed for source_id=%s: %s", row.get("source_id"), exc)
                 current["decision"] = None
@@ -466,6 +498,9 @@ def _predict_gold_rows_with_runtime(
                 current["ml_shadow_score"] = None
                 current["ml_shadow_status"] = "error"
                 current["shadow_disagreement_reason"] = "runtime_error"
+                current["assist_eligible"] = False
+                current["assist_recommended_decision"] = None
+                current["assist_guard_reason"] = "runtime_error"
         predicted_rows.append(current)
     return predicted_rows
 
