@@ -161,6 +161,12 @@
     - source model
     - source version
     - applied changes
+- 同时会保留：
+  - `decision_policy_before_calibration`
+  - `decision_policy`
+  这样每轮训练后都可以直接比较：
+  - calibration 前阈值
+  - calibration 后阈值
 
 这一切的目的不是立即启用 override，而是回答：
 - 哪些 disagreement 已具备进入 assist 的安全前提

@@ -1094,6 +1094,7 @@ def run_baseline_training(
         if existing_model and existing_model.get("default_profile"):
             profile = str(existing_model["default_profile"])
         decision_policy = _derive_decision_policy(workspace_name)
+        decision_policy_before_calibration = dict(decision_policy)
         calibration_proposal = _load_decision_policy_calibration_proposal(workspace_name)
         decision_policy_calibration = _apply_decision_policy_calibration_proposal(
             decision_policy,
@@ -1186,6 +1187,7 @@ def run_baseline_training(
             "dataset_name": dataset_name,
             "profile": profile,
             "parsers": ["simple_rule", "hybrid_canada", "libpostal"],
+            "decision_policy_before_calibration": decision_policy_before_calibration,
             "decision_policy": decision_policy,
             "decision_policy_calibration": decision_policy_calibration,
             "runtime_binding": {
@@ -1218,6 +1220,7 @@ def run_baseline_training(
                 "training_dataset": dataset_name,
                 "sample_count": sample_count,
                 "gold_count": gold_count,
+                "decision_policy_before_calibration": decision_policy_before_calibration,
                 "decision_policy": decision_policy,
                 "decision_policy_calibration": decision_policy_calibration,
                 "runtime_binding": {

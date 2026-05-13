@@ -155,6 +155,12 @@ Current implementation progress (continued):
     - source model
     - source version
     - applied changes
+- they also retain:
+  - `decision_policy_before_calibration`
+  - `decision_policy`
+  so each training run can be audited directly by comparing:
+  - thresholds before calibration
+  - thresholds after calibration
 
 The purpose is not to enable override yet. The purpose is to answer:
 - which disagreement cases are now safe candidates for assist
