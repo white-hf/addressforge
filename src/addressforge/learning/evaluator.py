@@ -346,6 +346,47 @@ def _decision_shadow_assist_summary(rows: list[dict[str, Any]], limit: int = 50)
     }
 
 
+def _decision_assist_rollout_readiness(shadow_summary: dict[str, Any] | None) -> dict[str, Any]:
+    shadow_summary = shadow_summary if isinstance(shadow_summary, dict) else {}
+    heuristic = shadow_summary.get("heuristic") or {}
+    ml_shadow = shadow_summary.get("ml_shadow") or {}
+    assist = shadow_summary.get("assist_readiness") or {}
+
+    heuristic_f1 = float(heuristic.get("f1") or 0.0)
+    shadow_f1 = float(ml_shadow.get("f1") or 0.0)
+    shadow_advantage = float(shadow_summary.get("shadow_advantage") or 0.0)
+    disagreement_rate = float(shadow_summary.get("disagreement_rate") or 0.0)
+    eligible_count = int(assist.get("eligible_count") or 0)
+    gold_match_rate = float(assist.get("gold_match_rate") or 0.0)
+    gold_compared = int(assist.get("gold_compared") or 0)
+
+    checks = {
+        "shadow_beats_heuristic": shadow_f1 > heuristic_f1 and shadow_advantage > 0.0,
+        "disagreement_rate_safe": disagreement_rate <= 0.15,
+        "eligible_sample_count_sufficient": eligible_count >= 10,
+        "assist_gold_match_rate_sufficient": gold_compared >= 5 and gold_match_rate >= 0.80,
+    }
+    passed = all(checks.values())
+    if passed:
+        status = "ready_for_assist_trial"
+    elif checks["shadow_beats_heuristic"] and checks["disagreement_rate_safe"]:
+        status = "needs_more_assist_calibration"
+    else:
+        status = "shadow_only"
+
+    return {
+        "status": status,
+        "checks": checks,
+        "heuristic_f1": round(heuristic_f1, 4),
+        "ml_shadow_f1": round(shadow_f1, 4),
+        "shadow_advantage": round(shadow_advantage, 4),
+        "disagreement_rate": round(disagreement_rate, 4),
+        "eligible_count": eligible_count,
+        "assist_gold_compared": gold_compared,
+        "assist_gold_match_rate": round(gold_match_rate, 4),
+    }
+
+
 def _load_gold_comparison_rows(workspace_name: str) -> list[dict[str, Any]]:
     return fetch_all(
         """
@@ -664,6 +705,9 @@ def run_baseline_evaluation(
             metrics_json["decision_errors"] = errors
             metrics_json["decision_error_buckets"] = _generate_bucket_summary(errors)
             metrics_json["decision_shadow_assist"] = _decision_shadow_assist_summary(gold_rows)
+            metrics_json["decision_assist_rollout_readiness"] = _decision_assist_rollout_readiness(
+                metrics_json["decision_shadow_assist"]
+            )
         if building_metrics:
             metrics_json["building_type"] = building_metrics
             errors = _field_error_samples(gold_rows, "building_type")
@@ -864,6 +908,19 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
             f"| Decision Recall | {float(heuristic.get('recall') or 0.0):.4f} | {float(ml_shadow.get('recall') or 0.0):.4f} |",
             f"| Shadow Advantage | - | {float(shadow_assist.get('shadow_advantage') or 0.0):+.4f} |",
             f"| Disagreement Rate | - | {float(shadow_assist.get('disagreement_rate') or 0.0):.4f} |",
+        ])
+    assist_readiness = metrics.get("decision_assist_rollout_readiness") or {}
+    if assist_readiness:
+        report.extend([
+            "",
+            "## 1.2 DecisionModel Assist Readiness",
+            "| Check | Value | Status |",
+            "| :--- | :--- | :--- |",
+            f"| Rollout Status | {assist_readiness.get('status') or 'unknown'} | {'PASS' if assist_readiness.get('status') == 'ready_for_assist_trial' else 'HOLD'} |",
+            f"| Shadow Advantage | {float(assist_readiness.get('shadow_advantage') or 0.0):+.4f} | {'PASS' if (assist_readiness.get('checks') or {}).get('shadow_beats_heuristic') else 'FAIL'} |",
+            f"| Disagreement Rate | {float(assist_readiness.get('disagreement_rate') or 0.0):.4f} | {'PASS' if (assist_readiness.get('checks') or {}).get('disagreement_rate_safe') else 'FAIL'} |",
+            f"| Eligible Assist Samples | {int(assist_readiness.get('eligible_count') or 0)} | {'PASS' if (assist_readiness.get('checks') or {}).get('eligible_sample_count_sufficient') else 'FAIL'} |",
+            f"| Assist Gold Match Rate | {float(assist_readiness.get('assist_gold_match_rate') or 0.0):.4f} | {'PASS' if (assist_readiness.get('checks') or {}).get('assist_gold_match_rate_sufficient') else 'FAIL'} |",
         ])
 
     # --- Historical Replay & Stability Section ---

@@ -103,10 +103,23 @@
   - `assist_readiness.recommended_decision_counts`
   - `assist_readiness.guard_reason_counts`
   - `assist_readiness.gold_match_rate`
+- evaluator 现在还会产出正式 artifact：
+  - `decision_assist_rollout_readiness`
+  - 其中包含：
+    - `status`
+    - `checks`
+    - `shadow_advantage`
+    - `disagreement_rate`
+    - `eligible_count`
+    - `assist_gold_match_rate`
 
 这一切的目的不是立即启用 override，而是回答：
 - 哪些 disagreement 已具备进入 assist 的安全前提
 - 这些 assist recommendation 在最新 human gold 上的命中率如何
+- 当前是否已经达到：
+  - `ready_for_assist_trial`
+  - 还是仍然应该保持：
+  - `shadow_only` / `needs_more_assist_calibration`
 
 ## 5. 预期收益
 - 让 ML 从“离线更好”进化成“在线可观察、可对比”

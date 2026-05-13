@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from addressforge.learning.evaluator import _decision_shadow_assist_summary
+from addressforge.learning.evaluator import (
+    _decision_assist_rollout_readiness,
+    _decision_shadow_assist_summary,
+)
 
 
 class TestEvaluatorShadowAssist(unittest.TestCase):
@@ -63,6 +66,11 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
         self.assertEqual(summary["assist_readiness"]["guard_reason_counts"]["eligible_accept_recovery"], 1)
         self.assertAlmostEqual(summary["assist_readiness"]["gold_match_rate"], 1.0)
         self.assertEqual(len(summary["disagreement_samples"]), 2)
+
+        readiness = _decision_assist_rollout_readiness(summary)
+        self.assertEqual(readiness["status"], "shadow_only")
+        self.assertTrue(readiness["checks"]["shadow_beats_heuristic"])
+        self.assertFalse(readiness["checks"]["assist_gold_match_rate_sufficient"])
 
 
 if __name__ == "__main__":

@@ -98,10 +98,23 @@ Current implementation progress (2026-05-13):
   - `assist_readiness.recommended_decision_counts`
   - `assist_readiness.guard_reason_counts`
   - `assist_readiness.gold_match_rate`
+- evaluator now also emits a formal artifact:
+  - `decision_assist_rollout_readiness`
+  - containing:
+    - `status`
+    - `checks`
+    - `shadow_advantage`
+    - `disagreement_rate`
+    - `eligible_count`
+    - `assist_gold_match_rate`
 
 The purpose is not to enable override yet. The purpose is to answer:
 - which disagreement cases are now safe candidates for assist
 - how often those assist recommendations match the latest human gold
+- whether the system is already:
+  - `ready_for_assist_trial`
+  - or should remain:
+  - `shadow_only` / `needs_more_assist_calibration`
 
 ## 5. Expected Benefit
 - evolve ML from “offline is better” to “online is observable and comparable”
