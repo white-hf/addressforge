@@ -179,6 +179,11 @@
     - `assist_rollout_readiness`
     - `assist_trial`
     - `decision_policy_calibration`
+- 此外，`AddressPlatformService` 现在已改为：
+  - lazy-load vector retrieval engine
+- 收益：
+  - 评测 / replay / shadow 只在真正需要检索时才初始化向量引擎
+  - 避免 `DecisionModel` 轻量训练/评测被向量模型初始化拖慢
 
 这一切的目的不是立即启用 override，而是回答：
 - 哪些 disagreement 已具备进入 assist 的安全前提

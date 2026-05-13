@@ -630,7 +630,7 @@ class AddressPlatformService:
         # 新增：用于监督决策的 ML 模型服务
         self._model_service = model_service or get_model_service()
         self._reranker_service = get_reranker_service()
-        self._vector_engine = get_vector_engine()
+        self._vector_engine = None
 
     def _policy_float(self, key: str, default: float) -> float:
         value = self._decision_policy.get(key, default)
@@ -654,6 +654,11 @@ class AddressPlatformService:
     def _candidate_pair_weights(self) -> dict[str, Any]:
         value = self._decision_policy.get("candidate_pair_weights") or {}
         return value if isinstance(value, dict) else {}
+
+    def _get_vector_engine(self):
+        if self._vector_engine is None:
+            self._vector_engine = get_vector_engine()
+        return self._vector_engine
 
     def _shadow_assist_recommendation(
         self,
@@ -960,7 +965,7 @@ class AddressPlatformService:
         
         # New: Phase 13 - Step 1: Building Anchor Retrieval (Vector Bedrock)
         # 新增：第 13 阶段 - 步骤 1：建筑锚点检索（向量基石）
-        semantic_anchors = self._vector_engine.retrieve(request.raw_address_text, top_k=3)
+        semantic_anchors = self._get_vector_engine().retrieve(request.raw_address_text, top_k=3)
         
         # Inject semantic anchors into request for parser guidance
         # 将语义锚点注入请求以指导解析器

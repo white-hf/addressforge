@@ -173,6 +173,11 @@ Current implementation progress (continued):
     - `assist_rollout_readiness`
     - `assist_trial`
     - `decision_policy_calibration`
+- additionally, `AddressPlatformService` now:
+  - lazy-loads the vector retrieval engine
+- benefit:
+  - evaluation / replay / shadow only initialize vector retrieval when retrieval is actually needed
+  - lightweight `DecisionModel` train/eval loops are less likely to be delayed by vector-model startup
 
 The purpose is not to enable override yet. The purpose is to answer:
 - which disagreement cases are now safe candidates for assist
