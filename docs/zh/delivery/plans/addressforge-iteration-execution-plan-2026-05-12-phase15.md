@@ -131,6 +131,18 @@
   - `assist_trial_advantage`
   - readiness check:
     - `assist_trial_not_worse_than_shadow`
+- evaluator 现在还会产出：
+  - `decision_policy_calibration_proposal`
+  - 直接给出：
+    - 应调哪些 threshold
+    - 调整方向
+    - 建议步长
+    - 调整理由
+  - 当前仍保持：
+    - `apply_now = false`
+  - 即：
+    - proposal 由评测系统生成
+    - 实际阈值变更仍由下一轮开发明确实施与验证
 
 这一切的目的不是立即启用 override，而是回答：
 - 哪些 disagreement 已具备进入 assist 的安全前提

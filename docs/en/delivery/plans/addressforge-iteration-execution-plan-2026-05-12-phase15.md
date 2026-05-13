@@ -125,6 +125,18 @@ Current implementation progress (2026-05-13):
   - `assist_trial_advantage`
   - readiness check:
     - `assist_trial_not_worse_than_shadow`
+- evaluator now also emits:
+  - `decision_policy_calibration_proposal`
+  - which directly specifies:
+    - which thresholds to tune
+    - adjustment direction
+    - suggested step size
+    - reason
+  - and still keeps:
+    - `apply_now = false`
+  - meaning:
+    - the proposal is generated automatically from evaluation
+    - actual threshold changes remain an explicit next-step implementation task
 
 The purpose is not to enable override yet. The purpose is to answer:
 - which disagreement cases are now safe candidates for assist

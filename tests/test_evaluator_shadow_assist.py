@@ -4,6 +4,7 @@ import unittest
 
 from addressforge.learning.evaluator import (
     _decision_assist_rollout_readiness,
+    _decision_policy_calibration_proposal,
     _decision_shadow_assist_summary,
     _decision_threshold_tuning_hints,
 )
@@ -81,6 +82,12 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
         buckets = {item["target_bucket"] for item in tuning["hints"]}
         self.assertIn("MODEL_MORE_AGGRESSIVE_ACCEPT", buckets)
         self.assertIn("MODEL_REJECT_ESCALATION", buckets)
+        proposal = _decision_policy_calibration_proposal(tuning, readiness)
+        self.assertEqual(proposal["status"], "shadow_only")
+        self.assertFalse(proposal["apply_now"])
+        thresholds = {item["threshold"] for item in proposal["recommended_changes"]}
+        self.assertIn("assist_accept_score_threshold", thresholds)
+        self.assertIn("reject_override", thresholds)
 
 
 if __name__ == "__main__":

@@ -481,6 +481,84 @@ def _decision_threshold_tuning_hints(
     }
 
 
+def _decision_policy_calibration_proposal(
+    tuning_hints: dict[str, Any] | None,
+    readiness: dict[str, Any] | None,
+) -> dict[str, Any]:
+    tuning_hints = tuning_hints if isinstance(tuning_hints, dict) else {}
+    readiness = readiness if isinstance(readiness, dict) else {}
+    changes: list[dict[str, Any]] = []
+
+    for hint in tuning_hints.get("hints") or []:
+        bucket = str(hint.get("target_bucket") or "")
+        if bucket == "MODEL_MORE_AGGRESSIVE_ACCEPT":
+            changes.extend(
+                [
+                    {
+                        "threshold": "assist_accept_score_threshold",
+                        "direction": "increase",
+                        "step": 0.02,
+                        "reason": "reduce aggressive accept recoveries before assist rollout",
+                    },
+                    {
+                        "threshold": "assist_accept_parse_score_threshold",
+                        "direction": "increase",
+                        "step": 0.02,
+                        "reason": "require slightly stronger parse quality for accept recovery",
+                    },
+                ]
+            )
+        elif bucket == "MODEL_MORE_CONSERVATIVE_REVIEW":
+            changes.extend(
+                [
+                    {
+                        "threshold": "assist_review_score_threshold",
+                        "direction": "increase",
+                        "step": 0.02,
+                        "reason": "only allow review escalation when the model is more certain",
+                    },
+                    {
+                        "threshold": "assist_review_parse_score_threshold",
+                        "direction": "decrease",
+                        "step": 0.02,
+                        "reason": "narrow review escalation to weaker parse-confidence cases",
+                    },
+                    {
+                        "threshold": "assist_review_reference_score_threshold",
+                        "direction": "increase",
+                        "step": 0.02,
+                        "reason": "escalate review only when reference support is weaker",
+                    },
+                ]
+            )
+        elif bucket == "MODEL_REJECT_ESCALATION":
+            changes.append(
+                {
+                    "threshold": "reject_override",
+                    "direction": "hold_disabled",
+                    "step": 0.0,
+                    "reason": "reject override should remain disabled until stronger minority-label evidence exists",
+                }
+            )
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in changes:
+        key = (str(item.get("threshold")), str(item.get("direction")))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    readiness_status = str(readiness.get("status") or "shadow_only")
+    return {
+        "status": readiness_status,
+        "recommended_changes": deduped,
+        "apply_now": False,
+        "reason": "shadow-only calibration proposal; apply manually after validating on the next evaluation cycle",
+    }
+
+
 def _load_gold_comparison_rows(workspace_name: str) -> list[dict[str, Any]]:
     return fetch_all(
         """
@@ -806,6 +884,10 @@ def run_baseline_evaluation(
                 metrics_json["decision_shadow_assist"],
                 metrics_json["decision_assist_rollout_readiness"],
             )
+            metrics_json["decision_policy_calibration_proposal"] = _decision_policy_calibration_proposal(
+                metrics_json["decision_threshold_tuning_hints"],
+                metrics_json["decision_assist_rollout_readiness"],
+            )
         if building_metrics:
             metrics_json["building_type"] = building_metrics
             errors = _field_error_samples(gold_rows, "building_type")
@@ -1036,6 +1118,19 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
             threshold_text = f" Candidate thresholds: `{thresholds}`." if thresholds else ""
             report.append(
                 f"- [{hint.get('priority')}] `{hint.get('target_bucket')}` -> {hint.get('suggestion')}{threshold_text}"
+            )
+    calibration = metrics.get("decision_policy_calibration_proposal") or {}
+    if calibration:
+        report.extend([
+            "",
+            "## 1.4 Decision Policy Calibration Proposal",
+            f"- Status: `{calibration.get('status') or 'unknown'}`",
+            f"- Apply Now: `{bool(calibration.get('apply_now'))}`",
+            f"- Reason: {calibration.get('reason') or 'n/a'}",
+        ])
+        for item in calibration.get("recommended_changes") or []:
+            report.append(
+                f"- `{item.get('threshold')}` -> {item.get('direction')} by {item.get('step')}: {item.get('reason')}"
             )
 
     # --- Historical Replay & Stability Section ---
