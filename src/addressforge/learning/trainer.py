@@ -21,7 +21,7 @@ from addressforge.core.config import (
 )
 from addressforge.core.utils import logger
 from addressforge.learning.canada_benchmark import run_canada_address_benchmark
-from addressforge.models import get_model, get_workspace, register_model_version
+from addressforge.models import get_active_model, get_model, get_workspace, register_model_version
 
 _APARTMENT_UNIT_HINT_RE = re.compile(
     r"(?:\b(?:APT|APART|SUITE|STE|UNIT|ROOM|RM|FLOOR|FL|BASEMENT|BSMT|LOWER|UPPER|PENTHOUSE|PH|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR|REAR|FRONT|SIDE)\b|#\s*[A-Z0-9]+)",
@@ -64,6 +64,18 @@ def _safe_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def _extract_sample_pool_name(notes: str) -> str:
@@ -220,6 +232,11 @@ def _derive_decision_policy(workspace_name: str) -> dict[str, float]:
         "moderate_confidence_review_threshold": 0.62,
         "gps_weak_match_threshold": 0.62,
         "gps_conflict_threshold": 0.5,
+        "assist_accept_parse_score_threshold": 0.68,
+        "assist_accept_score_threshold": 0.70,
+        "assist_review_score_threshold": 0.55,
+        "assist_review_parse_score_threshold": 0.80,
+        "assist_review_reference_score_threshold": 0.60,
     }
     rows = fetch_all(
         """
@@ -335,6 +352,72 @@ def _derive_decision_policy(workspace_name: str) -> dict[str, float]:
     
     logger.info("Derived Decision Policy (Adaptive): %s", policy)
     return policy
+
+
+def _load_decision_policy_calibration_proposal(workspace_name: str) -> dict[str, Any]:
+    active_model = get_active_model(workspace_name) or {}
+    metrics_json = _normalize_json_dict(active_model.get("metrics_json"))
+    proposal = metrics_json.get("decision_policy_calibration_proposal")
+    if not isinstance(proposal, dict):
+        return {}
+    return {
+        **proposal,
+        "source_model_name": active_model.get("model_name"),
+        "source_model_version": active_model.get("model_version"),
+    }
+
+
+def _apply_decision_policy_calibration_proposal(
+    decision_policy: dict[str, float],
+    proposal: dict[str, Any] | None,
+) -> dict[str, Any]:
+    proposal = proposal if isinstance(proposal, dict) else {}
+    recommended_changes = proposal.get("recommended_changes")
+    if not isinstance(recommended_changes, list):
+        return {
+            "applied": False,
+            "source_model_name": proposal.get("source_model_name"),
+            "source_model_version": proposal.get("source_model_version"),
+            "status": proposal.get("status"),
+            "changes": [],
+        }
+
+    changes: list[dict[str, Any]] = []
+    for item in recommended_changes:
+        if not isinstance(item, dict):
+            continue
+        threshold = str(item.get("threshold") or "").strip()
+        direction = str(item.get("direction") or "").strip().lower()
+        step = _safe_float(item.get("step"), 0.0)
+        if not threshold or threshold == "reject_override" or threshold not in decision_policy:
+            continue
+        old_value = _safe_float(decision_policy.get(threshold), 0.0)
+        if direction == "increase":
+            new_value = min(1.0, round(old_value + step, 4))
+        elif direction == "decrease":
+            new_value = max(0.0, round(old_value - step, 4))
+        else:
+            continue
+        if new_value == old_value:
+            continue
+        decision_policy[threshold] = new_value
+        changes.append(
+            {
+                "threshold": threshold,
+                "direction": direction,
+                "step": step,
+                "old_value": old_value,
+                "new_value": new_value,
+                "reason": item.get("reason"),
+            }
+        )
+    return {
+        "applied": bool(changes),
+        "source_model_name": proposal.get("source_model_name"),
+        "source_model_version": proposal.get("source_model_version"),
+        "status": proposal.get("status"),
+        "changes": changes,
+    }
 
 
 def _derive_parser_weights(
@@ -1011,6 +1094,11 @@ def run_baseline_training(
         if existing_model and existing_model.get("default_profile"):
             profile = str(existing_model["default_profile"])
         decision_policy = _derive_decision_policy(workspace_name)
+        calibration_proposal = _load_decision_policy_calibration_proposal(workspace_name)
+        decision_policy_calibration = _apply_decision_policy_calibration_proposal(
+            decision_policy,
+            calibration_proposal,
+        )
         from addressforge.learning.supervised_baseline import (
             summarize_decision_training_dataset_balance,
             train_decision_baseline
@@ -1099,6 +1187,7 @@ def run_baseline_training(
             "profile": profile,
             "parsers": ["simple_rule", "hybrid_canada", "libpostal"],
             "decision_policy": decision_policy,
+            "decision_policy_calibration": decision_policy_calibration,
             "runtime_binding": {
                 "profile": profile,
                 "parsers": ["simple_rule", "hybrid_canada", "libpostal"],
@@ -1130,6 +1219,7 @@ def run_baseline_training(
                 "sample_count": sample_count,
                 "gold_count": gold_count,
                 "decision_policy": decision_policy,
+                "decision_policy_calibration": decision_policy_calibration,
                 "runtime_binding": {
                     "profile": profile,
                     "parsers": ["simple_rule", "hybrid_canada", "libpostal"],

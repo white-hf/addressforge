@@ -142,7 +142,25 @@
     - `apply_now = false`
   - 即：
     - proposal 由评测系统生成
-    - 实际阈值变更仍由下一轮开发明确实施与验证
+    - 实际阈值变更由训练链显式消费并写回 artifact / registry
+
+当前实现推进（继续）：
+- `trainer` 现在已会读取 active model 最新的：
+  - `decision_policy_calibration_proposal`
+- 并将受支持的 threshold merge 进新的：
+  - `decision_policy`
+- 当前已纳入 merge 的 assist 阈值包括：
+  - `assist_accept_score_threshold`
+  - `assist_accept_parse_score_threshold`
+  - `assist_review_score_threshold`
+  - `assist_review_parse_score_threshold`
+  - `assist_review_reference_score_threshold`
+- 训练产物与 registry 会额外记录：
+  - `decision_policy_calibration`
+  - 包含：
+    - source model
+    - source version
+    - applied changes
 
 这一切的目的不是立即启用 override，而是回答：
 - 哪些 disagreement 已具备进入 assist 的安全前提

@@ -136,7 +136,25 @@ Current implementation progress (2026-05-13):
     - `apply_now = false`
   - meaning:
     - the proposal is generated automatically from evaluation
-    - actual threshold changes remain an explicit next-step implementation task
+    - actual threshold changes are now explicitly consumed by the training pipeline and written back into artifacts / registry
+
+Current implementation progress (continued):
+- `trainer` now reads the latest active model's:
+  - `decision_policy_calibration_proposal`
+- and merges supported threshold changes into the next:
+  - `decision_policy`
+- the currently supported assist thresholds are:
+  - `assist_accept_score_threshold`
+  - `assist_accept_parse_score_threshold`
+  - `assist_review_score_threshold`
+  - `assist_review_parse_score_threshold`
+  - `assist_review_reference_score_threshold`
+- the resulting training artifact and registry now also record:
+  - `decision_policy_calibration`
+  - including:
+    - source model
+    - source version
+    - applied changes
 
 The purpose is not to enable override yet. The purpose is to answer:
 - which disagreement cases are now safe candidates for assist
