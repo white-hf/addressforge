@@ -12,28 +12,34 @@ export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 echo "--- Phase 11: Starting Evolution Cycle ---"
 
-echo "[1/4] Freezing Gold Labels..."
+echo "[1/5] Freezing Gold Labels..."
 # Use Python directly to avoid dependency on a running API server
 python3 -c "from addressforge.learning.gold import freeze_gold_set; freeze_gold_set('default', notes='Evolution cycle auto-freeze')"
 
-echo "[2/4] Training Reranker Model..."
+echo "[2/5] Training Reranker Model..."
 python3 "$ROOT_DIR/scripts/train_reranker_model.py"
 mkdir -p "$ROOT_DIR/addressforge/runtime/models/"
 cp "$ROOT_DIR/runtime/models/reranker_catboost_v1.cbm" "$ROOT_DIR/addressforge/runtime/models/"
 
-echo "[3/4] Training Decision Model..."
+echo "[3/5] Training Decision Model..."
 python3 "$ROOT_DIR/scripts/train_decision_model.py"
 cp "$ROOT_DIR/runtime/models/decision_catboost_v1.cbm" "$ROOT_DIR/addressforge/runtime/models/"
 
-echo "[4/4] Restarting API Server..."
-# Keep the current worker alive so this evolution job can finish cleanly.
-# Note: cleaning jobs run inside the long-lived worker process, so a worker
-# restart is still required before future cleaning tasks will consume the new
-# in-memory models.
-# 保持当前 worker 存活以便此次演进任务正常收尾。
-# 注意：cleaning 任务运行在常驻 worker 进程内，后续 cleaning 真正使用新模型前仍需重启 worker。
-ps aux | grep "addressforge.api.server" | grep -v grep | awk '{print $2}' | xargs kill || true
-"$ROOT_DIR/scripts/run_api.sh" > "$ROOT_DIR/api.log" 2>&1 &
-echo "API Server restarted. Worker restart still required for cleaning jobs."
+echo "[4/5] Training BuildingType Model..."
+# Phase 17: Train BuildingType classifier
+# 第 17 阶段：训练 BuildingType 分类器
+python3 "$ROOT_DIR/scripts/train_building_type_model.py"
+cp "$ROOT_DIR/runtime/models/building_type_catboost_v1.cbm" "$ROOT_DIR/addressforge/runtime/models/"
+
+echo "[5/5] Hot-Reloading Models..."
+# Hot-reload models via API to avoid downtime
+# 通过 API 热重载模型以避免停机
+curl -X POST http://127.0.0.1:8010/api/v1/models/reload -s > /dev/null || echo "API reload curl failed, but proceeding."
+echo "API Server models reloaded."
+
+# Queue a job for the worker to reload its models
+# 为 worker 排队一个任务以重载其模型
+python3 -c "from addressforge.services.job_service import enqueue_job; enqueue_job('default', 'reload_models_once', {}, 'system', 0)"
+echo "Worker model reload job queued."
 
 echo "--- Evolution Cycle Completed ---"

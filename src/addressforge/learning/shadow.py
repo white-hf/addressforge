@@ -67,22 +67,25 @@ def run_baseline_shadow(
         active_model = get_active_model(workspace_name)
         candidate_runtime = _load_model_runtime(workspace_name, model_version)
         active_runtime = _load_model_runtime(workspace_name, active_model.get("model_version") if active_model else None)
-        if not candidate_runtime[0]:
+        
+        if not candidate_runtime.get("ok"):
             raise ValueError(f"candidate runtime unavailable: {workspace_name}/{model_version}")
-        if not active_runtime[0]:
+        if not active_runtime.get("ok"):
             raise ValueError(f"active runtime unavailable: {workspace_name}")
 
         candidate_service = AddressPlatformService(
-            default_profile=candidate_runtime[1],
-            default_parsers=candidate_runtime[2],
-            decision_policy=candidate_runtime[3],
-            model_service=candidate_runtime[4],
+            default_profile=candidate_runtime["profile"],
+            default_parsers=candidate_runtime["parsers"],
+            decision_policy=candidate_runtime["decision_policy"],
+            model_service=candidate_runtime["model_service"],
+            reranker_service=candidate_runtime["reranker_service"]
         )
         active_service = AddressPlatformService(
-            default_profile=active_runtime[1],
-            default_parsers=active_runtime[2],
-            decision_policy=active_runtime[3],
-            model_service=active_runtime[4],
+            default_profile=active_runtime["profile"],
+            default_parsers=active_runtime["parsers"],
+            decision_policy=active_runtime["decision_policy"],
+            model_service=active_runtime["model_service"],
+            reranker_service=active_runtime["reranker_service"]
         )
 
         shadow_rows = fetch_all(

@@ -7,23 +7,18 @@ from addressforge.core.features import get_feature_engine
 from addressforge.core.utils import logger
 
 class RerankerService:
-    _instance = None
-    
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(RerankerService, cls).__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
+    def __init__(self, manifest: Dict[str, Any] | None = None):
+        # Removed Singleton guard for Phase 16 version alignment
+        # 移除单例守卫以实现第 16 阶段的版本对齐
+        if manifest and manifest.get("reranker_model_artifact"):
+            rma = manifest["reranker_model_artifact"]
+            self.model_path = Path(rma.get("model_path") or "runtime/models/reranker_catboost_v1.cbm")
+        else:
+            self.model_path = Path("runtime/models/reranker_catboost_v1.cbm")
 
-    def __init__(self):
-        if self._initialized:
-            return
-        
-        self.model_path = Path("runtime/models/reranker_catboost_v1.cbm")
         self.model = None
         self.feature_extractor = get_feature_engine()
         self._load_model()
-        self._initialized = True
 
     def _load_model(self):
         if self.model_path.exists():
@@ -35,6 +30,18 @@ class RerankerService:
                 logger.error("Failed to load reranker model: %s", e)
         else:
             logger.warning("Reranker model not found at %s. Using heuristic fallback.", self.model_path)
+
+    def reload_models(self, manifest: Dict[str, Any] | None = None) -> None:
+        """
+        Hot-reloads the ML models from disk.
+        从磁盘热重载 ML 模型。
+        """
+        logger.info("Hot-reloading Reranker model...")
+        if manifest and manifest.get("reranker_model_artifact"):
+            rma = manifest["reranker_model_artifact"]
+            self.model_path = Path(rma.get("model_path") or "runtime/models/reranker_catboost_v1.cbm")
+            
+        self._load_model()
 
     def rerank_candidates(
         self, 
@@ -104,10 +111,17 @@ class RerankerService:
             logger.error("Reranking error: %s", e)
             return sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)
 
-_reranker_service = None
+def get_reranker_service(manifest: Dict[str, Any] | None = None) -> RerankerService:
+    """
+    Returns a new instance of RerankerService.
+    返回 RerankerService 的新实例。
+    """
+    return RerankerService(manifest=manifest)
 
-def get_reranker_service() -> RerankerService:
-    global _reranker_service
-    if _reranker_service is None:
-        _reranker_service = RerankerService()
-    return _reranker_service
+
+def build_reranker_service_from_manifest(manifest: Dict[str, Any] | None) -> RerankerService:
+    """
+    Builds a RerankerService instance from a versioned manifest.
+    根据版本化的清单构建 RerankerService 实例。
+    """
+    return RerankerService(manifest=manifest)

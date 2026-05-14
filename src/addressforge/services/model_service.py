@@ -33,7 +33,10 @@ class ModelService:
         metadata_path: str | Path | None = None,
         model_path: str | Path | None = None,
         legacy_model_path: str | Path | None = None,
+        manifest: Dict[str, Any] | None = None,
     ):
+        # Removed Singleton guard for Phase 16/17 version alignment
+        # 移除单例守卫以实现第 16/17 阶段的版本对齐
         self.model_path = _path_or_none(model_path) or Path(
             os.getenv("ADDRESSFORGE_DECISION_MODEL_PKL_PATH", "runtime/models/decision_catboost_v1.pkl")
         )
@@ -43,7 +46,28 @@ class ModelService:
         self.legacy_model_path = _path_or_none(legacy_model_path) or Path(
             os.getenv("ADDRESSFORGE_DECISION_MODEL_CBM_PATH", "runtime/models/decision_catboost_v1.cbm")
         )
+        
+        # Phase 17/18: Support version-aware BuildingType and Decision models
+        # 第 17/18 阶段：支持识别版本的 BuildingType 和 Decision 模型
+        if manifest:
+            # Override paths from manifest if provided
+            # 如果提供了清单，则覆盖路径
+            if manifest.get("decision_model_artifact"):
+                dma = manifest["decision_model_artifact"]
+                if dma.get("metadata_path"): self.metadata_path = Path(dma["metadata_path"])
+                if dma.get("model_path"): self.model_path = Path(dma["model_path"])
+                if dma.get("legacy_model_path"): self.legacy_model_path = Path(dma["legacy_model_path"])
+            
+            if manifest.get("building_type_model_artifact"):
+                btma = manifest["building_type_model_artifact"]
+                self.bt_model_path = Path(btma.get("model_path") or "runtime/models/building_type_catboost_v1.cbm")
+            else:
+                self.bt_model_path = Path("runtime/models/building_type_catboost_v1.cbm")
+        else:
+            self.bt_model_path = Path("runtime/models/building_type_catboost_v1.cbm")
+
         self.model = None
+        self.bt_model = None
         self.model_payload: Dict[str, Any] | None = None
         self.metadata: Dict[str, Any] = {}
         self.feature_names: List[str] = []
@@ -94,6 +118,41 @@ class ModelService:
                 self.legacy_model_path,
             )
 
+        # Load BuildingType model
+        # 加载 BuildingType 模型
+        if self.bt_model_path.exists():
+            try:
+                self.bt_model = CatBoostClassifier()
+                self.bt_model.load_model(str(self.bt_model_path))
+                logger.info("BuildingType model loaded from %s", self.bt_model_path)
+            except Exception as e:
+                logger.error("Failed to load building_type model: %s", e)
+        else:
+            logger.info("BuildingType model not found at %s.", self.bt_model_path)
+
+    def reload_models(self, manifest: Dict[str, Any] | None = None) -> None:
+        """
+        Hot-reloads the ML models from disk.
+        从磁盘热重载 ML 模型。
+        """
+        logger.info("Hot-reloading Decision and BuildingType models...")
+        if manifest:
+            # Phase 17/18: Support version-aware BuildingType and Decision models
+            # 第 17/18 阶段：支持识别版本的 BuildingType 和 Decision 模型
+            if manifest.get("decision_model_artifact"):
+                dma = manifest["decision_model_artifact"]
+                self.metadata_path = Path(dma.get("metadata_path") or self.metadata_path)
+                self.model_path = Path(dma.get("model_path") or self.model_path)
+                self.legacy_model_path = Path(dma.get("legacy_model_path") or self.legacy_model_path)
+            
+            if manifest.get("building_type_model_artifact"):
+                btma = manifest["building_type_model_artifact"]
+                self.bt_model_path = Path(btma.get("model_path") or "runtime/models/building_type_catboost_v1.cbm")
+            else:
+                self.bt_model_path = Path("runtime/models/building_type_catboost_v1.cbm")
+        
+        self._load_model()
+
     def describe_runtime(self) -> dict[str, Any]:
         return {
             "model_type": str(self.metadata.get("model_type") or self.model_payload.get("model_type") if self.model_payload else ""),
@@ -104,6 +163,49 @@ class ModelService:
             "present_labels": list(self.present_labels),
             "feature_names": list(self.feature_names),
         }
+
+    def predict_building_type(
+        self, 
+        raw_text: str, 
+        parsed: Dict[str, Any], 
+        parser_name: str = "hybrid", 
+        validation_context: Dict[str, Any] | None = None, 
+        reference_context: Dict[str, Any] | None = None, 
+        semantic_alignment: float | None = None
+    ) -> Dict[str, Any]:
+        """
+        Runs ML inference to predict building type.
+        执行 ML 推断以预测建筑类型。
+        """
+        if not self.bt_model:
+            return {"status": "no_model"}
+            
+        try:
+            features = self.feature_extractor.extract_features(
+                raw_text, 
+                parsed, 
+                parser_name,
+                validation_context=validation_context,
+                reference_context=reference_context,
+                semantic_alignment=semantic_alignment
+            )
+            vector = self.feature_extractor.vectorize(features)
+            
+            probs = self.bt_model.predict_proba([vector])[0]
+            
+            # 0 = single_unit, 1 = multi_unit, 2 = commercial
+            class_map = {0: "single_unit", 1: "multi_unit", 2: "commercial"}
+            ml_bt_idx = int(self.bt_model.predict([vector])[0][0])
+            ml_bt = class_map.get(ml_bt_idx, "single_unit")
+            
+            return {
+                "status": "success",
+                "ml_building_type": ml_bt,
+                "probabilities": {class_map[i]: round(float(probs[i]), 4) for i in range(len(probs))}
+            }
+        except Exception as e:
+            logger.error("ML BuildingType Inference error: %s", e)
+            return {"status": "error", "error": str(e)}
 
     def predict_decision(
         self, 
@@ -187,19 +289,17 @@ class ModelService:
             logger.error("ML Inference error: %s", e)
             return {"ml_score": 0.0, "status": "error", "error": str(e)}
 
-_model_service = None
-
-def get_model_service() -> ModelService:
-    global _model_service
-    if _model_service is None:
-        _model_service = ModelService()
-    return _model_service
+def get_model_service(manifest: Dict[str, Any] | None = None) -> ModelService:
+    """
+    Returns a new instance of ModelService.
+    返回 ModelService 的新实例。
+    """
+    return ModelService(manifest=manifest)
 
 
 def build_model_service_from_manifest(manifest: dict[str, Any] | None) -> ModelService:
-    manifest = manifest if isinstance(manifest, dict) else {}
-    return ModelService(
-        metadata_path=manifest.get("metadata_path"),
-        model_path=manifest.get("model_path"),
-        legacy_model_path=manifest.get("legacy_model_path"),
-    )
+    """
+    Builds a ModelService instance from a versioned manifest.
+    根据版本化的清单构建 ModelService 实例。
+    """
+    return ModelService(manifest=manifest)

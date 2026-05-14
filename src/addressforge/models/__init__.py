@@ -14,6 +14,7 @@ from .registry import (
     list_models,
     list_workspaces,
     promote_model,
+    rollback_model,
     register_model_version,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "list_models",
     "list_workspaces",
     "promote_model",
+    "rollback_model",
     "register_model_version",
 ]

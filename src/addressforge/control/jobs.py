@@ -62,6 +62,7 @@ CONTROL_JOB_KINDS = (
     "active_learning_once",
     "promote_assets_once",
     "evolution_once",
+    "reload_models_once",
     "bootstrap_registry",
 )
 CONTROL_JOB_STATUSES = ("queued", "running", "succeeded", "failed", "cancelled")
@@ -1409,6 +1410,25 @@ def _run_evolution_job(job: dict[str, Any]) -> dict[str, Any]:
         "message": "Full ML evolution cycle completed and services restarted."
     }
 
+def _run_reload_models_job(job: dict[str, Any]) -> dict[str, Any]:
+    """
+    Instructs the worker to reload all models in memory.
+    指示 worker 重载内存中的所有模型。
+    """
+    logger.info("Worker is hot-reloading models...")
+    from addressforge.services.model_service import get_model_service
+    from addressforge.services.reranker_service import get_reranker_service
+    from addressforge.core.retrieval import get_vector_engine
+    
+    get_model_service().reload_models()
+    get_reranker_service().reload_models()
+    get_vector_engine().reload_models()
+    
+    return {
+        "status": "success",
+        "message": "Models reloaded in worker process."
+    }
+
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
     job_kind = str(job.get("job_kind") or "")
     ensure_etl_run_types()
@@ -1438,6 +1458,8 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             result = _run_promote_assets_job(job)
         elif job_kind == "evolution_once":
             result = _run_evolution_job(job)
+        elif job_kind == "reload_models_once":
+            result = _run_reload_models_job(job)
         else:
             raise ValueError(f"Unsupported job kind: {job_kind}")
         _store_job_result(job["job_id"], status="succeeded", result=result, etl_run_id=run_id)

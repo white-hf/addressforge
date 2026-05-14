@@ -98,6 +98,10 @@ def _extract_predicted_value(row: dict[str, Any], field_name: str) -> str | None
         value = row.get("ml_shadow_decision")
     elif field_name == "building_type":
         value = row.get("building_type")
+    elif field_name == "ml_building_type":
+        # Phase 17: Support ML BuildingType extraction
+        # 第 17 阶段：支持 ML BuildingType 提取
+        value = row.get("ml_building_type")
     elif field_name == "unit_number":
         value = canonicalize_unit_number(row.get("suggested_unit_number"))
     else:
@@ -398,8 +402,11 @@ def _decision_assist_rollout_readiness(shadow_summary: dict[str, Any] | None) ->
     else:
         status = "shadow_only"
 
+    # Phase 18: Standardize contract for Release Gate 2.0
+    # 第 18 阶段：标准化 Release Gate 2.0 的契约
     return {
         "status": status,
+        "promote_recommended": bool(status == "ready_for_assist_trial"),
         "checks": checks,
         "heuristic_f1": round(heuristic_f1, 4),
         "ml_shadow_f1": round(shadow_f1, 4),
@@ -631,9 +638,26 @@ def _resolve_model_runtime(
             target_parsers = tuple(str(item) for item in runtime_parsers if str(item).strip())
         if isinstance(runtime_policy, dict):
             target_decision_policy = runtime_policy
-    if isinstance(metrics_json.get("decision_model_artifact"), dict):
-        decision_model_artifact = metrics_json["decision_model_artifact"]
+    # Extract manifests for sub-services
+    # 提取子服务的清单
+    decision_model_artifact = (
+        metrics_json.get("decision_model_artifact")
+        if isinstance(metrics_json.get("decision_model_artifact"), dict)
+        else {}
+    )
+    reranker_model_artifact = (
+        metrics_json.get("reranker_model_artifact")
+        if isinstance(metrics_json.get("reranker_model_artifact"), dict)
+        else {}
+    )
+    building_type_model_artifact = (
+        metrics_json.get("building_type_model_artifact")
+        if isinstance(metrics_json.get("building_type_model_artifact"), dict)
+        else {}
+    )
+
     target_artifact_path = target_model.get("artifact_path")
+    artifact_payload = {}
     if target_artifact_path:
         try:
             artifact_payload = json.loads(Path(target_artifact_path).read_text(encoding="utf-8"))
@@ -646,11 +670,36 @@ def _resolve_model_runtime(
                 target_parsers = tuple(str(item) for item in artifact_parsers if str(item).strip())
             if isinstance(artifact_decision_policy, dict):
                 target_decision_policy = artifact_decision_policy
+            
+            # Fill missing artifacts from artifact file
             if not decision_model_artifact and isinstance(artifact_payload.get("decision_model_artifact"), dict):
                 decision_model_artifact = artifact_payload["decision_model_artifact"]
+            if not reranker_model_artifact and isinstance(artifact_payload.get("reranker_model_artifact"), dict):
+                reranker_model_artifact = artifact_payload["reranker_model_artifact"]
+            if not building_type_model_artifact and isinstance(artifact_payload.get("building_type_model_artifact"), dict):
+                building_type_model_artifact = artifact_payload["building_type_model_artifact"]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to load target model artifact for runtime binding: %s", exc)
-    return target_profile, target_parsers, target_decision_policy, build_model_service_from_manifest(decision_model_artifact)
+            
+    # Build unified manifest
+    full_manifest = {
+        **artifact_payload,
+        "decision_model_artifact": decision_model_artifact,
+        "reranker_model_artifact": reranker_model_artifact,
+        "building_type_model_artifact": building_type_model_artifact
+    }
+    
+    from addressforge.services.model_service import build_model_service_from_manifest
+    from addressforge.services.reranker_service import build_reranker_service_from_manifest
+    
+    return {
+        "profile": target_profile,
+        "parsers": target_parsers,
+        "decision_policy": target_decision_policy,
+        "model_service": build_model_service_from_manifest(full_manifest),
+        "reranker_service": build_reranker_service_from_manifest(full_manifest),
+        "manifest": full_manifest
+    }
 
 
 def _predict_gold_rows_with_runtime(
@@ -663,16 +712,17 @@ def _predict_gold_rows_with_runtime(
         return rows
     from addressforge.api.server import AddressPlatformService, AddressRequest
 
-    target_profile, target_parsers, target_decision_policy, target_model_service = _resolve_model_runtime(
+    target_runtime = _resolve_model_runtime(
         workspace_name,
         model_name,
         model_version,
     )
     service = AddressPlatformService(
-        default_profile=target_profile,
-        default_parsers=target_parsers,
-        decision_policy=target_decision_policy,
-        model_service=target_model_service,
+        default_profile=target_runtime["profile"],
+        default_parsers=target_runtime["parsers"],
+        decision_policy=target_runtime["decision_policy"],
+        model_service=target_runtime["model_service"],
+        reranker_service=target_runtime["reranker_service"],
     )
     predicted_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -687,8 +737,8 @@ def _predict_gold_rows_with_runtime(
                         province=row.get("province"),
                         postal_code=row.get("postal_code"),
                         country_code=str(row.get("country_code") or "CA"),
-                        profile=target_profile,
-                        parsers=list(target_parsers),
+                        profile=target_runtime["profile"],
+                        parsers=list(target_runtime["parsers"]),
                         reranker_version=model_version,
                     )
                 )
@@ -701,6 +751,11 @@ def _predict_gold_rows_with_runtime(
                 current["ml_shadow_decision"] = ml_shadow.get("ml_decision")
                 current["ml_shadow_score"] = ml_shadow.get("ml_score")
                 current["ml_shadow_status"] = ml_shadow.get("status")
+                
+                # Phase 17: Extract ML BuildingType
+                # 第 17 阶段：提取 ML 建筑类型
+                current["ml_building_type"] = shadow_assist.get("ml_building_type")
+                
                 current["shadow_disagreement_reason"] = shadow_assist.get("disagreement_reason")
                 current["assist_eligible"] = shadow_assist.get("assist_eligible")
                 current["assist_recommended_decision"] = shadow_assist.get("assist_recommended_decision")
@@ -897,6 +952,15 @@ def run_baseline_evaluation(
             errors = _field_error_samples(gold_rows, "building_type")
             metrics_json["building_type_errors"] = errors
             metrics_json["building_type_error_buckets"] = _generate_bucket_summary(errors)
+            
+            # Phase 17: Evaluate ML BuildingType
+            # 第 17 阶段：评估 ML BuildingType
+            ml_building_metrics = _field_metrics(gold_rows, "ml_building_type") if gold_rows else None
+            metrics_json["building_type_shadow_assist"] = {
+                "heuristic": building_metrics,
+                "ml_shadow": ml_building_metrics,
+                "shadow_advantage": float(ml_building_metrics.get("f1", 0.0)) - float(building_metrics.get("f1", 0.0)) if ml_building_metrics and building_metrics else 0.0
+            }
         if unit_metrics:
             metrics_json["unit_number"] = unit_metrics
             errors = _field_error_samples(gold_rows, "unit_number")
@@ -1076,6 +1140,7 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
     
     benchmark = metrics.get("release_benchmark", {})
     report.append(f"| Decision F1 | {benchmark.get('decision_f1', 0.0):.4f} | {'PASS' if benchmark.get('decision_f1', 0.0) >= 0.90 else 'FAIL'} |")
+    report.append(f"| Building Type F1 | {benchmark.get('building_type_f1', 0.0):.4f} | {'PASS' if benchmark.get('building_type_f1', 0.0) >= 0.85 else 'FAIL'} |")
     report.append(f"| Unit Recall | {benchmark.get('unit_recall', 0.0):.4f} | {'PASS' if benchmark.get('unit_recall', 0.0) >= 0.85 else 'FAIL'} |")
 
     shadow_assist = metrics.get("decision_shadow_assist") or {}
@@ -1095,11 +1160,27 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
             f"| Assist Trial Advantage | - | - | {float(shadow_assist.get('assist_trial_advantage') or 0.0):+.4f} |",
             f"| Disagreement Rate | - | {float(shadow_assist.get('disagreement_rate') or 0.0):.4f} |",
         ])
+        
+    bt_shadow_assist = metrics.get("building_type_shadow_assist") or {}
+    if bt_shadow_assist:
+        bt_heuristic = bt_shadow_assist.get("heuristic") or {}
+        bt_ml_shadow = bt_shadow_assist.get("ml_shadow") or {}
+        report.extend([
+            "",
+            "## 1.2 BuildingTypeModel Shadow",
+            "| Metric | Heuristic | ML Shadow |",
+            "| :--- | :--- | :--- |",
+            f"| Building Type F1 | {float(bt_heuristic.get('f1') or 0.0):.4f} | {float(bt_ml_shadow.get('f1') or 0.0):.4f} |",
+            f"| Building Type Precision | {float(bt_heuristic.get('precision') or 0.0):.4f} | {float(bt_ml_shadow.get('precision') or 0.0):.4f} |",
+            f"| Building Type Recall | {float(bt_heuristic.get('recall') or 0.0):.4f} | {float(bt_ml_shadow.get('recall') or 0.0):.4f} |",
+            f"| Shadow Advantage | - | {float(bt_shadow_assist.get('shadow_advantage') or 0.0):+.4f} |",
+        ])
+
     assist_readiness = metrics.get("decision_assist_rollout_readiness") or {}
     if assist_readiness:
         report.extend([
             "",
-            "## 1.2 DecisionModel Assist Readiness",
+            "## 1.3 DecisionModel Assist Readiness",
             "| Check | Value | Status |",
             "| :--- | :--- | :--- |",
             f"| Rollout Status | {assist_readiness.get('status') or 'unknown'} | {'PASS' if assist_readiness.get('status') == 'ready_for_assist_trial' else 'HOLD'} |",

@@ -51,6 +51,15 @@ class VectorRetrievalEngine:
         except Exception as e:
             logger.error(f"Failed to initialize Vector Retrieval Engine: {e}")
 
+    def reload_models(self) -> None:
+        """
+        Hot-reloads the FAISS index from disk.
+        从磁盘热重载 FAISS 索引。
+        """
+        logger.info("Hot-reloading FAISS index...")
+        self._initialized = False
+        self._initialize()
+
     def build_index(self, records: List[Dict[str, Any]]):
         """
         Builds the FAISS index from a list of reference records.

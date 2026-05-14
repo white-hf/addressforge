@@ -162,13 +162,151 @@
                     <button class="btn primary px-10 py-3 shadow-lg" onclick="saveIngestionConfig()" data-i18n="save_config">Save Configuration</button>
                 </div>
             </div>
+
+            <!-- Env Config Section -->
+            <div class="card p-6 bg-white border border-slate-200 mt-6">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+                    <div>
+                        <h4 class="text-xl font-bold mb-1">环境配置 (Environment Config)</h4>
+                        <p class="text-sm text-slate-500">Manage .env.local secrets and global connections.</p>
+                    </div>
+                    <div class="flex flex-col items-end">
+                        <div id="env-config-badge" class="pill good">Saved</div>
+                        <span id="env-pending-save-notice" class="text-[10px] text-orange-500 font-bold mt-1 hidden">UNSAVED CHANGES</span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+                    <!-- General Settings -->
+                    <div class="flex flex-col gap-6">
+                        <h5 class="font-bold text-slate-600 border-b pb-2">General Settings</h5>
+                        <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">TELEGRAM_BOT_TOKEN</span>
+                            <input id="env-telegram" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                        </label>
+                        <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">SALT</span>
+                            <input id="env-salt" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                        </label>
+                        <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">AGENT_API_BASE_URL</span>
+                            <input id="env-agent" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                        </label>
+                    </div>
+
+                    <!-- Database Settings -->
+                    <div class="flex flex-col gap-6">
+                        <div class="flex items-center gap-2 border-b pb-2">
+                            <h5 class="font-bold text-slate-600">Database Settings</h5>
+                            <span class="pill warn text-[10px] py-0.5 px-2">Restart Required</span>
+                        </div>
+                        <p class="text-xs text-orange-600 mb-2">Warning: Changing database credentials may break the system if incorrect, and requires restarting all services.</p>
+                        <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">MYSQL_HOST</span>
+                            <input id="env-db-host" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                        </label>
+                        <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">MYSQL_DATABASE</span>
+                            <input id="env-db-name" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                        </label>
+                        <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">MYSQL_USER</span>
+                            <input id="env-db-user" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                        </label>
+                        <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">MYSQL_PASSWORD</span>
+                            <input id="env-db-pass" type="password" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" />
+                        </label>
+                    </div>
+                </div>
+
+                <div class="flex justify-end pt-4 border-t border-slate-100">
+                    <button class="btn primary px-10 py-3 shadow-lg" onclick="saveEnvConfig()">Save .env.local Configuration</button>
+                </div>
+            </div>
         </div>
     </div>
 </div>
 
+
 <script>
 const INGESTION_DRAFT_KEY = 'addressforge.ingestionConfigDraft';
 let ingestionConfigDirty = false;
+let envConfigDirty = false;
+
+function collectEnvConfigPayload() {
+    return {
+        TELEGRAM_BOT_TOKEN: document.getElementById('env-telegram').value.trim(),
+        SALT: document.getElementById('env-salt').value.trim(),
+        MYSQL_HOST: document.getElementById('env-db-host').value.trim(),
+        MYSQL_USER: document.getElementById('env-db-user').value.trim(),
+        MYSQL_PASSWORD: document.getElementById('env-db-pass').value.trim(),
+        MYSQL_DATABASE: document.getElementById('env-db-name').value.trim(),
+        AGENT_API_BASE_URL: document.getElementById('env-agent').value.trim(),
+    };
+}
+
+function markEnvConfigDirty() {
+    envConfigDirty = true;
+    const badge = document.getElementById('env-config-badge');
+    if (badge) {
+        badge.className = 'pill warn';
+        badge.textContent = 'Modified';
+    }
+    document.getElementById('env-pending-save-notice').classList.remove('hidden');
+}
+
+function clearEnvConfigDirty() {
+    envConfigDirty = false;
+    document.getElementById('env-pending-save-notice').classList.add('hidden');
+    const badge = document.getElementById('env-config-badge');
+    if (badge) {
+        badge.className = 'pill good';
+        badge.textContent = 'Saved';
+    }
+}
+
+function populateEnvConfig(config) {
+    document.getElementById('env-telegram').value = config.TELEGRAM_BOT_TOKEN || '';
+    document.getElementById('env-salt').value = config.SALT || '';
+    document.getElementById('env-db-host').value = config.MYSQL_HOST || '';
+    document.getElementById('env-db-user').value = config.MYSQL_USER || '';
+    document.getElementById('env-db-pass').value = config.MYSQL_PASSWORD || '';
+    document.getElementById('env-db-name').value = config.MYSQL_DATABASE || '';
+    document.getElementById('env-agent').value = config.AGENT_API_BASE_URL || '';
+    clearEnvConfigDirty();
+}
+
+async function saveEnvConfig() {
+    const payload = collectEnvConfigPayload();
+    showToast("Saving environment config...", "info");
+    const res = await fetch('/api/v1/control/env', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    
+    if (!res.ok) {
+        const detail = await res.text();
+        showToast(`Failed to save env config: ${detail}`, "error");
+        return;
+    }
+    
+    showToast("Environment config updated. Restart required for DB changes.", "success");
+    clearEnvConfigDirty();
+}
+
+function attachEnvConfigDirtyTracking() {
+    const ids = [
+        'env-telegram', 'env-salt', 'env-db-host', 'env-db-user', 
+        'env-db-pass', 'env-db-name', 'env-agent'
+    ];
+    ids.forEach((id) => {
+        const node = document.getElementById(id);
+        if (!node) return;
+        node.addEventListener('input', markEnvConfigDirty);
+    });
+}
 
 function collectIngestionConfigPayload() {
     return {
@@ -232,6 +370,20 @@ async function refreshSettings() {
     
     if (status.ingestion_config) {
         populateIngestionConfig(status.ingestion_config);
+    }
+
+    // Load Env config
+    // 加载环境配置
+    try {
+        const envRes = await fetch('/api/v1/control/env');
+        if (envRes.ok) {
+            const envData = await envRes.json();
+            if (envData.env_config) {
+                populateEnvConfig(envData.env_config);
+            }
+        }
+    } catch (e) {
+        console.error("Failed to load env config", e);
     }
 
     // Apply i18n
@@ -339,13 +491,14 @@ function attachIngestionConfigDirtyTracking() {
 }
 
 window.addEventListener('beforeunload', (event) => {
-    if (!ingestionConfigDirty) return;
+    if (!ingestionConfigDirty && !envConfigDirty) return;
     event.preventDefault();
     event.returnValue = '';
 });
 
 window.addEventListener('load', () => {
     attachIngestionConfigDirtyTracking();
+    attachEnvConfigDirtyTracking();
     refreshSettings();
 });
 </script>

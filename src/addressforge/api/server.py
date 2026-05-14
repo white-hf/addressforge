@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -31,7 +31,14 @@ from addressforge.core.common import (
 from addressforge.core.utils import logger
 from addressforge.core.reference import GeoNovaReferenceMatcher
 from addressforge.core.config import ADDRESSFORGE_MODEL_FAMILY, ADDRESSFORGE_WORKSPACE_NAME
-from addressforge.models import bootstrap_default_registry, get_active_model, get_model, list_models, list_workspaces
+from addressforge.models import (
+    bootstrap_default_registry,
+    get_active_model,
+    get_model,
+    list_models,
+    list_workspaces,
+    rollback_model,
+)
 from addressforge.core.profiles.factory import get_profile
 from addressforge.learning import (
     count_active_learning_queue,
@@ -620,17 +627,39 @@ class AddressPlatformService:
         default_parsers: tuple[str, ...] | None = None,
         decision_policy: dict[str, Any] | None = None,
         model_service: ModelService | None = None,
+        reranker_service: RerankerService | None = None,
+        workspace_name: str | None = None,
     ) -> None:
         self._reference_matcher = GeoNovaReferenceMatcher()
         self._default_profile = default_profile or DEFAULT_MODEL_PROFILE
         self._default_parsers = default_parsers or DEFAULT_PARSERS
         self._decision_policy = decision_policy or {}
-        
-        # New: ML Model Service for supervised decisioning
-        # 新增：用于监督决策的 ML 模型服务
-        self._model_service = model_service or get_model_service()
-        self._reranker_service = get_reranker_service()
         self._vector_engine = None
+        
+        # Phase 18: Load active manifest if services not provided
+        # 第 18 阶段：如果未提供服务，则加载活动清单
+        manifest = None
+        if model_service is None or reranker_service is None:
+            try:
+                ws_name = workspace_name or ADDRESSFORGE_WORKSPACE_NAME
+                active_model = get_active_model(ws_name)
+                if active_model and active_model.get("artifact_path"):
+                    artifact_path = Path(active_model["artifact_path"])
+                    if artifact_path.exists():
+                        manifest = json.loads(artifact_path.read_text(encoding="utf-8"))
+                        logger.info("Service initialized with active manifest: %s", active_model.get("model_version"))
+                        
+                        # Apply runtime binding from manifest if not explicitly overridden
+                        if not default_profile or not default_parsers or not decision_policy:
+                            binding = manifest.get("runtime_binding") or {}
+                            if not default_profile: self._default_profile = binding.get("profile") or self._default_profile
+                            if not default_parsers: self._default_parsers = tuple(binding.get("parsers") or self._default_parsers)
+                            if not decision_policy: self._decision_policy = binding.get("decision_policy") or self._decision_policy
+            except Exception as e:
+                logger.warning("Failed to load active manifest during Service init: %s", e)
+
+        self._model_service = model_service or get_model_service(manifest=manifest)
+        self._reranker_service = reranker_service or get_reranker_service(manifest=manifest)
 
     def _policy_float(self, key: str, default: float) -> float:
         value = self._decision_policy.get(key, default)
@@ -638,6 +667,14 @@ class AddressPlatformService:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    def _assist_policy_mode(self) -> str:
+        value = str(
+            os.getenv("ADDRESSFORGE_DECISION_ASSIST_MODE")
+            or self._decision_policy.get("assist_policy_mode")
+            or "shadow_only"
+        ).strip().lower()
+        return value if value in {"shadow_only", "assist_trial"} else "shadow_only"
 
     def _parser_weights(self) -> dict[str, Any]:
         value = self._decision_policy.get("parser_weights") or {}
@@ -660,6 +697,47 @@ class AddressPlatformService:
             self._vector_engine = get_vector_engine()
         return self._vector_engine
 
+    def reload_models(self) -> None:
+        """
+        Hot-reloads all ML models and vector indexes in the service from the active registry model.
+        Also synchronizes runtime settings like profile, parsers, and decision policy.
+        从活动注册中心模型中热重载服务中的所有 ML 模型和向量索引，并同步运行设置（如配置、解析器和决策策略）。
+        """
+        logger.info("AddressPlatformService: Initiating hot-reload from registry...")
+        
+        manifest = None
+        try:
+            snapshot = bootstrap_default_registry()
+            active_model = snapshot.get("model")
+            if active_model and active_model.get("artifact_path"):
+                artifact_path = Path(active_model["artifact_path"])
+                if artifact_path.exists():
+                    manifest = json.loads(artifact_path.read_text(encoding="utf-8"))
+                    logger.info("Fetched manifest for model version: %s", active_model.get("model_version"))
+                    
+                    # Phase 18: Sync runtime settings from manifest
+                    # 第 18 阶段：从清单同步运行时设置
+                    binding = manifest.get("runtime_binding") or {}
+                    if binding.get("profile"):
+                        self._default_profile = str(binding["profile"])
+                    if binding.get("parsers"):
+                        self._default_parsers = tuple(str(p) for p in binding["parsers"])
+                    if binding.get("decision_policy"):
+                        self._decision_policy = dict(binding["decision_policy"])
+                        logger.info("Runtime settings synchronized from manifest.")
+        except Exception as e:
+            logger.warning("Failed to fetch manifest from registry during reload: %s", e)
+
+        # Create NEW instances with the updated manifest
+        # 使用更新后的清单创建新实例
+        self._model_service = get_model_service(manifest=manifest)
+        self._reranker_service = get_reranker_service(manifest=manifest)
+        
+        engine = self._get_vector_engine()
+        if engine:
+            engine.reload_models()
+        logger.info("AddressPlatformService: Hot-reload complete.")
+
     def _shadow_assist_recommendation(
         self,
         *,
@@ -672,6 +750,7 @@ class AddressPlatformService:
         parser_disagreement: bool,
         gps_conflict: bool,
     ) -> dict[str, Any]:
+        policy_mode = self._assist_policy_mode()
         ml_decision = str(ml_result.get("ml_decision") or "").strip().lower()
         ml_score = float(ml_result.get("ml_score") or 0.0)
         reason_text = str(reason or "").strip().lower()
@@ -680,21 +759,21 @@ class AddressPlatformService:
                 "eligible": False,
                 "recommended_decision": None,
                 "guard_reason": "model_unavailable",
-                "policy_mode": "shadow_only",
+                "policy_mode": policy_mode,
             }
         if ml_decision == heuristic_decision:
             return {
                 "eligible": False,
                 "recommended_decision": None,
                 "guard_reason": "agree_with_heuristic",
-                "policy_mode": "shadow_only",
+                "policy_mode": policy_mode,
             }
         if ml_decision == "reject":
             return {
                 "eligible": False,
                 "recommended_decision": None,
                 "guard_reason": "reject_override_not_enabled",
-                "policy_mode": "shadow_only",
+                "policy_mode": policy_mode,
             }
 
         if heuristic_decision == "review" and ml_decision == "accept":
@@ -703,48 +782,48 @@ class AddressPlatformService:
                     "eligible": False,
                     "recommended_decision": None,
                     "guard_reason": "commercial_guard",
-                    "policy_mode": "shadow_only",
+                    "policy_mode": policy_mode,
                 }
             if parser_disagreement:
                 return {
                     "eligible": False,
                     "recommended_decision": None,
                     "guard_reason": "parser_disagreement_guard",
-                    "policy_mode": "shadow_only",
+                    "policy_mode": policy_mode,
                 }
             if gps_conflict:
                 return {
                     "eligible": False,
                     "recommended_decision": None,
                     "guard_reason": "gps_conflict_guard",
-                    "policy_mode": "shadow_only",
+                    "policy_mode": policy_mode,
                 }
             if "incomplete" in reason_text:
                 return {
                     "eligible": False,
                     "recommended_decision": None,
                     "guard_reason": "incomplete_guard",
-                    "policy_mode": "shadow_only",
+                    "policy_mode": policy_mode,
                 }
             if parse_score < self._policy_float("assist_accept_parse_score_threshold", 0.68):
                 return {
                     "eligible": False,
                     "recommended_decision": None,
                     "guard_reason": "low_parse_score_for_accept",
-                    "policy_mode": "shadow_only",
+                    "policy_mode": policy_mode,
                 }
             if ml_score < self._policy_float("assist_accept_score_threshold", 0.70):
                 return {
                     "eligible": False,
                     "recommended_decision": None,
                     "guard_reason": "low_model_score_for_accept",
-                    "policy_mode": "shadow_only",
+                    "policy_mode": policy_mode,
                 }
             return {
                 "eligible": True,
                 "recommended_decision": "accept",
                 "guard_reason": "eligible_accept_recovery",
-                "policy_mode": "shadow_only",
+                "policy_mode": policy_mode,
             }
 
         if heuristic_decision == "accept" and ml_decision == "review":
@@ -753,7 +832,7 @@ class AddressPlatformService:
                     "eligible": False,
                     "recommended_decision": None,
                     "guard_reason": "low_model_score_for_review",
-                    "policy_mode": "shadow_only",
+                    "policy_mode": policy_mode,
                 }
             if not (
                 parser_disagreement
@@ -766,20 +845,20 @@ class AddressPlatformService:
                     "eligible": False,
                     "recommended_decision": None,
                     "guard_reason": "no_guard_trigger_for_review",
-                    "policy_mode": "shadow_only",
+                    "policy_mode": policy_mode,
                 }
             return {
                 "eligible": True,
                 "recommended_decision": "review",
                 "guard_reason": "eligible_review_escalation",
-                "policy_mode": "shadow_only",
+                "policy_mode": policy_mode,
             }
 
         return {
             "eligible": False,
             "recommended_decision": None,
             "guard_reason": "unsupported_transition",
-            "policy_mode": "shadow_only",
+            "policy_mode": policy_mode,
         }
 
     def model_info(self) -> dict[str, Any]:
@@ -1110,6 +1189,41 @@ class AddressPlatformService:
             }
             parser_disagreement = len(normalized_pairs) >= 2
 
+        # Phase 17: BuildingTypeModel Inference (BEFORE Decision Logic)
+        # 第 17 阶段：BuildingTypeModel 推理（在决策逻辑之前）
+        bt_ml_result = self._model_service.predict_building_type(
+            request.raw_address_text,
+            parsed,
+            parser_name=best.get("parser_name", "hybrid"),
+            validation_context={
+                "hints": {
+                    "reference_score": ref_score,
+                    "gps_conflict": bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
+                    "parser_disagreement": parser_disagreement
+                }
+            },
+            reference_context=reference,
+            semantic_alignment=best.get("semantic_alignment", 0.0)
+        )
+        ml_building_type = bt_ml_result.get("ml_building_type")
+        bt_confidence = 0.0
+        if ml_building_type and bt_ml_result.get("probabilities"):
+            bt_confidence = bt_ml_result["probabilities"].get(ml_building_type, 0.0)
+            
+        # Guarded BuildingType Override: High confidence + check if assist mode is active
+        # 受控建筑类型覆盖：高置信度 + 检查辅助模式是否激活
+        bt_assist_enabled = bool(self._decision_policy.get("building_type_assist_enabled", False))
+        bt_min_confidence = float(self._decision_policy.get("building_type_assist_min_confidence", 0.90))
+        
+        if (
+            bt_assist_enabled
+            and bt_confidence >= bt_min_confidence
+            and ml_building_type != building_type 
+            and self._assist_policy_mode() == "assist_trial"
+        ):
+            logger.info("BuildingTypeModel Guarded Override: %s -> %s (conf=%.4f)", building_type, ml_building_type, bt_confidence)
+            building_type = ml_building_type
+
         if not street_number or not street_name:
             decision = "review"
             reason = "Address is incomplete and needs manual confirmation."
@@ -1209,6 +1323,7 @@ class AddressPlatformService:
             building_type=building_type,
             current_decision=decision,
         )
+        
         ml_shadow_decision = str(ml_result.get("ml_decision") or "").strip().lower()
         shadow_agrees = bool(ml_shadow_decision) and ml_shadow_decision == decision
         if not ml_shadow_decision:
@@ -1235,26 +1350,40 @@ class AddressPlatformService:
             parser_disagreement=parser_disagreement,
             gps_conflict=bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
         )
+        heuristic_decision = decision
+        decision_source = "heuristic"
+        if (
+            assist_recommendation.get("policy_mode") == "assist_trial"
+            and assist_recommendation.get("eligible")
+            and assist_recommendation.get("recommended_decision")
+        ):
+            decision = str(assist_recommendation["recommended_decision"]).strip().lower()
+            decision_source = "decision_model_assist"
 
         return {
             "profile": request.profile or self._default_profile,
             "decision": decision,
+            "heuristic_decision": heuristic_decision,
+            "decision_source": decision_source,
             "confidence": round(confidence, 4),
             "reason": reason,
             "building_type": building_type,
             "suggested_unit_number": suggested_unit,
             "ml_decision": ml_result,
             "shadow_assist": {
-                "heuristic_decision": decision,
+                "heuristic_decision": heuristic_decision,
                 "model_decision": ml_shadow_decision or None,
                 "agrees_with_heuristic": shadow_agrees,
                 "disagreement_reason": disagreement_reason,
                 "model_status": ml_result.get("status"),
                 "model_score": ml_result.get("ml_score"),
+                "ml_building_type": ml_building_type,
+                "bt_model_status": bt_ml_result.get("status"),
                 "assist_eligible": assist_recommendation.get("eligible"),
                 "assist_recommended_decision": assist_recommendation.get("recommended_decision"),
                 "assist_guard_reason": assist_recommendation.get("guard_reason"),
                 "assist_policy_mode": assist_recommendation.get("policy_mode"),
+                "applied_decision": decision if decision_source == "decision_model_assist" else None,
             },
             "canonical": {
                 "base_address_key": canonical_base_key,
@@ -1367,6 +1496,32 @@ async def root() -> dict[str, Any]:
 @app.get("/api/v1/model")
 async def model_info() -> dict[str, Any]:
     return service.model_info()
+
+
+@app.post("/api/v1/models/reload")
+async def reload_models() -> dict[str, Any]:
+    """
+    Hot-reloads all ML models and vector indexes in the API service.
+    在 API 服务中热重载所有 ML 模型和向量索引。
+    """
+    service.reload_models()
+    return {"status": "success", "message": "Models reloaded successfully"}
+
+
+@app.post("/api/v1/models/rollback")
+async def rollback_models(request: dict) -> dict[str, Any]:
+    """
+    Rolls back the active model to the previously promoted version.
+    将活动模型回滚到上一个提升的版本。
+    """
+    try:
+        model = rollback_model(request.get("workspace_name", ADDRESSFORGE_WORKSPACE_NAME), request.get("notes"))
+        # After database rollback, trigger a reload in memory
+        # 数据库回滚后，触发内存中的重载
+        service.reload_models()
+        return {"status": "ok", "model": model}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/v1/models")

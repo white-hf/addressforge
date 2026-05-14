@@ -241,6 +241,7 @@ def _derive_decision_policy(workspace_name: str) -> dict[str, float]:
         "assist_review_score_threshold": 0.55,
         "assist_review_parse_score_threshold": 0.80,
         "assist_review_reference_score_threshold": 0.60,
+        "assist_policy_mode": "shadow_only",
     }
     rows = fetch_all(
         """
@@ -1108,50 +1109,59 @@ def run_baseline_training(
             summarize_decision_training_dataset_balance,
             train_decision_baseline
         )
+        from addressforge.learning.reranking_trainer import ParserRerankerTrainer
+        from addressforge.learning.building_type_trainer import BuildingTypeTrainer
 
         decision_label_balance = summarize_decision_training_dataset_balance(
             workspace_name,
             artifact_name=f"{model_name}_{model_version}_decision_balance",
         )
         
-        # New: Train the supervised CatBoost decision model
-        # 新增：训练监督式 CatBoost 决策模型
+        # 1. Train Decision Model
+        # 1. 训练决策模型
         try:
             ml_model_result = train_decision_baseline(
                 workspace_name=workspace_name,
                 model_name=f"{model_name}_catboost",
                 model_version=model_version
             )
-            # Standardize the shadow model filename for ModelService consumption
-            # 为 ModelService 消费标准化影子模型文件名
-            if ml_model_result.get("model_type") == "catboost":
-                cb_model = ml_model_result["estimator"]
-                cb_model_path = Path("runtime/models/decision_catboost_v1.cbm")
-                cb_model_path.parent.mkdir(parents=True, exist_ok=True)
-                cb_model.save_model(str(cb_model_path))
-                metadata_src = Path(str(ml_model_result.get("metadata_path") or ""))
-                model_src = Path(str(ml_model_result.get("model_path") or ""))
-                runtime_metadata_path = Path("runtime/models/decision_catboost_v1.json")
-                runtime_model_path = Path("runtime/models/decision_catboost_v1.pkl")
-                if metadata_src.exists():
-                    runtime_metadata_path.write_text(metadata_src.read_text(encoding="utf-8"), encoding="utf-8")
-                if model_src.exists():
-                    runtime_model_path.write_bytes(model_src.read_bytes())
-                logger.info("Shadow CatBoost model saved to %s", cb_model_path)
             decision_model_artifact = {
                 "model_type": ml_model_result.get("model_type"),
                 "metadata_path": str(ml_model_result.get("metadata_path") or ""),
                 "model_path": str(ml_model_result.get("model_path") or ""),
-                "legacy_model_path": str(cb_model_path) if ml_model_result.get("model_type") == "catboost" else "",
+                "legacy_model_path": "runtime/models/decision_catboost_v1.cbm" # Compatibility
             }
         except Exception as ml_exc:
             logger.warning("Failed to train shadow CatBoost model: %s", ml_exc)
-            decision_model_artifact = {
-                "model_type": "",
-                "metadata_path": "",
-                "model_path": "",
-                "legacy_model_path": "",
+            decision_model_artifact = {}
+
+        # 2. Train Reranker Model
+        # 2. 训练重排模型
+        try:
+            reranker_trainer = ParserRerankerTrainer(workspace_name)
+            reranker_result = reranker_trainer.train_reranker_model(model_version=f"{model_name}_reranker_{model_version}")
+            reranker_model_artifact = {
+                "model_type": reranker_result.get("model_type"),
+                "model_path": str(reranker_result.get("model_path") or ""),
+                "legacy_model_path": "runtime/models/reranker_catboost_v1.cbm"
             }
+        except Exception as rerank_exc:
+            logger.warning("Failed to train Parser Reranker: %s", rerank_exc)
+            reranker_model_artifact = {}
+
+        # 3. Train BuildingType Model
+        # 3. 训练建筑类型模型
+        try:
+            bt_trainer = BuildingTypeTrainer(workspace_name)
+            bt_result = bt_trainer.train_building_type_model(model_version=f"{model_name}_bt_{model_version}")
+            building_type_model_artifact = {
+                "model_type": bt_result.get("model_type"),
+                "model_path": str(bt_result.get("model_path") or ""),
+                "legacy_model_path": "runtime/models/building_type_catboost_v1.cbm"
+            }
+        except Exception as bt_exc:
+            logger.warning("Failed to train BuildingType Model: %s", bt_exc)
+            building_type_model_artifact = {}
 
         parser_weights = _derive_parser_weights(
             workspace_name,
@@ -1200,6 +1210,8 @@ def run_baseline_training(
                 "decision_policy": decision_policy,
             },
             "decision_model_artifact": decision_model_artifact,
+            "reranker_model_artifact": reranker_model_artifact,
+            "building_type_model_artifact": building_type_model_artifact,
             "training_run_id": run_id,
             "sample_count": sample_count,
             "gold_count": gold_count,

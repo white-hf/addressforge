@@ -88,10 +88,20 @@ class IngestionDbConfigPayload(BaseModel):
 
 class IngestionConfigPayload(BaseModel):
     workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME
-    mode: str
+    mode: str = "api"
     source_name: str | None = None
     api: IngestionApiConfigPayload | None = None
     db: IngestionDbConfigPayload | None = None
+
+class EnvConfigPayload(BaseModel):
+    TELEGRAM_BOT_TOKEN: str | None = None
+    SALT: str | None = None
+    MYSQL_HOST: str | None = None
+    MYSQL_USER: str | None = None
+    MYSQL_PASSWORD: str | None = None
+    MYSQL_DATABASE: str | None = None
+    AGENT_API_BASE_URL: str | None = None
+
 
 @app.get("/health", response_class=PlainTextResponse)
 async def health() -> str:
@@ -146,6 +156,83 @@ async def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSP
             "interval_seconds": int(get_setting(target_workspace, "continuous_mode.interval_seconds", 300) or 300),
             "last_trigger_at": get_setting(target_workspace, "continuous_mode.last_trigger_at", None),
         }
+    }
+
+
+@app.get("/api/v1/control/env")
+async def get_env_config() -> dict[str, Any]:
+    """
+    Reads the environment configuration from .env.local.
+    读取 .env.local 文件中的环境配置。
+    """
+    env_file = BASE_DIR.parent / ".env.local"
+    if not env_file.exists():
+        env_file = BASE_DIR / ".env.local"
+    
+    config = {}
+    if env_file.exists():
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        config[key.strip()] = val.strip().strip('"\'')
+    
+    return {
+        "env_config": {
+            "TELEGRAM_BOT_TOKEN": config.get("TELEGRAM_BOT_TOKEN", ""),
+            "SALT": config.get("SALT", ""),
+            "MYSQL_HOST": config.get("MYSQL_HOST", "localhost"),
+            "MYSQL_USER": config.get("MYSQL_USER", "root"),
+            "MYSQL_PASSWORD": config.get("MYSQL_PASSWORD", ""),
+            "MYSQL_DATABASE": config.get("MYSQL_DATABASE", "addressforge"),
+            "AGENT_API_BASE_URL": config.get("AGENT_API_BASE_URL", "http://localhost:9000"),
+        }
+    }
+
+
+@app.post("/api/v1/control/env")
+async def update_env_config(payload: EnvConfigPayload) -> dict[str, Any]:
+    """
+    Updates the environment configuration in .env.local.
+    在 .env.local 文件中更新环境配置。
+    """
+    env_file = BASE_DIR.parent / ".env.local"
+    if not env_file.exists():
+        env_file = BASE_DIR / ".env.local"
+        
+    lines = []
+    keys_found = set()
+    updates = payload.model_dump(exclude_none=True)
+    
+    if env_file.exists():
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in stripped:
+                    key, val = stripped.split("=", 1)
+                    key = key.strip()
+                    if key in updates:
+                        # Replace the value
+                        # 替换值
+                        lines.append(f'{key}="{updates[key]}"\n')
+                        keys_found.add(key)
+                        continue
+                lines.append(line)
+                
+    # Add new keys
+    # 添加新键
+    for key, val in updates.items():
+        if key not in keys_found:
+            lines.append(f'{key}="{val}"\n')
+            
+    with open(env_file, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+        
+    return {
+        "status": "updated",
+        "message": "Environment config updated. Restart required for DB changes."
     }
 
 

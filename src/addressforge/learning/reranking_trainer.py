@@ -1,39 +1,48 @@
 from __future__ import annotations
 
+import datetime
 import json
-from typing import Any, List, Dict
-from addressforge.core.common import fetch_all, db_cursor, dumps_payload, finish_run, create_run
-from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
+from pathlib import Path
+from typing import Any, Dict, List
+
+import pandas as pd
+from catboost import CatBoostClassifier
+
+from addressforge.core.common import (
+    canonicalize_unit_number,
+    create_run,
+    db_cursor,
+    dumps_payload,
+    fetch_all,
+    finish_run,
+    normalize_street_name,
+)
+from addressforge.core.config import ADDRESSFORGE_MODEL_ARTIFACT_DIR, ADDRESSFORGE_WORKSPACE_NAME
+from addressforge.core.features import AddressFeatureExtractor
 from addressforge.core.utils import logger
-from addressforge.core.common import canonicalize_unit_number, normalize_street_name
+
 
 class ParserRerankerTrainer:
     """
     Trains a calibration model to rank and select the best parser output.
     训练一个校准模型，用于对解析器输出进行排序和筛选。
     """
-    
+
     def __init__(self, workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME):
         self.workspace_name = workspace_name
+        self.extractor = AddressFeatureExtractor()
 
-    def collect_training_features(self, limit: int = 2000) -> List[Dict[str, Any]]:
+    def collect_training_pairs(self, limit: int = 2000) -> List[Dict[str, Any]]:
         """
-        Extracts advanced features from both the rule-engine and LLM outcomes.
-        从规则引擎和 LLM 结果中提取高级特征。
+        Collects candidate pairs and features for supervision.
+        收集用于监督的候选对和特征。
         """
-        # Fetch gold labels with detailed metadata
-        # 获取带有元数据的金标数据
         query = """
             SELECT
-                g.label_json,
-                acr.confidence as system_conf,
+                g.label_json as gold_json,
                 acr.parser_json,
                 acr.validation_json,
-                acr.building_type,
-                acr.suggested_unit_number,
-                acr.decision,
-                r.raw_address_text,
-                r.postal_code
+                r.raw_address_text
             FROM gold_label g
             JOIN (
                 SELECT source_id, MAX(gold_label_id) AS latest_gold_label_id
@@ -56,163 +65,86 @@ class ParserRerankerTrainer:
             LIMIT %s
         """
         rows = fetch_all(query, (self.workspace_name, self.workspace_name, limit))
-        
-        features = []
+
+        dataset = []
         for row in rows:
             raw_text = row["raw_address_text"]
-            try:
-                label_json = json.loads(row["label_json"] or "{}")
-            except Exception:
-                label_json = {}
-            try:
-                parser_json = json.loads(row["parser_json"] or "{}")
-            except Exception:
-                parser_json = {}
-            try:
-                v_json = json.loads(row["validation_json"] or "{}")
-            except Exception:
-                v_json = {}
-            best_candidate = (parser_json or {}).get("best_candidate") or {}
-            best_parsed = best_candidate.get("parsed") or {}
-            f_vec = best_parsed.get("feature_vector") or {}
-            predicted_decision = str(row.get("decision") or "").strip().lower()
-            predicted_building = str(row.get("building_type") or "").strip().lower()
-            predicted_unit = canonicalize_unit_number(row.get("suggested_unit_number"))
-            gold_decision = str(label_json.get("decision") or "").strip().lower()
-            gold_building = str(label_json.get("building_type") or label_json.get("structure_type") or "").strip().lower()
-            gold_unit = canonicalize_unit_number(
-                label_json.get("unit_number")
-                or label_json.get("suggested_unit_number")
-                or ((label_json.get("canonical") or {}).get("unit_number"))
-            )
+            gold_json = json.loads(row["gold_json"]) if isinstance(row["gold_json"], str) else row["gold_json"]
+            parser_json = json.loads(row["parser_json"]) if isinstance(row["parser_json"], str) else row["parser_json"]
             
-            # Cross-feature: FSA (Forward Sortation Area) prefix
-            # 交叉特征：FSA (邮编前缀)
-            pc = row["postal_code"] or ""
-            fsa = pc[:3].upper() if len(pc) >= 3 else "UNK"
-            parser_source = (
-                best_candidate.get("parser_name")
-                or best_parsed.get("unit_source")
-                or "unknown"
-            )
-            predicted_street_name = normalize_street_name(best_parsed.get("street_name"))
-            gold_street_name = normalize_street_name(
-                label_json.get("street_name")
-                or ((label_json.get("canonical") or {}).get("street_name"))
-            )
-            target_is_correct = int(
-                predicted_decision == gold_decision
-                and predicted_building == gold_building
-                and predicted_unit == gold_unit
-                and (gold_street_name is None or predicted_street_name == gold_street_name)
-            )
+            candidates = parser_json.get("candidates", [])
+            if not candidates:
+                continue
 
-            feat = {
-                "unit_source": parser_source,
-                "match_rule": f_vec.get("pattern", "unknown"),
-                "text_length": len(raw_text),
-                "has_unit_keyword": f_vec.get("regex_hit", 0),
-                "is_commercial_hit": f_vec.get("is_commercial", 0),
-                "system_confidence": float(row["system_conf"] or 0),
-                "llm_was_involved": 1 if v_json.get("llm_refinement") else 0,
-                "fsa_prefix": fsa,
-                "target_is_correct": target_is_correct,
-            }
-            features.append(feat)
-        return features
+            gold_sn = str(gold_json.get("street_number") or "").strip()
+            gold_st = normalize_street_name(gold_json.get("street_name"))
+            gold_un = canonicalize_unit_number(gold_json.get("unit_number"))
+            gold_base_key = gold_json.get("base_address_key")
 
+            best_h_score = max([float(c.get("score") or 0.5) for c in candidates])
 
-    def train_reranking_weights(self) -> Dict[str, Any]:
+            for cand in candidates:
+                parsed = cand.get("parsed", {})
+                cand_sn = str(parsed.get("street_number") or "").strip()
+                cand_st = normalize_street_name(parsed.get("street_name"))
+                cand_un = canonicalize_unit_number(parsed.get("unit_number"))
+                cand_base_key = parsed.get("base_address_key")
+
+                is_match = (cand_sn == gold_sn and cand_st == gold_st and cand_un == gold_un)
+                semantic_alignment = 1.0 if gold_base_key and cand_base_key and gold_base_key == cand_base_key else 0.0
+
+                features = self.extractor.extract_features(
+                    raw_text,
+                    parsed,
+                    parser_name=cand.get("parser_name", "unknown"),
+                    best_candidate_score=best_h_score,
+                    semantic_alignment=semantic_alignment
+                )
+                dataset.append({
+                    "features": self.extractor.vectorize(features),
+                    "label": 1 if is_match else 0
+                })
+        return dataset
+
+    def train_reranker_model(self, model_version: str | None = None) -> Dict[str, Any]:
         """
-        Calculates optimal weights and saves them as a versioned model artifact.
-        计算最优权重并将其保存为版本化的模型产物。
+        Trains a CatBoost reranker model.
         """
-        from pathlib import Path
-        from addressforge.core.config import ADDRESSFORGE_MODEL_ARTIFACT_DIR
-        import datetime
-
-        run_id = create_run("ml_train", notes="Parser reranking weight calibration")
-        logger.info("Starting reranking calibration for workspace: %s", self.workspace_name)
-        
+        run_id = create_run("ml_train", notes="Supervised Reranker training")
         try:
-            features = self.collect_training_features()
-            if not features:
-                logger.warning("Insufficient gold data to train reranker.")
-                return {"status": "skipped", "reason": "insufficient_gold_data"}
+            dataset = self.collect_training_pairs()
+            if not dataset:
+                return {"status": "skipped", "reason": "no_data"}
 
-            # Calculate precision for each parser source
-            # 为每个解析源计算精确率
-            source_stats = {}
-            rule_stats = {}
-            unit_kw_stats = {"total": 0, "correct": 0}
-            no_unit_kw_stats = {"total": 0, "correct": 0}
+            X = pd.DataFrame([d["features"] for d in dataset])
+            y = pd.Series([d["label"] for d in dataset])
 
-            for f in features:
-                src = f.get("unit_source", "unknown")
-                rule = f.get("match_rule", "unknown")
-                is_correct = f.get("target_is_correct", 0)
+            model = CatBoostClassifier(
+                iterations=500,
+                depth=6,
+                learning_rate=0.05,
+                loss_function='Logloss',
+                verbose=False,
+                random_seed=42,
+                auto_class_weights='Balanced'
+            )
+            model.fit(X, y)
 
-                # Source stats
-                if src not in source_stats:
-                    source_stats[src] = {"total": 0, "correct": 0}
-                source_stats[src]["total"] += 1
-                if is_correct:
-                    source_stats[src]["correct"] += 1
-                
-                # Rule stats
-                if rule not in rule_stats:
-                    rule_stats[rule] = {"total": 0, "correct": 0}
-                rule_stats[rule]["total"] += 1
-                if is_correct:
-                    rule_stats[rule]["correct"] += 1
-
-                # Unit keyword stats
-                if f.get("has_unit_keyword", 0):
-                    unit_kw_stats["total"] += 1
-                    if is_correct: unit_kw_stats["correct"] += 1
-                else:
-                    no_unit_kw_stats["total"] += 1
-                    if is_correct: no_unit_kw_stats["correct"] += 1
-            
-            # Final weights (Confidence Scores)
-            # 最终权重 (置信度分值)
-            weights = {src: round(s["correct"] / s["total"], 4) for src, s in source_stats.items()}
-            rule_weights = {rule: round(s["correct"] / s["total"], 4) for rule, s in rule_stats.items() if s["total"] >= 5}
-            
-            unit_kw_acc = unit_kw_stats["correct"] / max(1, unit_kw_stats["total"])
-            no_unit_kw_acc = no_unit_kw_stats["correct"] / max(1, no_unit_kw_stats["total"])
-            unit_present_bonus = round(max(0, unit_kw_acc - no_unit_kw_acc), 4)
-
-            payload_weights = {
-                "parser_weights": weights,
-                "match_rule_weights": {
-                    **rule_weights,
-                    "__unit_present__": unit_present_bonus,
-                },
-            }
-            
-            # Export as artifact
-            # 作为产物导出
-            version = f"reranker_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            version = model_version or f"reranker_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
             artifact_dir = Path(ADDRESSFORGE_MODEL_ARTIFACT_DIR)
             artifact_dir.mkdir(parents=True, exist_ok=True)
-            
-            weight_path = artifact_dir / f"{version}_weights.json"
-            with open(weight_path, "w") as f:
-                json.dump(payload_weights, f, indent=2)
+            model_path = artifact_dir / f"{version}.cbm"
+            model.save_model(str(model_path))
 
-            metadata = {
+            result = {
+                "model_type": "catboost",
+                "model_path": str(model_path),
                 "model_version": version,
-                "weights": payload_weights,
-                "artifact_path": str(weight_path),
-                "sample_size": len(features)
+                "sample_count": len(dataset),
+                "positive_count": int(sum(y))
             }
-            
-            finish_run(run_id, "completed", notes=dumps_payload(metadata))
-            logger.info("Reranker training completed: %s", version)
-            return metadata
-
-        except Exception as exc:
-            logger.exception("Reranking training failed: %s", exc)
-            finish_run(run_id, "failed", notes=str(exc))
+            finish_run(run_id, "completed", notes=dumps_payload(result))
+            return result
+        except Exception as e:
+            finish_run(run_id, "failed", notes=str(e))
             raise

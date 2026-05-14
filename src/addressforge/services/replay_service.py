@@ -21,12 +21,12 @@ def _json_dict(value: Any) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     return {}
 
-def _load_model_runtime(workspace_name: str, model_version: str) -> Any:
+def _load_model_runtime(workspace_name: str, model_version: str) -> dict[str, Any]:
     """
     Internal helper to load a model version into memory for runtime inference.
-    用于将模型版本加载到内存中进行运行时推理的内部辅助函数。
+    Returns a full runtime bundle (profile, parsers, policy, services).
     """
-    logger.info("Loading model runtime: %s", model_version)
+    logger.info("Loading model runtime bundle: %s", model_version)
     model_row = None
     if model_version:
         rows = fetch_all(
@@ -42,21 +42,22 @@ def _load_model_runtime(workspace_name: str, model_version: str) -> Any:
         model_row = rows[0] if rows else None
     else:
         model_row = get_active_model(workspace_name)
+    
     if not model_row:
-        return (False, None, None, None, None)
+        return {"ok": False, "reason": "model_not_found"}
+        
     metrics_json = _json_dict(model_row.get("metrics_json"))
     artifact_path = model_row.get("artifact_path")
     artifact_payload: dict[str, Any] = {}
     if artifact_path:
         artifact_file = Path(str(artifact_path))
-        if not artifact_file.exists():
-            artifact_file = None
         try:
-            if artifact_file is not None:
+            if artifact_file.exists():
                 with open(artifact_file, "r", encoding="utf-8") as handle:
                     artifact_payload = json.load(handle)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to load model artifact for runtime %s: %s", model_version, exc)
+            
     runtime_binding = metrics_json.get("runtime_binding") if isinstance(metrics_json.get("runtime_binding"), dict) else {}
     profile = (
         runtime_binding.get("profile")
@@ -76,6 +77,9 @@ def _load_model_runtime(workspace_name: str, model_version: str) -> Any:
         if isinstance(artifact_payload.get("decision_policy"), dict)
         else {}
     )
+    
+    # Extract manifests for sub-services
+    # 提取子服务的清单
     decision_model_artifact = (
         metrics_json.get("decision_model_artifact")
         if isinstance(metrics_json.get("decision_model_artifact"), dict)
@@ -83,8 +87,44 @@ def _load_model_runtime(workspace_name: str, model_version: str) -> Any:
         if isinstance(artifact_payload.get("decision_model_artifact"), dict)
         else {}
     )
-    model_service = build_model_service_from_manifest(decision_model_artifact)
-    return (True, profile, parsers, decision_policy, model_service)
+    
+    reranker_model_artifact = (
+        metrics_json.get("reranker_model_artifact")
+        if isinstance(metrics_json.get("reranker_model_artifact"), dict)
+        else artifact_payload.get("reranker_model_artifact")
+        if isinstance(artifact_payload.get("reranker_model_artifact"), dict)
+        else {}
+    )
+    
+    building_type_model_artifact = (
+        metrics_json.get("building_type_model_artifact")
+        if isinstance(metrics_json.get("building_type_model_artifact"), dict)
+        else artifact_payload.get("building_type_model_artifact")
+        if isinstance(artifact_payload.get("building_type_model_artifact"), dict)
+        else {}
+    )
+    
+    # Build a unified manifest for constructors
+    # 为构造函数构建统一的清单
+    full_manifest = {
+        **artifact_payload,
+        "decision_model_artifact": decision_model_artifact,
+        "reranker_model_artifact": reranker_model_artifact,
+        "building_type_model_artifact": building_type_model_artifact
+    }
+
+    from addressforge.services.model_service import build_model_service_from_manifest
+    from addressforge.services.reranker_service import build_reranker_service_from_manifest
+    
+    return {
+        "ok": True,
+        "profile": profile,
+        "parsers": parsers,
+        "decision_policy": decision_policy,
+        "model_service": build_model_service_from_manifest(full_manifest),
+        "reranker_service": build_reranker_service_from_manifest(full_manifest),
+        "manifest": full_manifest
+    }
 
 def run_historical_replay(
     workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
@@ -115,21 +155,25 @@ def run_historical_replay(
         active_model = get_active_model(workspace_name)
         candidate_runtime = _load_model_runtime(workspace_name, candidate_version)
         active_runtime = _load_model_runtime(workspace_name, None)
-        if not candidate_runtime[0]:
-            raise ValueError(f"candidate runtime unavailable: {workspace_name}/{candidate_version}")
-        if not active_runtime[0]:
-            raise ValueError(f"active runtime unavailable: {workspace_name}")
+        
+        if not candidate_runtime.get("ok"):
+            raise ValueError(f"candidate runtime unavailable: {workspace_name}/{candidate_version} - {candidate_runtime.get('reason')}")
+        if not active_runtime.get("ok"):
+            raise ValueError(f"active runtime unavailable: {workspace_name} - {active_runtime.get('reason')}")
+            
         candidate_service = AddressPlatformService(
-            default_profile=candidate_runtime[1],
-            default_parsers=candidate_runtime[2],
-            decision_policy=candidate_runtime[3],
-            model_service=candidate_runtime[4],
+            default_profile=candidate_runtime["profile"],
+            default_parsers=candidate_runtime["parsers"],
+            decision_policy=candidate_runtime["decision_policy"],
+            model_service=candidate_runtime["model_service"],
+            reranker_service=candidate_runtime["reranker_service"]
         )
         active_service = AddressPlatformService(
-            default_profile=active_runtime[1],
-            default_parsers=active_runtime[2],
-            decision_policy=active_runtime[3],
-            model_service=active_runtime[4],
+            default_profile=active_runtime["profile"],
+            default_parsers=active_runtime["parsers"],
+            decision_policy=active_runtime["decision_policy"],
+            model_service=active_runtime["model_service"],
+            reranker_service=active_runtime["reranker_service"]
         )
 
         # 2. Fetch historical records
