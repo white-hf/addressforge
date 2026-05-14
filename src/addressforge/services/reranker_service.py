@@ -43,6 +43,17 @@ class RerankerService:
             
         self._load_model()
 
+    def describe_runtime(self) -> dict[str, Any]:
+        """
+        Returns the runtime identity of the reranker model.
+        返回重排模型的运行时标识。
+        """
+        return {
+            "model_path": str(self.model_path),
+            "model_type": "catboost",
+            "feature_schema_version": "28d_ufm",
+        }
+
     def rerank_candidates(
         self, 
         raw_text: str, 

@@ -972,7 +972,7 @@ def run_baseline_evaluation(
         if benchmark_path.exists() and not _skip_canada_benchmark():
             try:
                 from addressforge.learning.canada_benchmark import run_canada_address_benchmark
-                target_profile, target_parsers, target_decision_policy, _target_model_service = _resolve_model_runtime(
+                target_runtime = _resolve_model_runtime(
                     workspace_name,
                     model_name,
                     model_version,
@@ -982,9 +982,11 @@ def run_baseline_evaluation(
                     workspace_name=workspace_name,
                     model_name=model_name,
                     model_version=model_version,
-                    profile=target_profile,
-                    parsers=target_parsers,
-                    decision_policy=target_decision_policy,
+                    profile=target_runtime["profile"],
+                    parsers=target_runtime["parsers"],
+                    decision_policy=target_runtime["decision_policy"],
+                    reranker_service=target_runtime["reranker_service"],
+                    model_service=target_runtime["model_service"],
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Canada benchmark evaluation failed: %s", exc)
@@ -1062,6 +1064,15 @@ def run_baseline_evaluation(
         artifact_dir = _artifact_dir()
         artifact_dir.mkdir(parents=True, exist_ok=True)
         markdown_report = generate_markdown_report(metrics_json, locale=os.getenv("ADDRESSFORGE_LOCALE", "en"))
+        # Add runtime identity to metrics for transparency
+        # 将运行时标识添加到指标中以提高透明度
+        metrics_json["runtime_identity"] = {
+            "decision_model": target_runtime["model_service"].describe_runtime(),
+            "reranker_model": target_runtime["reranker_service"].describe_runtime(),
+            "parsers": list(target_runtime["parsers"]),
+            "profile": target_runtime["profile"]
+        }
+
         report_path = artifact_dir / f"{model_name}_{model_version}_eval.md"
         report_path.write_text(markdown_report, encoding="utf-8")
         

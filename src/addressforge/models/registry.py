@@ -367,6 +367,20 @@ def promote_model(
                 return {"status": "blocked", "reason": "Shadow Gate Failed: shadow_advantage < 0"}
             if float(shadow_m.get("disagreement_rate", 1.0)) > 0.15:
                 return {"status": "blocked", "reason": "Shadow Gate Failed: disagreement_rate > 0.15"}
+                
+            # 5. Consistency Gate (Physical File Check)
+            # 5. 一致性准入 (物理文件检查)
+            check_paths = []
+            if decision_model_artifact.get("model_path"):
+                check_paths.append(Path(decision_model_artifact["model_path"]))
+            if reranker_model_artifact.get("model_path"):
+                check_paths.append(Path(reranker_model_artifact["model_path"]))
+            if building_type_model_artifact.get("model_path"):
+                check_paths.append(Path(building_type_model_artifact["model_path"]))
+                
+            for p in check_paths:
+                if not p.exists():
+                    return {"status": "blocked", "reason": f"Consistency Gate Failed: Physical artifact missing at {p}"}
 
         except Exception as e:
             logger.error("Release gate error for model %s: %s", target.get("model_version"), e)

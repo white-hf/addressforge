@@ -127,14 +127,14 @@ def run_baseline_shadow(
                 province=row.get("province"),
                 postal_code=row.get("postal_code"),
                 country_code=row.get("country_code") or "CA",
-                profile=candidate_runtime[1] or "base_canada",
-                parsers=list(candidate_runtime[2]) if candidate_runtime[2] else None,
+                profile=candidate_runtime["profile"] or "base_canada",
+                parsers=list(candidate_runtime["parsers"]) if candidate_runtime["parsers"] else None,
             )
             candidate_validation = candidate_service.validate(request)
             active_request = request.model_copy(
                 update={
-                    "profile": active_runtime[1] or request.profile,
-                    "parsers": list(active_runtime[2]) if active_runtime[2] else request.parsers,
+                    "profile": active_runtime["profile"] or request.profile,
+                    "parsers": list(active_runtime["parsers"]) if active_runtime["parsers"] else request.parsers,
                 }
             )
             active_validation = active_service.validate(active_request)
@@ -265,6 +265,23 @@ def run_baseline_shadow(
 
         report_path.write_text("\n".join(md_lines), encoding="utf-8")
 
+        # Add runtime identity for transparency
+        # 添加运行时标识以提高透明度
+        runtime_identity = {
+            "candidate": {
+                "decision_model": candidate_runtime["model_service"].describe_runtime(),
+                "reranker_model": candidate_runtime["reranker_service"].describe_runtime(),
+                "profile": candidate_runtime["profile"],
+                "parsers": list(candidate_runtime["parsers"]),
+            },
+            "active": {
+                "decision_model": active_runtime["model_service"].describe_runtime(),
+                "reranker_model": active_runtime["reranker_service"].describe_runtime(),
+                "profile": active_runtime["profile"],
+                "parsers": list(active_runtime["parsers"]),
+            }
+        }
+
         register_model_version(
             workspace_name=workspace_name,
             model_name=model_name,
@@ -289,6 +306,7 @@ def run_baseline_shadow(
                     "shadow_advantage": shadow_advantage,
                     "promote_recommended": promote_recommended,
                     "decision": decision,
+                    "runtime_identity": runtime_identity,
                 },
             },
             notes=f"Shadow evaluation completed for {model_name}/{model_version}. Advantage={shadow_advantage:+.4f}, Recommendation={decision}",
@@ -314,6 +332,7 @@ def run_baseline_shadow(
             "decision": decision,
             "artifact_path": str(artifact_path),
             "inserted": compared,
+            "runtime_identity": runtime_identity,
         }
         finish_run(run_id, "completed", notes=dumps_payload(result))
         return result

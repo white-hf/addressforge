@@ -26,6 +26,8 @@ def run_canada_address_benchmark(
     profile: str | None = None,
     parsers: tuple[str, ...] | None = None,
     decision_policy: dict[str, Any] | None = None,
+    reranker_service: Any | None = None,
+    model_service: Any | None = None,
 ) -> dict[str, Any]:
     from addressforge.api.server import AddressPlatformService, AddressRequest
 
@@ -33,6 +35,8 @@ def run_canada_address_benchmark(
         default_profile=profile,
         default_parsers=parsers,
         decision_policy=decision_policy,
+        reranker_service=reranker_service,
+        model_service=model_service,
     )
     benchmark_file = Path(benchmark_path)
     rows = [json.loads(line) for line in benchmark_file.read_text(encoding="utf-8").splitlines() if line.strip()]

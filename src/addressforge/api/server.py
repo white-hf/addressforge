@@ -738,6 +738,19 @@ class AddressPlatformService:
             engine.reload_models()
         logger.info("AddressPlatformService: Hot-reload complete.")
 
+    def describe_runtime(self) -> dict[str, Any]:
+        """
+        Returns a detailed summary of the current runtime configuration and model versions.
+        返回当前运行时配置和模型版本的详细摘要。
+        """
+        return {
+            "default_profile": self._default_profile,
+            "default_parsers": list(self._default_parsers),
+            "decision_policy_keys": list(self._decision_policy.keys()),
+            "decision_model": self._model_service.describe_runtime() if self._model_service else None,
+            "reranker_model": self._reranker_service.describe_runtime() if self._reranker_service else None,
+        }
+
     def _shadow_assist_recommendation(
         self,
         *,
@@ -1215,10 +1228,19 @@ class AddressPlatformService:
         bt_assist_enabled = bool(self._decision_policy.get("building_type_assist_enabled", False))
         bt_min_confidence = float(self._decision_policy.get("building_type_assist_min_confidence", 0.90))
         
+        # Allowed transitions safety guard (e.g., only allow single -> multi or vice versa)
+        # 允许的转换安全守卫（例如，仅允许单户 -> 多户，反之亦然）
+        bt_allowed_transitions = self._decision_policy.get("building_type_assist_allowed_transitions", [
+            ["single_unit", "multi_unit"],
+            ["multi_unit", "single_unit"]
+        ])
+        is_transition_allowed = [building_type, ml_building_type] in bt_allowed_transitions
+        
         if (
             bt_assist_enabled
             and bt_confidence >= bt_min_confidence
             and ml_building_type != building_type 
+            and is_transition_allowed
             and self._assist_policy_mode() == "assist_trial"
         ):
             logger.info("BuildingTypeModel Guarded Override: %s -> %s (conf=%.4f)", building_type, ml_building_type, bt_confidence)
