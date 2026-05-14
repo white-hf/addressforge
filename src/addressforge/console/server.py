@@ -26,6 +26,7 @@ from addressforge.control import (
     get_setting,
     list_jobs,
     list_settings,
+    seed_settings_from_env,
     set_setting,
     summarize_latest_ingestion_cleaning_batch,
     _truthy_setting,
@@ -59,6 +60,18 @@ app.include_router(model_router, prefix="/api/v1/models", tags=["models"])
 app.include_router(cleaning_router, prefix="/api/v1/cleaning", tags=["cleaning"])
 app.include_router(business_router, prefix="/api/v1/business", tags=["business"])
 app.include_router(review_router, prefix="/api/v1/review", tags=["review"])
+
+
+@app.on_event("startup")
+async def on_startup():
+    """
+    Seeds environment settings into the database as defaults on startup.
+    启动时将环境设置填充到数据库中作为默认值。
+    """
+    try:
+        seed_settings_from_env()
+    except Exception as exc:
+        print(f"WARNING: Failed to seed settings from environment: {exc}")
 
 def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
@@ -95,12 +108,16 @@ class IngestionConfigPayload(BaseModel):
 
 class EnvConfigPayload(BaseModel):
     TELEGRAM_BOT_TOKEN: str | None = None
+    API_TOKEN: str | None = None
     SALT: str | None = None
     MYSQL_HOST: str | None = None
     MYSQL_USER: str | None = None
     MYSQL_PASSWORD: str | None = None
     MYSQL_DATABASE: str | None = None
     AGENT_API_BASE_URL: str | None = None
+    ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE: str | None = None
+    ADDRESSFORGE_PORT: int | None = None
+    ADDRESSFORGE_CONSOLE_PORT: int | None = None
 
 
 @app.get("/health", response_class=PlainTextResponse)
@@ -160,16 +177,16 @@ async def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSP
 
 
 @app.get("/api/v1/control/env")
-async def get_env_config() -> dict[str, Any]:
+async def get_env_config(workspace_name: str = Query(default=ADDRESSFORGE_WORKSPACE_NAME)) -> dict[str, Any]:
     """
-    Reads the environment configuration from .env.local.
-    读取 .env.local 文件中的环境配置。
+    Reads the environment configuration from .env.local and database settings.
+    从 .env.local 文件和数据库设置中读取环境配置。
     """
     env_file = BASE_DIR.parent / ".env.local"
     if not env_file.exists():
         env_file = BASE_DIR / ".env.local"
     
-    config = {}
+    file_config = {}
     if env_file.exists():
         with open(env_file, "r", encoding="utf-8") as f:
             for line in f:
@@ -177,34 +194,45 @@ async def get_env_config() -> dict[str, Any]:
                 if line and not line.startswith("#"):
                     if "=" in line:
                         key, val = line.split("=", 1)
-                        config[key.strip()] = val.strip().strip('"\'')
+                        file_config[key.strip()] = val.strip().strip('"\'')
     
     return {
         "env_config": {
-            "TELEGRAM_BOT_TOKEN": config.get("TELEGRAM_BOT_TOKEN", ""),
-            "SALT": config.get("SALT", ""),
-            "MYSQL_HOST": config.get("MYSQL_HOST", "localhost"),
-            "MYSQL_USER": config.get("MYSQL_USER", "root"),
-            "MYSQL_PASSWORD": config.get("MYSQL_PASSWORD", ""),
-            "MYSQL_DATABASE": config.get("MYSQL_DATABASE", "addressforge"),
-            "AGENT_API_BASE_URL": config.get("AGENT_API_BASE_URL", "http://localhost:9000"),
+            "TELEGRAM_BOT_TOKEN": get_setting(workspace_name, "env.TELEGRAM_BOT_TOKEN", file_config.get("TELEGRAM_BOT_TOKEN", "")),
+            "API_TOKEN": get_setting(workspace_name, "env.API_TOKEN", file_config.get("API_TOKEN", "")),
+            "SALT": get_setting(workspace_name, "env.SALT", file_config.get("SALT", "")),
+            "MYSQL_HOST": get_setting(workspace_name, "env.MYSQL_HOST", file_config.get("MYSQL_HOST", "localhost")),
+            "MYSQL_USER": get_setting(workspace_name, "env.MYSQL_USER", file_config.get("MYSQL_USER", "root")),
+            "MYSQL_PASSWORD": get_setting(workspace_name, "env.MYSQL_PASSWORD", file_config.get("MYSQL_PASSWORD", "")),
+            "MYSQL_DATABASE": get_setting(workspace_name, "env.MYSQL_DATABASE", file_config.get("MYSQL_DATABASE", "addressforge")),
+            "AGENT_API_BASE_URL": get_setting(workspace_name, "env.AGENT_API_BASE_URL", file_config.get("AGENT_API_BASE_URL", "http://localhost:9000")),
+            "ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE": get_setting(workspace_name, "env.ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE", file_config.get("ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE", "")),
+            "ADDRESSFORGE_PORT": int(get_setting(workspace_name, "env.ADDRESSFORGE_PORT", file_config.get("ADDRESSFORGE_PORT", 8010))),
+            "ADDRESSFORGE_CONSOLE_PORT": int(get_setting(workspace_name, "env.ADDRESSFORGE_CONSOLE_PORT", file_config.get("ADDRESSFORGE_CONSOLE_PORT", 8011))),
         }
     }
 
 
 @app.post("/api/v1/control/env")
-async def update_env_config(payload: EnvConfigPayload) -> dict[str, Any]:
+async def update_env_config(payload: EnvConfigPayload, workspace_name: str = Query(default=ADDRESSFORGE_WORKSPACE_NAME)) -> dict[str, Any]:
     """
-    Updates the environment configuration in .env.local.
-    在 .env.local 文件中更新环境配置。
+    Updates the environment configuration in .env.local and database.
+    在 .env.local 文件和数据库中更新环境配置。
     """
+    # 1. Update Database settings
+    # 1. 更新数据库设置
+    updates = payload.model_dump(exclude_none=True)
+    for key, val in updates.items():
+        set_setting(workspace_name, f"env.{key}", val)
+
+    # 2. Update .env.local file
+    # 2. 更新 .env.local 文件
     env_file = BASE_DIR.parent / ".env.local"
     if not env_file.exists():
         env_file = BASE_DIR / ".env.local"
         
     lines = []
     keys_found = set()
-    updates = payload.model_dump(exclude_none=True)
     
     if env_file.exists():
         with open(env_file, "r", encoding="utf-8") as f:
@@ -232,7 +260,7 @@ async def update_env_config(payload: EnvConfigPayload) -> dict[str, Any]:
         
     return {
         "status": "updated",
-        "message": "Environment config updated. Restart required for DB changes."
+        "message": "Environment config updated in DB and .env.local. Restart required for system-wide effect."
     }
 
 

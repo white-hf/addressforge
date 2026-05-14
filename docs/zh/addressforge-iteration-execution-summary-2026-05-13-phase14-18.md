@@ -23,22 +23,22 @@
 
 ### 2.1 增强型 Reranking 与语义特征 (Phase 16)
 - **特征工程 (UFM 28维)**：深度引入了 `semantic_alignment` (语义对齐分)，`excess_token_count` (冗余标记分) 以及组织机构检测，帮助模型在 `Apple Inc, 110 Bedford Hwy` 等带噪请求中提取干净基准。
-- **版本化运行时绑定**：RerankerService 已彻底重构，不再依赖硬编码路径，而是根据 `ModelRegistry` 的活跃版本清单 (Manifest) 动态热加载对应的 `.cbm` 构件，实现了真正的版本一致性。
+- **版本化运行时绑定 (Reranker 闭环)**：RerankerService 已彻底重构并移除单例模式。系统通过 `AddressPlatformService` 显式注入隔离的 `reranker_service` 实例，确保 Candidate 和 Active 运行时的重排逻辑物理隔离且版本绝对对齐。
 - **训练收敛**：更新了 `ParserRerankerTrainer` 库，保证每次演进都可以稳定产出版本化的 `.cbm` 权重并自动注册。
 
 ### 2.2 建筑锚点判定模型与受控介入 (Phase 17)
 - **多分类决策 (`building_type_catboost_v1.cbm`)**：独立对 `single_unit`, `multi_unit`, `commercial` 进行建模预测。
-- **受控介入 (Guarded Override)**：实现了真正的核心决策接管逻辑。当 BuildingTypeModel 置信度 $> 0.90$ 且与规则发生分歧时，由 ML 模型输出作为最终建筑类型结果，彻底解决了“Assist Trial”不落地的架构缺陷。
+- **受控介入 (Guarded Override)**：实现了真正的核心决策接管逻辑。当 BuildingTypeModel 置信度 $> 0.90$、符合 `allowed_transitions` 安全白名单且处于 `assist_trial` 模式时，由 ML 模型输出作为最终建筑类型结果。
 - **版本化加载**：BuildingType 模型同样接入了 Manifest 驱动的动态加载机制，确保训练、评估、推理三端版本对齐。
 
 ### 2.3 生产运维闭环与安全防线 (Phase 18)
-- **Release Gate 2.0 (完全态)**：
-  - 修复了 `promote_model` 与 `evaluator` 之间的契约断裂，现在严格通过 `ready_for_assist_trial` 状态位判定发布准入。
-  - 强制评估四维指标：基线基准 (`release_benchmark`)、版本回归 (`release_comparison`)、历史回放 (`replay_metrics`)、辅助决策准备度 (`decision_assist_rollout_readiness`)。
-- **热重载协议 (Model Activation Contract)**：
-  - 完善了 `/api/v1/models/reload` API 端点，支持无停机零时差的模型动态替换。
-- **核心 API 回滚 (Production Rollback)**：
-  - 在核心 API 服务 (8010) 中补齐了 `/api/v1/models/rollback` 接口。如果新模型引发异常，系统可以秒级降级并自动触发内存热重载。
+- **Release Gate 2.0 (全量态)**：
+  - **契约拦截**：严格通过 `ready_for_assist_trial` 状态位判定发布准入，拦截所有未达标的试验模型。
+  - **一致性审计**：在准入前物理校验磁盘构件完整性 (`Consistency Gate`)。
+- **统一运行时捆绑包 (Runtime Bundle)**：
+  - 重构了 `_load_model_runtime`，返回包含配置、策略、及所有关联子服务的字典对象，杜绝了多模型环境下的版本漂移。
+- **运行时身份透明化 (Runtime Identity)**：
+  - 所有的评测报告中均注入了 `runtime_identity` 元数据，包含物理路径与 `artifact_source`（Manifest/Legacy/Fallback），实现了指标的 100% 可回溯。
 
 ---
 

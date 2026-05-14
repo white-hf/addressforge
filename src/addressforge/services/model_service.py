@@ -73,10 +73,12 @@ class ModelService:
         self.feature_names: List[str] = []
         self.present_labels: List[str] = list(DECISION_LABELS)
         self._legacy_mode = False
+        self._artifact_source = "fallback"
         self.feature_extractor = get_feature_engine()
         self._load_model()
 
     def _load_model(self):
+        self._artifact_source = "fallback"
         if self.metadata_path.exists() and self.model_path.exists():
             try:
                 self.metadata = json.loads(self.metadata_path.read_text(encoding="utf-8"))
@@ -90,6 +92,7 @@ class ModelService:
                 )
                 self.present_labels = list(self.metadata.get("present_labels") or self.model_payload.get("present_labels") or list(DECISION_LABELS))
                 self._legacy_mode = False
+                self._artifact_source = "manifest"
                 logger.info(
                     "Decision model loaded from %s with metadata %s",
                     self.model_path,
@@ -104,6 +107,7 @@ class ModelService:
                 self.model = CatBoostClassifier()
                 self.model.load_model(str(self.legacy_model_path))
                 self._legacy_mode = True
+                self._artifact_source = "legacy_path"
                 logger.warning(
                     "Decision model loaded from legacy CatBoost artifact %s without schema sidecar; serving in compatibility mode.",
                     self.legacy_model_path,
@@ -159,6 +163,7 @@ class ModelService:
             "metadata_path": str(self.metadata_path),
             "model_path": str(self.model_path),
             "legacy_model_path": str(self.legacy_model_path),
+            "artifact_source": self._artifact_source,
             "legacy_mode": self._legacy_mode,
             "present_labels": list(self.present_labels),
             "feature_names": list(self.feature_names),

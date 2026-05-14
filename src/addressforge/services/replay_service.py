@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Iterable
 from addressforge.core.common import create_run, db_cursor, fetch_all, finish_run, dumps_payload, canonicalize_unit_number, normalize_street_name
 from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
 from addressforge.models import get_active_model
+from addressforge.services.model_service import build_model_service_from_manifest
+from addressforge.services.reranker_service import build_reranker_service_from_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -113,9 +115,6 @@ def _load_model_runtime(workspace_name: str, model_version: str) -> dict[str, An
         "reranker_model_artifact": reranker_model_artifact,
         "building_type_model_artifact": building_type_model_artifact
     }
-
-    from addressforge.services.model_service import build_model_service_from_manifest
-    from addressforge.services.reranker_service import build_reranker_service_from_manifest
     
     return {
         "ok": True,
@@ -231,27 +230,27 @@ def run_historical_replay(
                 # Compare
                 cand_dec = cand_res.get("decision")
                 cand_bt = cand_res.get("building_type")
-                cand_un = cand_res.get("suggested_unit_number")
+                cand_un_res = cand_res.get("suggested_unit_number")
                 
                 act_dec = act_res.get("decision")
                 act_bt = act_res.get("building_type")
-                act_un = act_res.get("suggested_unit_number")
+                act_un_res = act_res.get("suggested_unit_number")
                 
-                is_diff = (cand_dec != act_dec or cand_bt != act_bt or cand_un != act_un)
+                is_diff = (cand_dec != act_dec or cand_bt != act_bt or cand_un_res != act_un_res)
                 if is_diff:
                     candidate_vs_active_diffs += 1
                     if len(mismatches) < 50:
                         mismatches.append({
                             "raw_id": raw_id,
                             "raw_text": raw_text,
-                            "candidate": {"decision": cand_dec, "building_type": cand_bt, "unit_number": cand_un},
-                            "active": {"decision": act_dec, "building_type": act_bt, "unit_number": act_un},
+                            "candidate": {"decision": cand_dec, "building_type": cand_bt, "unit_number": cand_un_res},
+                            "active": {"decision": act_dec, "building_type": act_bt, "unit_number": act_un_res},
                             "current": {"decision": current_dec, "building_type": current_bt, "unit_number": current_un}
                         })
                 
                 decision_matches += int(cand_dec == act_dec)
                 building_type_matches += int(cand_bt == act_bt)
-                unit_number_matches += int(cand_un == act_un)
+                unit_number_matches += int(cand_un_res == act_un_res)
                 
                 active_current_matches += int(act_dec == current_dec)
                 candidate_current_matches += int(cand_dec == current_dec)
@@ -354,3 +353,55 @@ def run_historical_replay(
         logger.exception("Historical replay failed: %s", exc)
         finish_run(run_id, "failed", notes=str(exc))
         raise
+
+def get_release_readiness_report(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME) -> dict[str, Any]:
+    """
+    Generates a summarized report comparing the candidate model against the active one.
+    生成候选模型与当前活跃模型的对比摘要报告。
+    """
+    latest_eval = fetch_all(
+        """
+        SELECT metrics_json, created_at 
+        FROM model_registry 
+        WHERE workspace_name = %s AND status = 'evaluated'
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (workspace_name,)
+    )
+    
+    if not latest_eval:
+        return {"ready": False, "reason": "No evaluation data found"}
+        
+    metrics = json.loads(latest_eval[0]["metrics_json"] or "{}")
+    comparison = metrics.get("release_comparison", {}) if isinstance(metrics, dict) else {}
+    benchmark = metrics.get("release_benchmark", {}) if isinstance(metrics, dict) else {}
+    replay = metrics.get("replay_metrics", {}) if isinstance(metrics, dict) else {}
+    shadow = metrics.get("shadow", {}) if isinstance(metrics, dict) else {}
+    
+    # Phase 18: Simplified readiness check for now
+    is_ready = (
+        float(benchmark.get("decision_f1", 0.0)) >= 0.60
+        and float(benchmark.get("building_type_f1", 0.0)) >= 0.80
+        and float(comparison.get("regression_risk", 1.0)) <= 0.05
+    )
+    
+    return {
+        "ready": is_ready,
+        "metrics": benchmark,
+        "gate_checks": comparison.get("gate_checks", []),
+        "timestamp": latest_eval[0].get("created_at")
+    }
+
+def get_mismatch_samples(run_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Retrieves detailed samples where candidate and active models disagreed.
+    检索候选模型与活动模型不一致的详细样本。
+    """
+    query = """
+        SELECT hrr.*, r.raw_address_text
+        FROM historical_replay_result hrr
+        JOIN raw_address_record r ON hrr.raw_id = r.raw_id
+        WHERE hrr.run_id = %s AND hrr.candidate_vs_active_different = 1
+        LIMIT %s
+    """
+    return fetch_all(query, (run_id, limit))

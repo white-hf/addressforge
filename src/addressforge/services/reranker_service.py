@@ -10,11 +10,15 @@ class RerankerService:
     def __init__(self, manifest: Dict[str, Any] | None = None):
         # Removed Singleton guard for Phase 16 version alignment
         # 移除单例守卫以实现第 16 阶段的版本对齐
+        self._artifact_source = "fallback"
         if manifest and manifest.get("reranker_model_artifact"):
             rma = manifest["reranker_model_artifact"]
             self.model_path = Path(rma.get("model_path") or "runtime/models/reranker_catboost_v1.cbm")
+            self._artifact_source = "manifest"
         else:
             self.model_path = Path("runtime/models/reranker_catboost_v1.cbm")
+            if self.model_path.exists():
+                self._artifact_source = "legacy_path"
 
         self.model = None
         self.feature_extractor = get_feature_engine()
@@ -51,6 +55,7 @@ class RerankerService:
         return {
             "model_path": str(self.model_path),
             "model_type": "catboost",
+            "artifact_source": self._artifact_source,
             "feature_schema_version": "28d_ufm",
         }
 

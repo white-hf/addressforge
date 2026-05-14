@@ -106,10 +106,143 @@
                 </table>
             </div>
         </div>
+
+        <div class="card mt-10">
+            <div class="p-4 border-bottom bg-slate-50">
+                <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+                    <div>
+                        <div class="font-bold text-sm">Dirty Address Diagnostics / 脏地址诊断</div>
+                        <div class="text-xs text-slate-500 mt-1">View missing-unit, GPS-conflict, reference-gap, and review-worthy rows after import and cleaning. / 查看导入清洗后缺少单元、GPS 冲突、参考缺口和需复核地址。</div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-2 w-full md:w-auto">
+                        <input type="text" id="dirty-source-name" placeholder="Source Name" class="text-xs p-2 border rounded">
+                        <input type="text" id="dirty-batch-id" placeholder="Batch ID" class="text-xs p-2 border rounded">
+                        <input type="number" id="dirty-limit" placeholder="Limit" class="text-xs p-2 border rounded" min="1" max="500" value="100">
+                        <button class="btn primary py-2 px-4 text-xs" onclick="loadDirtyAddressDiagnostics()">Load Dirty Rows</button>
+                    </div>
+                </div>
+                <div id="dirty-diagnostics-summary" class="mt-4 text-xs text-slate-500"></div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-slate-50 text-slate-400 uppercase text-xs">
+                        <tr>
+                            <th class="p-4">Raw ID</th>
+                            <th class="p-4">Batch</th>
+                            <th class="p-4">Category</th>
+                            <th class="p-4">Raw Address</th>
+                            <th class="p-4">Decision</th>
+                            <th class="p-4">Suggested Correction</th>
+                            <th class="p-4">Hints</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dirty-address-table">
+                        <tr><td colspan="7" class="p-8 text-center text-slate-400">No diagnostics loaded yet.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 </div>
 
 <script>
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function renderDirtySummary(data) {
+    const counts = (data && data.counts && data.counts.by_category) || {};
+    const total = (data && data.counts && data.counts.total) || 0;
+    const pills = [
+        ['missing_unit', 'Missing Unit'],
+        ['gps_conflict', 'GPS Conflict'],
+        ['reference_gap', 'Reference Gap'],
+        ['parser_disagreement', 'Parser Disagreement'],
+        ['manual_review', 'Manual Review'],
+        ['reject', 'Reject'],
+    ].map(([key, label]) => `
+        <span class="inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2 py-1 mr-2 mb-2">
+            ${label}: ${counts[key] || 0}
+        </span>
+    `).join('');
+    document.getElementById('dirty-diagnostics-summary').innerHTML = `
+        <div class="mb-2">Total Dirty Rows / 脏地址总数: <strong>${total}</strong></div>
+        <div>${pills}</div>
+    `;
+}
+
+function renderSuggestedAddress(suggested) {
+    const pieces = [
+        suggested.street_number,
+        suggested.street_name,
+        suggested.unit_number ? `#${suggested.unit_number}` : '',
+        suggested.city,
+        suggested.province,
+        suggested.postal_code,
+    ].filter(Boolean);
+    return pieces.length ? escapeHtml(pieces.join(', ')) : '<span class="text-slate-400">No structured suggestion</span>';
+}
+
+function renderHints(item) {
+    const hints = item.hints || {};
+    const details = [];
+    if (hints.gps_conflict) details.push('GPS conflict');
+    if (hints.reference_gap_reason) details.push(`Gap: ${escapeHtml(hints.reference_gap_reason)}`);
+    if (hints.parser_disagreement) details.push('Parser disagreement');
+    if (hints.reference_score !== null && hints.reference_score !== undefined) details.push(`Ref score: ${escapeHtml(hints.reference_score)}`);
+    if (item.reference && item.reference.reference_unit_numbers && item.reference.reference_unit_numbers.length) {
+        details.push(`Ref units: ${escapeHtml(item.reference.reference_unit_numbers.join(', '))}`);
+    }
+    return details.length ? details.join('<br>') : '<span class="text-slate-400">-</span>';
+}
+
+async function loadDirtyAddressDiagnostics() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const batchId = document.getElementById('dirty-batch-id').value.trim();
+    const limit = document.getElementById('dirty-limit').value.trim() || '100';
+    const params = new URLSearchParams({ limit });
+    if (sourceName) params.set('source_name', sourceName);
+    if (batchId) params.set('batch_id', batchId);
+    const tbody = document.getElementById('dirty-address-table');
+    tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-slate-400">Loading...</td></tr>';
+    try {
+        const res = await fetch(`/api/v1/business/dirty-addresses?${params.toString()}`);
+        const data = await res.json();
+        renderDirtySummary(data);
+        if (!data.items || data.items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-slate-400">No matching dirty rows.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.items.map(item => `
+            <tr class="border-t align-top">
+                <td class="p-4 font-mono text-xs">${escapeHtml(item.raw_id)}</td>
+                <td class="p-4 text-xs">${escapeHtml(item.batch_id || '-')}</td>
+                <td class="p-4 text-xs">
+                    <div class="font-medium">${escapeHtml(item.primary_category || '-')}</div>
+                    <div class="text-slate-500 mt-1">${escapeHtml((item.categories || []).join(', '))}</div>
+                </td>
+                <td class="p-4 text-xs">
+                    <div class="font-medium break-words">${escapeHtml(item.raw_address_text || '')}</div>
+                    <div class="text-slate-500 mt-1">${escapeHtml(item.source_name || '')}</div>
+                </td>
+                <td class="p-4 text-xs">
+                    <div class="font-medium">${escapeHtml(item.decision || '-')}</div>
+                    <div class="text-slate-500 mt-1">${escapeHtml(item.reason || '')}</div>
+                </td>
+                <td class="p-4 text-xs">${renderSuggestedAddress(item.suggested_address || {})}</td>
+                <td class="p-4 text-xs">${renderHints(item)}</td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-rose-500">Failed to load dirty-address diagnostics.</td></tr>';
+    }
+}
+
 async function loadReportList() {
     const gateRes = await fetch('/api/v1/business/release-readiness');
     const gateData = await gateRes.json();
@@ -203,5 +336,6 @@ function translatePage() {
 }
 
 window.addEventListener('load', loadReportList);
+window.addEventListener('load', loadDirtyAddressDiagnostics);
 </script>
 {% endblock %}

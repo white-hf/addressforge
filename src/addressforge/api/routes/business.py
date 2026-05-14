@@ -6,7 +6,8 @@ from addressforge.services.business_service import (
     get_process_overview, 
     get_business_dashboard_metrics,
     get_batch_stats,
-    get_reports_list
+    get_reports_list,
+    list_dirty_address_diagnostics,
 )
 from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
 
@@ -61,6 +62,26 @@ async def batch_stats(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME):
 @router.get("/reports")
 async def reports_list(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME):
     return get_reports_list(workspace_name)
+
+
+@router.get("/dirty-addresses")
+async def dirty_addresses(
+    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
+    source_name: str | None = None,
+    batch_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """
+    Returns dirty-address diagnostics and suggested corrected fields.
+    Supports filtering by ingestion source and batch id from source payload.
+    返回脏地址诊断及建议纠正后的结构化字段，支持按 source / batch_id 过滤。
+    """
+    return list_dirty_address_diagnostics(
+        workspace_name,
+        source_name=source_name,
+        batch_id=batch_id,
+        limit=limit,
+    )
 
 @router.get("/reports/view/{report_type}")
 async def view_report(report_type: str):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -245,6 +247,35 @@ def register_model_version(
     return get_model(workspace_name, model_name, model_version) or {}
 
 
+def _load_runtime_artifacts_from_metrics(target_row: dict[str, Any], metrics: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """
+    Helper to extract all versioned model artifacts from metrics or artifact file.
+    辅助函数，用于从指标或构件文件中提取所有版本化的模型构件。
+    """
+    artifact_payload = {}
+    artifact_path = target_row.get("artifact_path")
+    if artifact_path:
+        try:
+            ap = Path(str(artifact_path))
+            if ap.exists():
+                artifact_payload = json.loads(ap.read_text(encoding="utf-8"))
+        except Exception:
+            artifact_payload = {}
+
+    def _extract(key):
+        val = metrics.get(key)
+        if isinstance(val, dict): return val
+        val = artifact_payload.get(key)
+        if isinstance(val, dict): return val
+        return {}
+
+    return {
+        "decision": _extract("decision_model_artifact"),
+        "reranker": _extract("reranker_model_artifact"),
+        "building_type": _extract("building_type_model_artifact"),
+    }
+
+
 def promote_model(
     workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
     model_id: int | None = None,
@@ -257,7 +288,6 @@ def promote_model(
     Promotes a model version to 'active' status while enforcing the consolidated Release Gate.
     将模型版本提升为“活动 (active)”状态，同时强制执行统一的发布准入。
     """
-    import json
     if model_id is not None:
         rows = fetch_all(
             "SELECT * FROM model_registry WHERE workspace_name = %s AND model_id = %s LIMIT 1",
@@ -305,6 +335,13 @@ def promote_model(
                 return {"status": "blocked", "reason": "Incomplete Release Gate data (benchmark/comparison/replay missing). 准入数据不完整。"}
             if not isinstance(assist_readiness, dict) or not isinstance(shadow_m, dict):
                 return {"status": "blocked", "reason": "Mandatory shadow/assist result missing. 缺少 shadow/assist 结果。"}
+
+            # Load versioned artifacts for consistency check
+            # 加载版本化的构件以便进行一致性检查
+            artifacts = _load_runtime_artifacts_from_metrics(target, metrics)
+            decision_model_artifact = artifacts["decision"]
+            reranker_model_artifact = artifacts["reranker"]
+            building_type_model_artifact = artifacts["building_type"]
 
             required_benchmark_thresholds = {
                 "decision_f1": 0.60, # Relaxed for 3-class model

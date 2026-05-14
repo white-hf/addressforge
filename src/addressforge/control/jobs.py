@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -730,6 +731,39 @@ def _default_ingestion_source_name_for_mode(mode: str) -> str:
     if normalized == "db":
         return "historical_db_backfill"
     return "third_party"
+
+
+def seed_settings_from_env(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME):
+    """
+    Seeds the control_setting table with values from environment variables/file if not already present.
+    如果数据库中不存在，则使用环境变量或文件中的值填充 control_setting 表。
+    """
+    from addressforge.core.config import (
+        SALT,
+        ADDRESSFORGE_PORT,
+        ADDRESSFORGE_CONSOLE_PORT,
+        ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE,
+        MYSQL_CONFIG
+    )
+    
+    # Map of setting keys to current config values
+    mappings = {
+        "env.TELEGRAM_BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        "env.API_TOKEN": os.getenv("API_TOKEN", os.getenv("ADDRESSFORGE_INGESTION_API_TOKEN", "")),
+        "env.SALT": SALT,
+        "env.AGENT_API_BASE_URL": os.getenv("AGENT_API_BASE_URL", "http://localhost:9000"),
+        "env.ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE": ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE,
+        "env.ADDRESSFORGE_PORT": ADDRESSFORGE_PORT,
+        "env.ADDRESSFORGE_CONSOLE_PORT": ADDRESSFORGE_CONSOLE_PORT,
+        "env.MYSQL_HOST": MYSQL_CONFIG["host"],
+        "env.MYSQL_USER": MYSQL_CONFIG["user"],
+        "env.MYSQL_DATABASE": MYSQL_CONFIG["database"],
+    }
+    
+    for key, val in mappings.items():
+        if val is not None and get_setting(workspace_name, key) is None:
+            logger.info("Seeding DB setting %s from environment default.", key)
+            set_setting(workspace_name, key, val)
 
 
 def get_ingestion_runtime_config(workspace_name: str) -> dict[str, Any]:

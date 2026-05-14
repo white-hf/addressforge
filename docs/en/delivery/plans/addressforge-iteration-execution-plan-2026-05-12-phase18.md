@@ -52,11 +52,26 @@ Delivery requirements:
 - feature-schema evolution
 must all enter a durable production loop
 
+### Requirement 18-5: Dirty-address diagnostics list
+Delivery requirements:
+- the console must directly show dirty rows from newly imported data
+- filtering must be supported by `source_name` and `batch_id`
+- the list must expose:
+  - `missing_unit`
+  - `gps_conflict`
+  - `reference_gap`
+  - `parser_disagreement`
+  - `manual_review`
+- each row must display the system's suggested corrected structured fields for review and training feedback
+
 ## 4. Technical Methods
 - **Model activation contract**
 - **Gate by layer**
 - **Safe rollout stages**
 - **Operational feedback loop**
+- **Dirty address diagnostics**
+  - productize existing diagnostics from `validation_json` / `reference_json` / `parser_json` into a dedicated console list
+  - support batch-oriented inspection immediately after API import and cleaning
 
 ## 5. Expected Benefit
 - turn the next-generation ML system from an engineering prototype into a production capability
@@ -78,4 +93,3 @@ must all enter a durable production loop
 When Phase 18 is complete:
 
 **AddressForge’s next-generation ML system can be declared 100% complete.**
-

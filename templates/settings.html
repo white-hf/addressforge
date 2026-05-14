@@ -185,6 +185,10 @@
                             <input id="env-telegram" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
                         </label>
                         <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">API_TOKEN</span>
+                            <input id="env-api-token" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Application API access token" />
+                        </label>
+                        <label class="block">
                             <span class="flex items-center text-sm font-bold text-slate-700 mb-2">SALT</span>
                             <input id="env-salt" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
                         </label>
@@ -192,15 +196,34 @@
                             <span class="flex items-center text-sm font-bold text-slate-700 mb-2">AGENT_API_BASE_URL</span>
                             <input id="env-agent" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
                         </label>
+                        <label class="block">
+                            <span class="flex items-center text-sm font-bold text-slate-700 mb-2">
+                                <span>INGESTION_BATCH_LIST_OVERRIDE</span>
+                                <span class="info-icon" title="Comma-separated list of batch IDs to override automatic discovery.">ⓘ</span>
+                            </span>
+                            <input id="env-batch-override" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="e.g. 101,102,103" />
+                        </label>
                     </div>
 
-                    <!-- Database Settings -->
+                    <!-- Database & System Settings -->
                     <div class="flex flex-col gap-6">
                         <div class="flex items-center gap-2 border-b pb-2">
-                            <h5 class="font-bold text-slate-600">Database Settings</h5>
+                            <h5 class="font-bold text-slate-600">Database & System Settings</h5>
                             <span class="pill warn text-[10px] py-0.5 px-2">Restart Required</span>
                         </div>
-                        <p class="text-xs text-orange-600 mb-2">Warning: Changing database credentials may break the system if incorrect, and requires restarting all services.</p>
+                        <p class="text-xs text-orange-600 mb-2">Warning: Changing these settings may break connectivity and requires restarting all services.</p>
+                        
+                        <div class="grid grid-cols-2 gap-4">
+                            <label class="block">
+                                <span class="flex items-center text-sm font-bold text-slate-700 mb-2">API Port</span>
+                                <input id="env-port" type="number" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </label>
+                            <label class="block">
+                                <span class="flex items-center text-sm font-bold text-slate-700 mb-2">Console Port</span>
+                                <input id="env-console-port" type="number" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
+                            </label>
+                        </div>
+
                         <label class="block">
                             <span class="flex items-center text-sm font-bold text-slate-700 mb-2">MYSQL_HOST</span>
                             <input id="env-db-host" class="env-input w-full rounded-xl border border-slate-300 px-4 py-3 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none" />
@@ -237,12 +260,16 @@ let envConfigDirty = false;
 function collectEnvConfigPayload() {
     return {
         TELEGRAM_BOT_TOKEN: document.getElementById('env-telegram').value.trim(),
+        API_TOKEN: document.getElementById('env-api-token').value.trim(),
         SALT: document.getElementById('env-salt').value.trim(),
         MYSQL_HOST: document.getElementById('env-db-host').value.trim(),
         MYSQL_USER: document.getElementById('env-db-user').value.trim(),
         MYSQL_PASSWORD: document.getElementById('env-db-pass').value.trim(),
         MYSQL_DATABASE: document.getElementById('env-db-name').value.trim(),
         AGENT_API_BASE_URL: document.getElementById('env-agent').value.trim(),
+        ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE: document.getElementById('env-batch-override').value.trim(),
+        ADDRESSFORGE_PORT: Number(document.getElementById('env-port').value),
+        ADDRESSFORGE_CONSOLE_PORT: Number(document.getElementById('env-console-port').value),
     };
 }
 
@@ -268,12 +295,16 @@ function clearEnvConfigDirty() {
 
 function populateEnvConfig(config) {
     document.getElementById('env-telegram').value = config.TELEGRAM_BOT_TOKEN || '';
+    document.getElementById('env-api-token').value = config.API_TOKEN || '';
     document.getElementById('env-salt').value = config.SALT || '';
     document.getElementById('env-db-host').value = config.MYSQL_HOST || '';
     document.getElementById('env-db-user').value = config.MYSQL_USER || '';
     document.getElementById('env-db-pass').value = config.MYSQL_PASSWORD || '';
     document.getElementById('env-db-name').value = config.MYSQL_DATABASE || '';
     document.getElementById('env-agent').value = config.AGENT_API_BASE_URL || '';
+    document.getElementById('env-batch-override').value = config.ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE || '';
+    document.getElementById('env-port').value = config.ADDRESSFORGE_PORT || 8010;
+    document.getElementById('env-console-port').value = config.ADDRESSFORGE_CONSOLE_PORT || 8011;
     clearEnvConfigDirty();
 }
 
@@ -298,8 +329,9 @@ async function saveEnvConfig() {
 
 function attachEnvConfigDirtyTracking() {
     const ids = [
-        'env-telegram', 'env-salt', 'env-db-host', 'env-db-user', 
-        'env-db-pass', 'env-db-name', 'env-agent'
+        'env-telegram', 'env-api-token', 'env-salt', 'env-db-host', 'env-db-user', 
+        'env-db-pass', 'env-db-name', 'env-agent', 'env-batch-override', 
+        'env-port', 'env-console-port'
     ];
     ids.forEach((id) => {
         const node = document.getElementById(id);

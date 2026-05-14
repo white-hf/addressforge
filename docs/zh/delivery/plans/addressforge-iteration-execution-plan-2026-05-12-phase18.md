@@ -55,6 +55,18 @@
 - feature schema evolution
 能够进入长期生产循环
 
+### 需求 18-5：脏地址运营诊断列表
+交付要求：
+- 控制台可直接查看新导入数据中的脏地址
+- 支持按 `source_name` 和 `batch_id` 过滤
+- 重点暴露：
+  - `missing_unit`
+  - `gps_conflict`
+  - `reference_gap`
+  - `parser_disagreement`
+  - `manual_review`
+- 每条记录都展示系统建议纠正后的结构化字段，便于人工复核与回流训练
+
 ## 4. 技术方法
 - **Model activation contract**
   - 统一训练后激活、worker reload、API reload 行为。
@@ -64,6 +76,9 @@
   - `shadow -> assist -> guarded_override -> default_on`
 - **Operational feedback loop**
   - 将生产 disagreement 与 review 再回流训练。
+- **Dirty address diagnostics**
+  - 将 `validation_json` / `reference_json` / `parser_json` 中已有的诊断结构产品化为控制台专门列表。
+  - 优先支持按 `batch_id` 查看 API 刚导入并清洗完成的一批新数据。
 
 ## 5. 预期收益
 - 让下一代 ML 从“工程原型”变成“生产能力”
@@ -85,4 +100,3 @@
 Phase 18 完成时，可宣布：
 
 **AddressForge 下一代 ML 系统 100% 完成。**
-
