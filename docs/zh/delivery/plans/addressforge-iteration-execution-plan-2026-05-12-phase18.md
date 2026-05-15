@@ -70,8 +70,10 @@
 ## 4. 技术方法
 - **Model activation contract**
   - 统一训练后激活、worker reload、API reload 行为。
+  - `/reload` 前必须清理 registry TTL 缓存，避免继续读取旧 active/workspace 视图。
 - **Gate by layer**
   - 对 Decision / Reranker / BuildingType 分层看 gate。
+  - `DecisionModel` consistency gate 不仅检查 `model_path`，还必须检查 `metadata_path` sidecar。
 - **Safe rollout stages**
   - `shadow -> assist -> guarded_override -> default_on`
 - **Operational feedback loop**

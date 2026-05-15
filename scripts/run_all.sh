@@ -5,7 +5,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "Stopping all existing AddressForge services..."
-ps aux | grep -E "addressforge.api.server|addressforge.console.server|addressforge.control.worker" | grep -v grep | awk '{print $2}' | xargs kill || true
+# Use pkill with full command line matching for more reliability
+# 使用 pkill 进行全命令行匹配以提高可靠性
+pkill -f "addressforge.api.server" || true
+pkill -f "addressforge.console.server" || true
+pkill -f "addressforge.control.worker" || true
+
+# Wait a moment for processes to exit gracefully
+# 等待进程优雅退出
+sleep 2
+
+# Force kill any stubborn AddressForge processes
+# 强制杀死任何顽固的 AddressForge 进程
+pkill -9 -f "addressforge\.(api|console|control)" || true
 
 echo "Starting API Server..."
 "$ROOT_DIR/scripts/run_api.sh" > "$ROOT_DIR/api.log" 2>&1 &
@@ -28,7 +40,7 @@ sleep 5
 echo "--- Verifying Service Status ---"
 
 echo "Checking process status:"
-ps aux | grep -E "addressforge.console.server|addressforge.control.worker" | grep -v grep || { echo "ERROR: One or more services failed to start!"; exit 1; }
+ps aux | grep -E "addressforge\.api\.server|addressforge\.console\.server|addressforge\.control\.worker" | grep -v grep || { echo "ERROR: One or more services failed to start!"; exit 1; }
 
 echo "--- Console Log ---"
 tail -n 10 "$ROOT_DIR/console.log"

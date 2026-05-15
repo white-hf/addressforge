@@ -34,6 +34,7 @@ from addressforge.core.config import ADDRESSFORGE_MODEL_FAMILY, ADDRESSFORGE_WOR
 from addressforge.models import (
     bootstrap_default_registry,
     get_active_model,
+    get_workspace,
     get_model,
     list_models,
     list_workspaces,
@@ -704,7 +705,15 @@ class AddressPlatformService:
         从活动注册中心模型中热重载服务中的所有 ML 模型和向量索引，并同步运行设置（如配置、解析器和决策策略）。
         """
         logger.info("AddressPlatformService: Initiating hot-reload from registry...")
-        
+
+        # Phase 18 hardening: clear TTL-cached registry views before resolving the active runtime.
+        # 第 18 阶段加固：在解析活动运行时前清除带 TTL 的注册中心缓存。
+        try:
+            get_active_model.clear_cache()
+            get_workspace.clear_cache()
+        except Exception:
+            pass
+
         manifest = None
         try:
             snapshot = bootstrap_default_registry()
@@ -1245,6 +1254,9 @@ class AddressPlatformService:
         ):
             logger.info("BuildingTypeModel Guarded Override: %s -> %s (conf=%.4f)", building_type, ml_building_type, bt_confidence)
             building_type = ml_building_type
+            bt_override_applied = True
+        else:
+            bt_override_applied = False
 
         if not street_number or not street_name:
             decision = "review"
@@ -1400,7 +1412,12 @@ class AddressPlatformService:
                 "model_status": ml_result.get("status"),
                 "model_score": ml_result.get("ml_score"),
                 "ml_building_type": ml_building_type,
+                "bt_confidence": round(bt_confidence, 4),
                 "bt_model_status": bt_ml_result.get("status"),
+                "bt_assist_enabled": bt_assist_enabled,
+                "bt_assist_min_confidence": bt_min_confidence,
+                "bt_allowed_transitions": bt_allowed_transitions,
+                "bt_override_applied": bt_override_applied,
                 "assist_eligible": assist_recommendation.get("eligible"),
                 "assist_recommended_decision": assist_recommendation.get("recommended_decision"),
                 "assist_guard_reason": assist_recommendation.get("guard_reason"),

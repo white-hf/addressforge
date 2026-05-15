@@ -1,9 +1,9 @@
 from pathlib import Path
 from datetime import datetime
 import json
-from typing import Any
 from addressforge.core.common import fetch_all
 from addressforge.core.config import ADDRESSFORGE_DATABASE, ADDRESSFORGE_WORKSPACE_NAME
+from addressforge.core.utils import ttl_cache
 
 
 def _table_has_column(table_name: str, column_name: str) -> bool:
@@ -19,6 +19,7 @@ def _table_has_column(table_name: str, column_name: str) -> bool:
     )
     return bool(rows and int(rows[0]["cnt"]) > 0)
 
+@ttl_cache(seconds=300)
 def get_process_overview(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
     raw_rows = fetch_all("SELECT COUNT(*) AS cnt FROM raw_address_record WHERE workspace_name = %s", (workspace_name,))
     cleaning_rows = fetch_all("SELECT COUNT(*) AS cnt FROM address_cleaning_result WHERE workspace_name = %s", (workspace_name,))
@@ -47,13 +48,17 @@ def get_process_overview(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
         }
     }
 
+@ttl_cache(seconds=300)
 def get_business_dashboard_metrics(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
+    # Optimization: Show the Promoted model's accuracy first, then the latest evaluated ones
+    # 优化：优先显示已提升模型的准确率，然后是最近评测的模型
     eval_rows = fetch_all(
         """
-        SELECT metrics_json
+        SELECT metrics_json, status
         FROM model_registry
-        WHERE workspace_name = %s AND status = 'evaluated'
-        ORDER BY updated_at DESC, model_id DESC
+        WHERE workspace_name = %s 
+          AND status IN ('promoted', 'evaluated')
+        ORDER BY (status = 'promoted') DESC, updated_at DESC, model_id DESC
         LIMIT 3
         """,
         (workspace_name,),
@@ -78,6 +83,7 @@ def get_business_dashboard_metrics(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
         "gold_set_growth": int(gold_rows[0]["cnt"]) if gold_rows else 0,
     }
 
+@ttl_cache(seconds=300)
 def get_asset_stats(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
     """
     Retrieves statistics about canonical assets (buildings and units).
@@ -95,6 +101,7 @@ def get_asset_stats(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
     }
 
 
+@ttl_cache(seconds=60)
 def get_batch_stats(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
     pending_rows = fetch_all(
         "SELECT COUNT(*) AS cnt FROM active_learning_queue WHERE workspace_name = %s AND status = 'queued'",
@@ -132,6 +139,7 @@ def get_batch_stats(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
         ]
     }
 
+@ttl_cache(seconds=30)
 def get_reports_list(workspace_name=ADDRESSFORGE_WORKSPACE_NAME):
     """
     Retrieves the list of reports and computes specific summaries per report type.

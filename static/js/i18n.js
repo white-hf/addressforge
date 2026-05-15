@@ -389,26 +389,29 @@ const I18N_DATA = {
     }
 };
 
+let currentLang = null;
+
 function setLanguage(lang) {
+    if (lang === currentLang) return;
+    currentLang = lang;
     localStorage.setItem('addressforge_lang', lang);
-    document.querySelectorAll('[data-i18n]').forEach(el => {
+    
+    // Performance optimization: Combine queries
+    // 性能优化：合并查询
+    const els = document.querySelectorAll('[data-i18n], [data-i18n-placeholder], [data-i18n-title]');
+    els.forEach(el => {
         const key = el.getAttribute('data-i18n');
-        if (I18N_DATA[lang] && I18N_DATA[lang][key]) {
+        const phKey = el.getAttribute('data-i18n-placeholder');
+        const tKey = el.getAttribute('data-i18n-title');
+        
+        if (key && I18N_DATA[lang][key]) {
             el.textContent = I18N_DATA[lang][key];
         }
-    });
-    // Support placeholders
-    document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
-        const key = el.getAttribute('data-i18n-placeholder');
-        if (I18N_DATA[lang] && I18N_DATA[lang][key]) {
-            el.placeholder = I18N_DATA[lang][key];
+        if (phKey && I18N_DATA[lang][phKey]) {
+            el.placeholder = I18N_DATA[lang][phKey];
         }
-    });
-    // Support titles (tooltips)
-    document.querySelectorAll('[data-i18n-title]').forEach(el => {
-        const key = el.getAttribute('data-i18n-title');
-        if (I18N_DATA[lang] && I18N_DATA[lang][key]) {
-            el.title = I18N_DATA[lang][key];
+        if (tKey && I18N_DATA[lang][tKey]) {
+            el.title = I18N_DATA[lang][tKey];
         }
     });
 }

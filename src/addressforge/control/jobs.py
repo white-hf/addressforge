@@ -39,7 +39,7 @@ from addressforge.core.config import (
     ADDRESSFORGE_MODEL_VERSION,
     ADDRESSFORGE_WORKSPACE_NAME,
 )
-from addressforge.core.utils import logger
+from addressforge.core.utils import logger, ttl_cache
 from addressforge.ingestion.service import IngestionService
 from addressforge.ingestion.providers import ApiIngestionProvider, DatabaseIngestionProvider, resolve_ingestion_provider
 from addressforge.core.reference import ExternalReferenceImportService
@@ -105,8 +105,15 @@ def _truthy_setting(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+_CONTROL_CENTER_BOOTSTRAPPED = False
+
 def bootstrap_control_center() -> dict[str, Any]:
+    global _CONTROL_CENTER_BOOTSTRAPPED
     registry = bootstrap_default_registry()
+    
+    if _CONTROL_CENTER_BOOTSTRAPPED:
+        return registry
+        
     workspace_name = registry["workspace"]["workspace_name"]
     default_settings = {
         "continuous_mode.enabled": False,
@@ -144,6 +151,8 @@ def bootstrap_control_center() -> dict[str, Any]:
         existing = get_setting(workspace_name, key, None)
         if existing is None:
             set_setting(workspace_name, key, value)
+            
+    _CONTROL_CENTER_BOOTSTRAPPED = True
     return registry
 
 
@@ -479,6 +488,7 @@ def list_jobs_full(
     return fetch_all(query, tuple(params))
 
 
+@ttl_cache(seconds=300)
 def count_jobs(workspace_name: str | None = None) -> dict[str, int]:
     if workspace_name:
         reconcile_stale_running_jobs(workspace_name)
@@ -498,6 +508,7 @@ def count_jobs(workspace_name: str | None = None) -> dict[str, int]:
         counts[str(row["status"])] = int(row["cnt"])
     return counts
 
+@ttl_cache(seconds=300)
 def count_jobs_by_kind(workspace_name: str | None = None) -> dict[str, int]:
     if workspace_name:
         reconcile_stale_running_jobs(workspace_name)
@@ -518,6 +529,7 @@ def count_jobs_by_kind(workspace_name: str | None = None) -> dict[str, int]:
     return counts
 
 
+@ttl_cache(seconds=300)
 def count_cleaning_results(workspace_name: str, decision: str | None = None) -> int:
     """
     Counts records in the cleaning result table, optionally filtered by decision.
@@ -533,22 +545,46 @@ def count_cleaning_results(workspace_name: str, decision: str | None = None) -> 
     return int(rows[0]["cnt"]) if rows else 0
 
 
+@ttl_cache(seconds=600)
 def count_available_for_review(workspace_name: str, confidence_threshold: float = 0.55) -> int:
     """
     Counts high-value samples that are suggested for review but haven't been queued or labeled yet.
-    统计建议审核但尚未进入队列或标记的高价值样本。
+    Optimized to perform filtering in memory to avoid slow SQL type-conversion joins.
+    统计建议审核但尚未进入队列或标记的高价值样本。已优化为在内存中进行过滤，以避免慢速 SQL 类型转换连接。
     """
-    query = """
-        SELECT COUNT(*) as cnt
-        FROM address_cleaning_result
+    # 1. Fetch potential candidates (small subset of the large table)
+    # 1. 获取潜在候选对象（大表的一小部分子集）
+    candidates = fetch_all(
+        """
+        SELECT raw_id 
+        FROM address_cleaning_result 
         WHERE workspace_name = %s 
           AND (decision = 'review' OR confidence <= %s)
-          AND CAST(raw_id AS CHAR) NOT IN (SELECT source_id FROM active_learning_queue WHERE workspace_name = %s)
-          AND CAST(raw_id AS CHAR) NOT IN (SELECT source_id FROM gold_label WHERE workspace_name = %s)
-    """
-    params = (workspace_name, confidence_threshold, workspace_name, workspace_name)
-    rows = fetch_all(query, params)
-    return int(rows[0]["cnt"]) if rows else 0
+        """,
+        (workspace_name, confidence_threshold)
+    )
+    if not candidates:
+        return 0
+        
+    # 2. Fetch already queued/labeled IDs (usually a small number)
+    # 2. 获取已进入队列/标记的 ID（通常数量较少）
+    queued = fetch_all(
+        "SELECT source_id FROM active_learning_queue WHERE workspace_name = %s",
+        (workspace_name,)
+    )
+    labeled = fetch_all(
+        "SELECT source_id FROM gold_label WHERE workspace_name = %s",
+        (workspace_name,)
+    )
+    
+    # 3. Perform high-speed set difference in memory
+    # 3. 在内存中进行高速集合差集计算
+    candidate_set = {str(r["raw_id"]) for r in candidates}
+    queued_set = {str(r["source_id"]) for r in queued}
+    labeled_set = {str(r["source_id"]) for r in labeled}
+    
+    available = candidate_set - queued_set - labeled_set
+    return len(available)
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -602,7 +638,12 @@ def reconcile_stale_running_jobs(
     *,
     stale_after_seconds: int = STALE_RUNNING_JOB_TIMEOUT_SECONDS,
 ) -> list[int]:
-    active_workers = _active_worker_names(workspace_name)
+    """
+    Identifies and fails jobs that are stuck in 'running' status.
+    识别并使停留在“运行中 (running)”状态的任务失败。
+    """
+    # 1. Quick check for running jobs
+    # 1. 快速检查运行中的任务
     running_jobs = fetch_all(
         """
         SELECT job_id, claimed_by, started_at, updated_at
@@ -611,21 +652,38 @@ def reconcile_stale_running_jobs(
         """,
         (workspace_name,),
     )
-    worker_job_activity = fetch_all(
-        """
-        SELECT job_id, claimed_by, status, started_at, updated_at, finished_at
-        FROM control_job
-        WHERE workspace_name = %s AND claimed_by IS NOT NULL AND claimed_by <> ''
-        """,
-        (workspace_name,),
-    )
+    if not running_jobs:
+        return []
+
+    # 2. Only check activity for workers who have running jobs
+    # 2. 仅检查有运行中任务的 worker 的活动
+    worker_names = {str(j["claimed_by"]).strip() for j in running_jobs if j.get("claimed_by")}
+    worker_job_activity = []
+    if worker_names:
+        placeholders = ", ".join(["%s"] * len(worker_names))
+        worker_job_activity = fetch_all(
+            f"""
+            SELECT job_id, claimed_by, status, started_at, updated_at, finished_at
+            FROM control_job
+            WHERE workspace_name = %s 
+              AND claimed_by IN ({placeholders})
+              AND (updated_at >= NOW() - INTERVAL 1 DAY)
+            """,
+            (workspace_name, *worker_names),
+        )
+
+    active_workers = _active_worker_names(workspace_name)
     now = datetime.now()
     stale_job_ids: list[int] = []
+    
     for job in running_jobs:
         claimed_by = str(job.get("claimed_by") or "").strip()
-        started_at = _parse_timestamp(job.get("started_at")) or _parse_timestamp(job.get("updated_at"))
+        # Use started_at or fallback to updated_at
+        ts_val = job.get("started_at") or job.get("updated_at")
+        started_at = _parse_timestamp(ts_val)
         if not started_at:
             continue
+            
         worker_has_newer_activity = False
         if claimed_by:
             for candidate in worker_job_activity:
@@ -633,6 +691,7 @@ def reconcile_stale_running_jobs(
                     continue
                 if int(candidate.get("job_id") or 0) == int(job["job_id"]):
                     continue
+                # Check for ANY newer activity from this worker
                 candidate_ts = (
                     _parse_timestamp(candidate.get("finished_at"))
                     or _parse_timestamp(candidate.get("updated_at"))
@@ -641,10 +700,18 @@ def reconcile_stale_running_jobs(
                 if candidate_ts and candidate_ts > started_at:
                     worker_has_newer_activity = True
                     break
+                    
+        # A job is stale if:
+        # 1. The worker is offline AND has no newer activity
+        # 2. OR it has been running longer than the timeout
         if claimed_by and claimed_by in active_workers and not worker_has_newer_activity:
-            continue
+            # Worker is active and hasn't moved on to a new job yet, let it be.
+            if (now - started_at).total_seconds() < stale_after_seconds * 2: # Grace period for active workers
+                continue
+                
         if (now - started_at).total_seconds() < stale_after_seconds:
             continue
+            
         stale_job_ids.append(int(job["job_id"]))
 
     if not stale_job_ids:
@@ -676,7 +743,38 @@ def list_settings(workspace_name: str | None = None) -> list[dict[str, Any]]:
     return fetch_all(query, tuple(params))
 
 
+@ttl_cache(seconds=60)
+def _get_settings_cache(workspace_name: str) -> dict[str, str]:
+    """
+    Fetches all settings for a workspace and caches them in memory.
+    获取工作区的所有设置并将它们缓存在内存中。
+    """
+    rows = fetch_all(
+        "SELECT setting_key, setting_value FROM control_setting WHERE workspace_name = %s",
+        (workspace_name,),
+    )
+    return {r["setting_key"]: str(r["setting_value"]) for r in rows}
+
+
 def get_setting(workspace_name: str, setting_key: str, default: Any | None = None) -> Any:
+    """
+    Retrieves a setting value from the memory cache or the database.
+    从内存缓存或数据库中检索设置值。
+    """
+    try:
+        cache = _get_settings_cache(workspace_name)
+        if setting_key in cache:
+            text = cache[setting_key].strip()
+            if not text:
+                return default
+            try:
+                return json.loads(text)
+            except Exception:
+                return text
+    except Exception as e:
+        logger.warning("Settings cache lookup failed: %s. Falling back to DB.", e)
+
+    # Fallback to direct DB query if cache fails or key missing
     rows = fetch_all(
         """
         SELECT setting_value
@@ -701,6 +799,17 @@ def get_setting(workspace_name: str, setting_key: str, default: Any | None = Non
 
 
 def _get_setting_text(workspace_name: str, setting_key: str) -> str | None:
+    """
+    Internal helper to get raw setting text from cache or DB.
+    用于从缓存或数据库获取原始设置文本的内部辅助函数。
+    """
+    try:
+        cache = _get_settings_cache(workspace_name)
+        if setting_key in cache:
+            return cache[setting_key]
+    except Exception:
+        pass
+
     rows = fetch_all(
         """
         SELECT setting_value
@@ -743,13 +852,14 @@ def seed_settings_from_env(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME):
         ADDRESSFORGE_PORT,
         ADDRESSFORGE_CONSOLE_PORT,
         ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE,
+        ADDRESSFORGE_INGESTION_API_TOKEN,
         MYSQL_CONFIG
     )
     
     # Map of setting keys to current config values
     mappings = {
         "env.TELEGRAM_BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        "env.API_TOKEN": os.getenv("API_TOKEN", os.getenv("ADDRESSFORGE_INGESTION_API_TOKEN", "")),
+        "env.API_TOKEN": ADDRESSFORGE_INGESTION_API_TOKEN or os.getenv("API_TOKEN", ""),
         "env.SALT": SALT,
         "env.AGENT_API_BASE_URL": os.getenv("AGENT_API_BASE_URL", "http://localhost:9000"),
         "env.ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE": ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE,
@@ -757,6 +867,7 @@ def seed_settings_from_env(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME):
         "env.ADDRESSFORGE_CONSOLE_PORT": ADDRESSFORGE_CONSOLE_PORT,
         "env.MYSQL_HOST": MYSQL_CONFIG["host"],
         "env.MYSQL_USER": MYSQL_CONFIG["user"],
+        "env.MYSQL_PASSWORD": MYSQL_CONFIG["password"],
         "env.MYSQL_DATABASE": MYSQL_CONFIG["database"],
     }
     
@@ -955,6 +1066,14 @@ def set_setting(workspace_name: str, setting_key: str, setting_value: Any) -> di
             (workspace_name, setting_key, raw_value),
         )
         conn.commit()
+    
+    # Invalidate settings cache
+    # 使设置缓存失效
+    try:
+        _get_settings_cache.clear_cache()
+    except Exception:
+        pass
+        
     return {
         "workspace_name": workspace_name,
         "setting_key": setting_key,

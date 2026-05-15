@@ -2,12 +2,15 @@ import unittest
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 from addressforge.api.server import AddressPlatformService
 from addressforge.services.model_service import ModelService
 from addressforge.services.reranker_service import RerankerService
 
 class TestReloadSync(unittest.TestCase):
-    def test_reload_synchronizes_binding(self):
+    @patch("addressforge.api.server.get_workspace.clear_cache")
+    @patch("addressforge.api.server.get_active_model.clear_cache")
+    def test_reload_synchronizes_binding(self, mock_clear_active_cache, mock_clear_workspace_cache):
         # 1. Setup a fake manifest with distinct settings
         custom_policy = {"custom_key": 99.9}
         manifest = {
@@ -44,6 +47,8 @@ class TestReloadSync(unittest.TestCase):
             self.assertIn("simple_rule", runtime["default_parsers"])
             self.assertEqual(len(runtime["default_parsers"]), 1)
             self.assertIn("custom_key", runtime["decision_policy_keys"])
+            mock_clear_active_cache.assert_called_once()
+            mock_clear_workspace_cache.assert_called_once()
             
             # Restore
             server.bootstrap_default_registry = original_bootstrap

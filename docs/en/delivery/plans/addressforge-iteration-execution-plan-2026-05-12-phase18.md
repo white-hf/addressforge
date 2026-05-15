@@ -66,7 +66,9 @@ Delivery requirements:
 
 ## 4. Technical Methods
 - **Model activation contract**
+  - `/reload` must clear registry TTL caches before resolving the active runtime.
 - **Gate by layer**
+  - `DecisionModel` consistency gate must validate both `model_path` and the `metadata_path` sidecar.
 - **Safe rollout stages**
 - **Operational feedback loop**
 - **Dirty address diagnostics**

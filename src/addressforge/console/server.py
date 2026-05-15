@@ -125,7 +125,7 @@ async def health() -> str:
     return "ok"
 
 @app.get("/api/v1/control/status")
-async def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSPACE_NAME)) -> dict[str, Any]:
+def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSPACE_NAME)) -> dict[str, Any]:
     """
     Returns system status summary including worker liveness and recent background jobs.
     返回系统状态汇总，包括 worker 活跃度及最近的后台任务。
@@ -150,6 +150,7 @@ async def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSP
         "workspace_name": target_workspace,
         "is_worker_active": is_worker_active,
         "workspace": get_workspace(target_workspace),
+        "ingestion_config": get_ingestion_runtime_config(target_workspace),
         "metrics": get_business_dashboard_metrics(target_workspace),
         "assets": get_asset_stats(target_workspace),
         "raw_record_count": count_cleaning_results(target_workspace),
@@ -177,14 +178,14 @@ async def control_status(workspace_name: str = Query(default=ADDRESSFORGE_WORKSP
 
 
 @app.get("/api/v1/control/env")
-async def get_env_config(workspace_name: str = Query(default=ADDRESSFORGE_WORKSPACE_NAME)) -> dict[str, Any]:
+def get_env_config(workspace_name: str = Query(default=ADDRESSFORGE_WORKSPACE_NAME)) -> dict[str, Any]:
     """
     Reads the environment configuration from .env.local and database settings.
     从 .env.local 文件和数据库设置中读取环境配置。
     """
-    env_file = BASE_DIR.parent / ".env.local"
+    env_file = BASE_DIR / ".env.local"
     if not env_file.exists():
-        env_file = BASE_DIR / ".env.local"
+        env_file = BASE_DIR.parent / ".env.local"
     
     file_config = {}
     if env_file.exists():
@@ -199,7 +200,7 @@ async def get_env_config(workspace_name: str = Query(default=ADDRESSFORGE_WORKSP
     return {
         "env_config": {
             "TELEGRAM_BOT_TOKEN": get_setting(workspace_name, "env.TELEGRAM_BOT_TOKEN", file_config.get("TELEGRAM_BOT_TOKEN", "")),
-            "API_TOKEN": get_setting(workspace_name, "env.API_TOKEN", file_config.get("API_TOKEN", "")),
+            "API_TOKEN": get_setting(workspace_name, "env.API_TOKEN", file_config.get("API_TOKEN", file_config.get("ADDRESSFORGE_INGESTION_API_TOKEN", ""))),
             "SALT": get_setting(workspace_name, "env.SALT", file_config.get("SALT", "")),
             "MYSQL_HOST": get_setting(workspace_name, "env.MYSQL_HOST", file_config.get("MYSQL_HOST", "localhost")),
             "MYSQL_USER": get_setting(workspace_name, "env.MYSQL_USER", file_config.get("MYSQL_USER", "root")),
@@ -227,9 +228,9 @@ async def update_env_config(payload: EnvConfigPayload, workspace_name: str = Que
 
     # 2. Update .env.local file
     # 2. 更新 .env.local 文件
-    env_file = BASE_DIR.parent / ".env.local"
+    env_file = BASE_DIR / ".env.local"
     if not env_file.exists():
-        env_file = BASE_DIR / ".env.local"
+        env_file = BASE_DIR.parent / ".env.local"
         
     lines = []
     keys_found = set()
@@ -265,7 +266,7 @@ async def update_env_config(payload: EnvConfigPayload, workspace_name: str = Que
 
 
 @app.get("/api/v1/control/ingestion-config")
-async def get_ingestion_config(workspace_name: str = Query(default=ADDRESSFORGE_WORKSPACE_NAME)) -> dict[str, Any]:
+def get_ingestion_config(workspace_name: str = Query(default=ADDRESSFORGE_WORKSPACE_NAME)) -> dict[str, Any]:
     return {
         "workspace_name": workspace_name,
         "ingestion_config": get_ingestion_runtime_config(workspace_name),

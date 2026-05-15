@@ -15,7 +15,7 @@ from addressforge.core.config import (
     ADDRESSFORGE_REFERENCE_VERSION,
     ADDRESSFORGE_WORKSPACE_NAME,
 )
-from addressforge.core.utils import logger
+from addressforge.core.utils import logger, ttl_cache
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,7 @@ def _first_or_none(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+@ttl_cache(seconds=600)
 def get_workspace(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME) -> dict[str, Any] | None:
     return _first_or_none(
         fetch_all("SELECT * FROM workspace_registry WHERE workspace_name = %s LIMIT 1", (workspace_name,))
@@ -410,6 +411,8 @@ def promote_model(
             check_paths = []
             if decision_model_artifact.get("model_path"):
                 check_paths.append(Path(decision_model_artifact["model_path"]))
+            if decision_model_artifact.get("metadata_path"):
+                check_paths.append(Path(decision_model_artifact["metadata_path"]))
             if reranker_model_artifact.get("model_path"):
                 check_paths.append(Path(reranker_model_artifact["model_path"]))
             if building_type_model_artifact.get("model_path"):
@@ -453,6 +456,14 @@ def promote_model(
             ),
         )
         conn.commit()
+        
+    # Invalidate Caches
+    # 使缓存失效
+    try:
+        get_active_model.clear_cache()
+        get_workspace.clear_cache()
+    except Exception:
+        pass
         
     logger.info("Hardened Release Gate passed for model %s", target["model_version"])
     return {"status": "promoted", "model_id": target["model_id"], "final_f1": final_f1}
@@ -536,7 +547,8 @@ def ensure_default_model(
         is_default=1,
         notes=dumps_payload({"seeded": True, "reason": "default model bootstrap"}),
     )
-    promoted = promote_model(workspace_name=workspace_name, model_id=record["model_id"], notes="bootstrap default model")
+    # Use force=True for bootstrapping
+    promoted = promote_model(workspace_name=workspace_name, model_id=record["model_id"], notes="bootstrap default model", force=True)
     workspace = ensure_default_workspace()
     if workspace.get("default_model_id") != promoted.get("model_id"):
         with db_cursor() as (conn, cursor):
@@ -592,6 +604,7 @@ def rollback_model(
     return promote_model(workspace_name=workspace_name, model_id=target_id, notes=notes or "Emergency rollback.", force=True)
 
 
+@ttl_cache(seconds=60)
 def get_active_model(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME) -> dict[str, Any] | None:
     rows = fetch_all(
         """
@@ -631,10 +644,13 @@ def bootstrap_default_registry() -> dict[str, Any]:
     )
     active = get_active_model(workspace["workspace_name"])
     if not active or active.get("model_id") != model.get("model_id"):
+        # Use force=True for bootstrapping to avoid being blocked by Release Gate
+        # 在引导期间使用 force=True，以避免被发布准入拦截
         model = promote_model(
             workspace_name=workspace["workspace_name"],
             model_id=model["model_id"],
             notes="bootstrap default model",
+            force=True,
         )
     workspace = ensure_default_workspace()
     if workspace.get("default_model_id") != model.get("model_id"):

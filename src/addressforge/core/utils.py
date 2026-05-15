@@ -4,7 +4,9 @@ import logging
 import os
 import re
 import time
+import functools
 from pathlib import Path
+from typing import Any, Callable, Dict, Tuple
 
 import mysql.connector
 import numpy as np
@@ -139,3 +141,32 @@ def execute_insert_query(query, data, single_row=False):
     finally:
         cursor.close()
         conn.close()
+
+def ttl_cache(seconds: int = 60):
+    """
+    Simple TTL cache decorator for functions with manual clear support.
+    带手动清除支持的函数简单 TTL 缓存装饰器。
+    """
+    def decorator(func: Callable):
+        cache: Dict[Tuple, Tuple[Any, float]] = {}
+        
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            now = time.time()
+            # Handle unhashable types if needed
+            key = (args, tuple(sorted(kwargs.items())))
+            if key in cache:
+                result, timestamp = cache[key]
+                if now - timestamp < seconds:
+                    return result
+            
+            result = func(*args, **kwargs)
+            cache[key] = (result, now)
+            return result
+        
+        def clear_cache():
+            cache.clear()
+            
+        wrapper.clear_cache = clear_cache
+        return wrapper
+    return decorator

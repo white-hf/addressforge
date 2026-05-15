@@ -1,5 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
+<!-- Loading Overlay -->
+<div id="settings-loader" class="fixed inset-0 bg-white/60 backdrop-blur-sm z-50 flex items-center justify-center transition-opacity duration-300">
+    <div class="flex flex-col items-center gap-4">
+        <div class="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-slate-600 font-bold animate-pulse">Loading System Configuration...</p>
+    </div>
+</div>
+
 <style>
     .info-icon {
         display: inline-flex;
@@ -396,26 +404,33 @@ function applyDefaultSourceNameForMode() {
 }
 
 async function refreshSettings() {
-    // We only need the status to get current config
-    const statusRes = await fetch('/api/v1/control/status');
-    const status = await statusRes.json();
-    
-    if (status.ingestion_config) {
-        populateIngestionConfig(status.ingestion_config);
-    }
-
-    // Load Env config
-    // 加载环境配置
+    // Parallelize fetches to improve speed
+    // 并行执行获取以提高速度
     try {
-        const envRes = await fetch('/api/v1/control/env');
+        const [ingestionRes, envRes] = await Promise.all([
+            fetch('/api/v1/control/ingestion-config'),
+            fetch('/api/v1/control/env')
+        ]);
+
+        if (ingestionRes.ok) {
+            const data = await ingestionRes.json();
+            if (data.ingestion_config) {
+                populateIngestionConfig(data.ingestion_config);
+            }
+        }
+
         if (envRes.ok) {
             const envData = await envRes.json();
             if (envData.env_config) {
                 populateEnvConfig(envData.env_config);
             }
         }
-    } catch (e) {
-        console.error("Failed to load env config", e);
+    } finally {
+        const loader = document.getElementById('settings-loader');
+        if (loader) {
+            loader.style.opacity = '0';
+            setTimeout(() => loader.remove(), 300);
+        }
     }
 
     // Apply i18n

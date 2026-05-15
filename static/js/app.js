@@ -25,6 +25,14 @@ async function globalRefresh() {
     }
 }
 
-// Poll every 5 seconds
-setInterval(globalRefresh, 5000);
-window.addEventListener('load', globalRefresh);
+// Poll every 10 seconds (increased from 5 for performance)
+setInterval(globalRefresh, 10000);
+
+// Only run on load if not on a data-heavy page (like Settings or Review)
+// 仅在非重数据页面（如设置或审核）上启动加载时运行
+window.addEventListener('load', () => {
+    // If the current page doesn't have its own refreshSettings, run global one
+    if (typeof window.refreshSettings !== 'function') {
+        globalRefresh();
+    }
+});
