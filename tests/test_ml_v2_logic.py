@@ -20,12 +20,21 @@ class TestBuildingTypeOverride(unittest.TestCase):
             self.assertEqual(res.status_code, 200)
             data = res.json()
             
-            # Verify shadow_assist contains ml_building_type
+            # Verify shadow_assist contains ml_building_type and reranker impact
             self.assertIn("shadow_assist", data)
             sa = data["shadow_assist"]
             self.assertIn("ml_building_type", sa)
+            self.assertIn("reranker_impact_detected", sa)
+            
+            # Verify runtime_identity presence
+            self.assertIn("runtime_identity", data)
+            ri = data["runtime_identity"]
+            self.assertIn("decision_model", ri)
+            self.assertIn("reranker_model", ri)
+            
             print(f"Heuristic Building Type: {data.get('building_type')}")
             print(f"ML Predicted Building Type: {sa.get('ml_building_type')}")
+            print(f"Reranker Impact Detected: {sa.get('reranker_impact_detected')}")
             
         except requests.exceptions.ConnectionError:
             self.skipTest("API Server not running on 8010")

@@ -436,5 +436,60 @@ class TestGoldSampling(unittest.TestCase):
         self.assertEqual(len(insert_calls), 1)
         self.assertEqual(insert_calls[0].args[1][2], "801")
 
+    @patch("addressforge.learning.gold.fetch_all")
+    @patch("addressforge.learning.gold.db_cursor")
+    @patch("addressforge.learning.gold.create_run", return_value=599)
+    @patch("addressforge.learning.gold.finish_run")
+    @patch("addressforge.learning.gold._existing_reviewed_or_queued_source_ids", return_value=set())
+    @patch("addressforge.learning.gold._existing_reviewed_or_queued_text_keys", return_value=set())
+    def test_seed_active_learning_from_residual_buckets(
+        self,
+        mock_text_keys,
+        mock_existing,
+        mock_finish,
+        mock_create,
+        mock_db,
+        mock_fetch,
+    ):
+        from addressforge.learning.gold import seed_active_learning_from_residual_buckets
+        
+        # Mocking returns for 5 pools
+        mock_fetch.side_effect = [
+            # history_mismatch
+            [{"raw_id": 901, "raw_address_text": "addr901", "confidence": 0.5, "reason": "r1", "building_type": "multi_unit"}],
+            # asset_gap
+            [{"raw_id": 902, "raw_address_text": "addr902", "confidence": 0.4, "reason": "r2", "building_type": "multi_unit"}],
+            # location_drift
+            [{"raw_id": 903, "raw_address_text": "addr903", "confidence": 0.3, "reason": "r3", "building_type": "single_unit"}],
+            # building_type_gap
+            [{"raw_id": 904, "raw_address_text": "addr904", "confidence": 0.2, "reason": "r4", "building_type": "single_unit"}],
+            # parser_disagreement
+            [{"raw_id": 905, "raw_address_text": "addr905", "confidence": 0.1, "reason": "r5", "building_type": "single_unit"}],
+        ]
+        
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_db.return_value.__enter__.return_value = (mock_conn, mock_cursor)
+
+        result = seed_active_learning_from_residual_buckets(workspace_name="default", limit=5)
+
+        self.assertEqual(result["inserted"], 5)
+        # 5 pools. _existing_reviewed_or_queued_text_keys is mocked separately.
+        self.assertEqual(mock_fetch.call_count, 5) 
+        
+        insert_calls = [
+            call for call in mock_cursor.execute.call_args_list
+            if "INSERT INTO active_learning_queue" in call.args[0]
+        ]
+        self.assertEqual(len(insert_calls), 5)
+        
+        # Verify source_name is 'residual_bucket' in the SQL string
+        self.assertTrue(all("'residual_bucket'" in call.args[0] for call in insert_calls))
+        
+        # Verify first one is history_mismatch (highest priority 100)
+        # Parameters: (workspace, raw_id, task_type, priority, confidence, reason)
+        self.assertEqual(insert_calls[0].args[1][3], 100) 
+        self.assertIn("Residual Bucket [history_mismatch]", insert_calls[0].args[1][5])
+
 if __name__ == "__main__":
     unittest.main()

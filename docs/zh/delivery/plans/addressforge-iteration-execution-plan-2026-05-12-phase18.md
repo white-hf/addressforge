@@ -119,6 +119,7 @@
       - `preview-top-review-opportunities`
     - 作用：
       - 对 leaderboard 中 top N 个 review 最重批次做聚合预估
+      - 同时输出每个 top batch 的单独 recovery summary，便于直接比较哪个批次最值得先重跑
       - 在真正触发批量 reclean 前，先量化预计的：
         - `accept`
         - `enrich`
@@ -129,6 +130,7 @@
       - `reclean-top-review-opportunities`
     - 作用：
       - 按当前 leaderboard 自动挑选 top N 个 review 最重批次
+      - 同时返回这批批次的聚合预估摘要，便于判断本轮自动回放是否值得执行
       - 统一重置为 `pending` 并触发一次 cleaning job
       - 让 backlog 消化从“逐批手动点击”变成“按优先级自动执行”
     - 同时提供：

@@ -808,6 +808,7 @@ class AddressPlatformService:
         building_type: str,
         parser_disagreement: bool,
         gps_conflict: bool,
+        suggested_unit_number: str | None = None,
     ) -> dict[str, Any]:
         policy_mode = self._assist_policy_mode()
         ml_decision = str(ml_result.get("ml_decision") or "").strip().lower()
@@ -836,6 +837,10 @@ class AddressPlatformService:
             }
 
         if heuristic_decision == "review" and ml_decision == "accept":
+            # Rule: Split review -> accept and review -> enrich based on unit presence
+            # 规则：根据单元号是否存在，拆分 review -> accept 和 review -> enrich
+            target_decision = "enrich" if suggested_unit_number else "accept"
+            
             if building_type == "commercial":
                 return {
                     "eligible": False,
@@ -857,7 +862,7 @@ class AddressPlatformService:
                     "guard_reason": "gps_conflict_guard",
                     "policy_mode": policy_mode,
                 }
-            if "incomplete" in reason_text:
+            if "incomplete" in reason_text and not suggested_unit_number:
                 return {
                     "eligible": False,
                     "recommended_decision": None,
@@ -880,8 +885,8 @@ class AddressPlatformService:
                 }
             return {
                 "eligible": True,
-                "recommended_decision": "accept",
-                "guard_reason": "eligible_accept_recovery",
+                "recommended_decision": target_decision,
+                "guard_reason": f"eligible_{target_decision}_recovery",
                 "policy_mode": policy_mode,
             }
 
@@ -1129,7 +1134,22 @@ class AddressPlatformService:
             candidates,
             semantic_anchors=semantic_anchors
         )
-        best = reranked_candidates[0] if reranked_candidates else {}
+        
+        # Track Reranker Impact: Did ML pick a different best candidate than the heuristic?
+        # 跟踪重排器影响：ML 是否选择了与启发式不同的最佳候选？
+        heuristic_best = max(candidates, key=lambda x: x.get("score", 0)) if candidates else None
+        ml_best = reranked_candidates[0] if reranked_candidates else None
+        
+        # Identity comparison based on unique full address key
+        # 基于唯一全地址键的身份比较
+        reranker_impact_detected = False
+        if heuristic_best and ml_best:
+            h_key = heuristic_best.get("parsed", {}).get("full_address_key")
+            m_key = ml_best.get("parsed", {}).get("full_address_key")
+            if h_key and m_key and h_key != m_key:
+                reranker_impact_detected = True
+                
+        best = ml_best or {}
         
         parsed = best.get("parsed") or {}
         normalized_raw_text = normalize_unit_signal_text(request.raw_address_text)
@@ -1446,6 +1466,7 @@ class AddressPlatformService:
             building_type=building_type,
             parser_disagreement=parser_disagreement,
             gps_conflict=bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
+            suggested_unit_number=normalized_unit,
         )
         heuristic_decision = decision
         decision_source = "heuristic"
@@ -1466,6 +1487,7 @@ class AddressPlatformService:
             "reason": reason,
             "building_type": building_type,
             "suggested_unit_number": suggested_unit,
+            "runtime_identity": self.describe_runtime(),
             "ml_decision": ml_result,
             "shadow_assist": {
                 "heuristic_decision": heuristic_decision,
@@ -1486,6 +1508,7 @@ class AddressPlatformService:
                 "assist_guard_reason": assist_recommendation.get("guard_reason"),
                 "assist_policy_mode": assist_recommendation.get("policy_mode"),
                 "applied_decision": decision if decision_source == "decision_model_assist" else None,
+                "reranker_impact_detected": reranker_impact_detected,
             },
             "canonical": {
                 "base_address_key": canonical_base_key,

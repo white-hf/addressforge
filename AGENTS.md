@@ -500,6 +500,20 @@ Improving `decision_f1` while losing apartment structure quality is not acceptab
 
 Agents must evaluate the full tradeoff set.
 
+## Phase 15-18 Runtime Contract
+
+When working on the next-generation ML system, agents must treat the runtime contract as part of the product, not an implementation detail.
+
+Required rules:
+
+1. `DecisionModel`, `Reranker`, and `BuildingTypeModel` must be loaded from manifest-driven runtime bundles whenever replay, shadow, evaluator, API, or worker code is evaluating a specific model version.
+2. Active and candidate comparisons must use separate runtime instances when their manifests differ.
+3. `shadow-assist`, `assist_trial`, and `building_type` guarded override are governed stages. They must always emit runtime identity in evaluation artifacts.
+4. `/reload` and `/rollback` must clear stale registry views before reloading manifests or runtime metadata.
+5. Release gate checks must verify physical artifact completeness, not only registry status. Sidecar completeness matters for model promotion.
+6. Review backlog reclean flows (`preview`, `evidence`, `opportunity`, `top-batch reclean`) are formal operational loops. They are not ad-hoc debugging tools.
+7. Any new runtime helper must preserve the same manifest-bound bundle semantics and must not silently fall back to a different model version without recording that fallback.
+
 ## Required Evidence Before Declaring Success
 
 Agents must not declare model improvement complete unless they can show:

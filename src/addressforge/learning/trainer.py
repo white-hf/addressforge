@@ -1225,6 +1225,21 @@ def run_baseline_training(
             "canada_benchmark": benchmark_summary,
             "notes": "baseline training artifact with learned decision policy",
         }
+
+        # Add runtime identity for traceability (Phase 24)
+        # 添加运行时标识以实现可追溯性
+        from addressforge.services.model_service import build_model_service_from_manifest
+        from addressforge.services.reranker_service import build_reranker_service_from_manifest
+        
+        runtime_identity = {
+            "decision_model": build_model_service_from_manifest(artifact_payload).describe_runtime(),
+            "reranker_model": build_reranker_service_from_manifest(artifact_payload).describe_runtime(),
+            "profile": profile,
+            "parsers": ["simple_rule", "hybrid_canada", "libpostal"],
+            "artifact_source": "manifest",
+        }
+        artifact_payload["runtime_identity"] = runtime_identity
+        
         artifact_path.write_text(json.dumps(artifact_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         registry_row = register_model_version(
@@ -1249,6 +1264,9 @@ def run_baseline_training(
                     "decision_policy": decision_policy,
                 },
                 "decision_model_artifact": decision_model_artifact,
+                "reranker_model_artifact": reranker_model_artifact,
+                "building_type_model_artifact": building_type_model_artifact,
+                "runtime_identity": runtime_identity,
                 "hard_sample_profile": hard_sample_profile,
                 "label_consistency_diagnostics": label_consistency_diagnostics,
                 "decision_label_balance": decision_label_balance,

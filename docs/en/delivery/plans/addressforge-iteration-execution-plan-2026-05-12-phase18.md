@@ -111,6 +111,7 @@ Delivery requirements:
       - `preview-top-review-opportunities`
     - Purpose:
       - aggregate a projected reclean preview for the top N most review-heavy batches
+      - also emit a per-batch recovery summary so operators can compare which batch is worth replaying first
       - quantify the expected:
         - `accept`
         - `enrich`
@@ -121,6 +122,7 @@ Delivery requirements:
       - `reclean-top-review-opportunities`
     - Purpose:
       - automatically select the top N most review-heavy batches from the leaderboard
+      - also return an aggregated preview summary for those batches so operators can judge whether the replay wave is worth running
       - reset them to `pending` and trigger a single cleaning job
       - turn backlog reduction into a prioritized batch operation instead of a manual per-batch click path
     - It should also provide:

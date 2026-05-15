@@ -156,9 +156,13 @@
                     <div class="flex gap-2">
                         <button class="btn soft py-2 px-4 text-xs" onclick="loadReviewOpportunities()">Load Opportunities</button>
                         <button class="btn soft py-2 px-4 text-xs" onclick="previewTopReviewOpportunities()">Preview Top Batches</button>
-                        <button class="btn soft py-2 px-4 text-xs" onclick="recleanTopReviewOpportunities()">Reclean Top Batches</button>
+                        <button class="btn secondary py-2 px-4 text-xs bg-emerald-50 text-emerald-700 border-emerald-200" onclick="previewResidualRecovery()">Forecast Residual Recovery</button>
                     </div>
                 </div>
+                <div id="residual-preview-summary" class="hidden p-4 bg-emerald-50 border-y border-emerald-100 text-sm text-emerald-800">
+                    <!-- Dynamic Residual Preview Summary -->
+                </div>
+
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm text-left">
                         <thead class="bg-slate-100 text-slate-400 uppercase text-xs">
@@ -175,6 +179,27 @@
                         </thead>
                         <tbody id="review-opportunities-table">
                             <tr><td colspan="8" class="p-6 text-center text-slate-400">No opportunity data loaded yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-4 overflow-x-auto">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-slate-100 text-slate-400 uppercase text-xs">
+                            <tr>
+                                <th class="p-3">Source</th>
+                                <th class="p-3">Batch</th>
+                                <th class="p-3">Total</th>
+                                <th class="p-3 text-amber-600">In-Review</th>
+                                <th class="p-3 border-l">Sampled</th>
+                                <th class="p-3 text-emerald-700">Accept</th>
+                                <th class="p-3 text-blue-700">Enrich</th>
+                                <th class="p-3 text-rose-700">Review</th>
+                                <th class="p-3 text-emerald-600">Recovery %</th>
+                                <th class="p-3">Remain %</th>
+                            </tr>
+                        </thead>
+                        <tbody id="top-batch-recovery-summary-table">
+                            <tr><td colspan="8" class="p-6 text-center text-slate-400">No batch recovery summary loaded yet.</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -200,9 +225,6 @@ function renderDirtySummary(data) {
         ['history_mismatch', 'History Mismatch'],
         ['asset_gap', 'Asset Gap'],
         ['location_drift', 'Location Drift'],
-        ['manual_review', 'Manual Review'],
-        ['reject', 'Reject'],
-        ['model_conflict', 'Model Conflict'],
     ].map(([key, label]) => `
         <span class="inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2 py-1 mr-2 mb-2">
             ${label}: ${counts[key] || 0}
@@ -212,6 +234,28 @@ function renderDirtySummary(data) {
         <div class="mb-2">Total Dirty Rows / 脏地址总数: <strong>${total}</strong></div>
         <div>${pills}</div>
     `;
+}
+
+function renderTopBatchRecoverySummary(items) {
+    const tbody = document.getElementById('top-batch-recovery-summary-table');
+    if (!items || items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="p-6 text-center text-slate-400">No batch recovery summary loaded yet.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = items.map(item => `
+        <tr class="border-t">
+            <td class="p-3 text-xs font-medium">${escapeHtml(item.source_name || '-')}</td>
+            <td class="p-3 text-xs">${escapeHtml(item.batch_id || '-')}</td>
+            <td class="p-3 text-xs text-slate-500">${escapeHtml(item.leaderboard_total_rows || 0)}</td>
+            <td class="p-3 text-xs text-amber-600 font-bold">${escapeHtml(item.leaderboard_review_count || 0)}</td>
+            <td class="p-3 text-xs border-l bg-slate-50/50">${escapeHtml(item.sampled_rows || 0)}</td>
+            <td class="p-3 text-xs font-semibold text-emerald-700 bg-slate-50/50">${escapeHtml(item.decision_counts?.accept || 0)}</td>
+            <td class="p-3 text-xs font-semibold text-blue-700 bg-slate-50/50">${escapeHtml(item.decision_counts?.enrich || 0)}</td>
+            <td class="p-3 text-xs font-semibold text-rose-700 bg-slate-50/50">${escapeHtml(item.decision_counts?.review || 0)}</td>
+            <td class="p-3 text-xs font-bold text-emerald-600 bg-emerald-50/20">${(((item.projected_recovery_rate || 0) * 100).toFixed(1))}%</td>
+            <td class="p-3 text-xs text-slate-400 bg-slate-50/50">${(((item.projected_remaining_review_rate || 0) * 100).toFixed(1))}%</td>
+        </tr>
+    `).join('');
 }
 
 function renderSuggestedAddress(item) {
@@ -527,6 +571,7 @@ async function previewTopReviewOpportunities() {
         const batches = (data.selected_batches || []).map(
             item => `${item.source_name}:${item.batch_id}`,
         );
+        renderTopBatchRecoverySummary(data.batch_summaries || []);
         const recoveryRate = ((data.projected_recovery_rate || 0) * 100).toFixed(1);
         const remainingRate = ((data.projected_remaining_review_rate || 0) * 100).toFixed(1);
         summaryEl.innerHTML += `
@@ -572,10 +617,16 @@ async function recleanTopReviewOpportunities() {
         const processed = (data.processed_batches || []).map(
             item => `${item.source_name}:${item.batch_id}`,
         );
+        const preview = data.preview_summary || {};
+        const previewCounts = preview.decision_counts || {};
+        renderTopBatchRecoverySummary(data.preview_summary?.batch_summaries || []);
         summaryEl.innerHTML += `
             <div class="mt-3 p-3 rounded bg-violet-50 border border-violet-100 text-violet-800">
                 Requeued <strong>${processed.length}</strong> top batches.
                 Affected review rows <strong>${data.affected_records || 0}</strong>.
+                Preview expected accept <strong>${previewCounts.accept || 0}</strong>,
+                enrich <strong>${previewCounts.enrich || 0}</strong>,
+                review <strong>${previewCounts.review || 0}</strong>.
                 ${processed.length ? `Batches: <strong>${escapeHtml(processed.join(', '))}</strong>.` : ''}
             </div>
         `;
@@ -720,6 +771,115 @@ async function generateQualityReport() {
         }
     } catch (e) {
         if (typeof showToast === 'function') showToast("Error connecting to server.", "error");
+    }
+}
+
+
+async function previewResidualRecovery() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const batchId = document.getElementById('dirty-batch-id')?.value.trim() || '';
+    const summaryEl = document.getElementById('residual-preview-summary');
+    if (typeof showToast === 'function') showToast('Forecasting residual recovery impact...', 'info');
+    
+    try {
+        const res = await fetch('/api/v1/cleaning/reclean-residual-preview', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                source_name: sourceName || null,
+                batch_id: batchId || null,
+                preview_limit: 150
+            })
+        });
+        
+        if (res.ok) {
+            const data = await res.json();
+            const preview = data.preview || {};
+            const cats = preview.category_summaries || {};
+            
+            let html = `
+                <div class="flex flex-col gap-3">
+                    <div class="flex items-center justify-between">
+                        <span class="font-bold underline">Residual Forecast Results / 剩余审核桶恢复预估:</span>
+                        <span class="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded text-xs font-bold">
+                            Estimated Recovery: ${(preview.projected_recovery_rate * 100).toFixed(1)}%
+                        </span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-[11px]">
+            `;
+            
+            for (const [cat, summary] of Object.entries(cats)) {
+                html += `
+                    <div class="p-2 bg-white rounded border border-emerald-100">
+                        <div class="font-bold text-emerald-700 uppercase mb-1">${cat.replace('_', ' ')}</div>
+                        <div>Sampled: ${summary.sampled_rows}</div>
+                        <div>Potential Recovery: <span class="text-emerald-600 font-bold">${((summary.projected_recovery_rate || 0) * 100).toFixed(1)}%</span></div>
+                    </div>
+                `;
+            }
+            
+            html += `
+                    </div>
+                    <div class="flex items-center justify-between mt-3">
+                        <div class="text-[10px] text-emerald-600/60 italic">
+                            * Estimates based on a sample of ${preview.sampled_rows} stubborn review rows.
+                        </div>
+                        <button onclick="reseedResidualBuckets()" class="btn primary py-1 px-4 text-xs bg-emerald-600 border-emerald-700 hover:bg-emerald-700">
+                            Seed Residual for Review / 重新播种进行审核
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            summaryEl.innerHTML = html;
+            summaryEl.classList.remove('hidden');
+            if (typeof showToast === 'function') showToast('Residual forecast complete.', 'success');
+        }
+    } catch (e) {
+        console.error("Residual preview failed", e);
+        if (typeof showToast === 'function') showToast('Failed to load residual forecast.', 'error');
+    }
+}
+
+
+async function reseedResidualBuckets() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const batchId = document.getElementById('dirty-batch-id')?.value.trim() || '';
+    
+    // Safety Guard: Prevent accidental global re-seeding
+    // 安全守卫：防止意外的全局重新播种
+    if (!sourceName && !batchId) {
+        if (typeof showToast === 'function') {
+            showToast("Scoping required! Please provide a Source Name or Batch ID before seeding. / 需要指定范围！请在播种前提供数据源名称或批次 ID。", "error");
+        }
+        return;
+    }
+
+    if (!confirm("Are you sure you want to seed these residual samples into the manual review queue? / 确定要将这些剩余样本播种到人工审核队列中吗？")) return;
+    
+    if (typeof showToast === 'function') showToast('Seeding residual samples...', 'info');
+    try {
+        const res = await fetch('/api/v1/cleaning/reseed-residual-buckets', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                source_name: sourceName || null,
+                batch_id: batchId || null,
+                preview_limit: 150
+            })
+        });
+        
+        if (res.ok) {
+            const data = await res.json();
+            if (typeof showToast === 'function') {
+                showToast(`Successfully seeded ${data.inserted} samples for review! / 成功播种 ${data.inserted} 条样本！`, 'success');
+            }
+            // Hide the forecast once seeded
+            document.getElementById('residual-preview-summary').classList.add('hidden');
+        }
+    } catch (e) {
+        console.error("Reseed failed", e);
+        if (typeof showToast === 'function') showToast('Failed to seed residual samples.', 'error');
     }
 }
 

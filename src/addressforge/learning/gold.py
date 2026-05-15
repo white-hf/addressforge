@@ -1785,6 +1785,143 @@ def seed_decision_minority_label_review_queue(
         finish_run(run_id, "failed", notes=dumps_payload({"error": str(exc)}))
         raise
 
+
+def seed_active_learning_from_residual_buckets(
+    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
+    limit: int = 150,
+    target_buckets: list[str] | None = None,
+    source_name: str | None = None,
+    batch_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Generates targeted re-seed samples from residual review buckets.
+    Supports scoping by source_name and batch_id.
+    从剩余审核桶中生成针对性的重新播种样本。支持按数据源名称和批次 ID 缩小范围。
+    """
+    run_id = create_run("ml_active_learning_residual", notes=f"residual seed limit={limit} scope={source_name or 'all'}/{batch_id or 'all'}")
+    logger.info("Starting residual bucket re-seeding: workspace=%s, scope=%s/%s", workspace_name, source_name, batch_id)
+    
+    try:
+        # Define candidate pools from residual categories
+        # 从剩余类别定义候选池
+        pools = [
+            {"name": "history_mismatch", "priority": 100, "task_type": "unit_number"},
+            {"name": "asset_gap", "priority": 95, "task_type": "unit_number"},
+            {"name": "location_drift", "priority": 90, "task_type": "validation"},
+            {"name": "building_type_gap", "priority": 85, "task_type": "building_type"},
+            {"name": "parser_disagreement", "priority": 80, "task_type": "review"},
+        ]
+        
+        if target_buckets:
+            pools = [p for p in pools if p["name"] in target_buckets]
+
+        all_candidates: list[dict[str, Any]] = []
+        
+        # Build common filter SQL
+        scope_sql = ""
+        scope_params: list[Any] = []
+        if source_name:
+            scope_sql += " AND rar.source_name = %s"
+            scope_params.append(source_name)
+        if batch_id:
+            scope_sql += " AND JSON_UNQUOTE(JSON_EXTRACT(rar.source_payload, '$.batch_id')) = %s"
+            scope_params.append(batch_id)
+
+        # 1. Fetch potential candidates for each pool
+        for pool in pools:
+            where_clause = ""
+            if pool["name"] == "history_mismatch":
+                where_clause = "acr.decision = 'review' AND acr.building_type = 'multi_unit' AND (acr.suggested_unit_number IS NULL OR acr.suggested_unit_number = '')"
+            elif pool["name"] == "asset_gap":
+                where_clause = "acr.decision = 'review' AND acr.building_type = 'multi_unit' AND acr.suggested_unit_number IS NULL"
+            elif pool["name"] == "location_drift":
+                where_clause = "acr.decision = 'review' AND JSON_EXTRACT(acr.validation_json, '$.hints.gps_conflict') = true"
+            elif pool["name"] == "building_type_gap":
+                where_clause = "acr.decision = 'review' AND JSON_EXTRACT(acr.validation_json, '$.hints.reference_gap_reason') = 'LOCALITY_MISMATCH'"
+            elif pool["name"] == "parser_disagreement":
+                where_clause = "acr.decision = 'review' AND JSON_EXTRACT(acr.validation_json, '$.hints.parser_disagreement') = true"
+            
+            if not where_clause:
+                continue
+                
+            rows = fetch_all(
+                f"""
+                SELECT acr.raw_id, acr.raw_address_text, acr.confidence, acr.reason, acr.building_type
+                FROM address_cleaning_result acr
+                JOIN raw_address_record rar ON acr.raw_id = rar.raw_id
+                WHERE acr.workspace_name = %s {scope_sql} AND {where_clause}
+                ORDER BY acr.confidence ASC, acr.raw_id DESC
+                LIMIT %s
+                """,
+                (workspace_name, *scope_params, limit * 2)
+            )
+            
+            for r in rows:
+                all_candidates.append({
+                    **r,
+                    "pool_name": pool["name"],
+                    "priority": pool["priority"],
+                    "task_type": pool["task_type"]
+                })
+
+        # 2. Global deduplication by text and existing gold/queue
+        # 2. 按文本以及现有金标/队列进行全局去重
+        existing_text_keys = _existing_reviewed_or_queued_text_keys(workspace_name)
+        existing_source_ids = _existing_reviewed_or_queued_source_ids(
+            workspace_name, [str(c["raw_id"]) for c in all_candidates]
+        )
+        
+        final_selection: list[dict[str, Any]] = []
+        seen_texts: set[str] = set()
+        
+        # Sort by priority then confidence
+        all_candidates.sort(key=lambda x: (-x["priority"], x["confidence"] or 1.0))
+        
+        for cand in all_candidates:
+            source_id = str(cand["raw_id"])
+            text_key = _normalized_review_text_key(cand["raw_address_text"])
+            
+            if source_id in existing_source_ids or text_key in existing_text_keys or text_key in seen_texts:
+                continue
+                
+            seen_texts.add(text_key)
+            final_selection.append(cand)
+            if len(final_selection) >= limit:
+                break
+                
+        # 3. Batch insert into queue
+        # 3. 批量插入队列
+        inserted = 0
+        with db_cursor() as (conn, cursor):
+            for item in final_selection:
+                cursor.execute(
+                    """
+                    INSERT INTO active_learning_queue (
+                        workspace_name, source_name, source_id, task_type, priority, confidence, reason, status
+                    ) VALUES (%s, 'residual_bucket', %s, %s, %s, %s, %s, 'queued') AS new_row
+                    ON DUPLICATE KEY UPDATE status = 'queued', updated_at = NOW()
+                    """,
+                    (
+                        workspace_name,
+                        str(item["raw_id"]),
+                        item["task_type"],
+                        item["priority"],
+                        item["confidence"],
+                        f"Residual Bucket [{item['pool_name']}]: {item.get('reason') or 'stubborn sample'}",
+                    ),
+                )
+                inserted += 1
+            conn.commit()
+            
+        finish_run(run_id, "completed", notes=dumps_payload({"inserted": inserted, "limit": limit}))
+        logger.info("Residual bucket re-seeding complete: %d samples inserted.", inserted)
+        return {"run_id": run_id, "inserted": inserted, "workspace_name": workspace_name}
+
+    except Exception as exc:
+        logger.exception("Residual bucket re-seeding failed: %s", exc)
+        finish_run(run_id, "failed", notes=str(exc))
+        raise
+
 def list_gold_labels(
     workspace_name: str,
     *,

@@ -269,37 +269,26 @@ def _classify_dirty_categories(
     asset_data: dict[str, Any],
 ) -> list[str]:
     """
-    Classifies dirty addresses into simplified, evidence-based categories.
-    将脏地址分类为简化的、基于证据的类别。
+    Classifies dirty addresses into strictly evidence-based categories (History, Asset, GPS).
+    将脏地址分类为严格基于证据的类别（历史记录、资产、GPS）。
     """
     categories: list[str] = []
     
-    # 1. History Mismatch: User used units before, but current is missing it
-    # 1. 历史不符：用户以前使用过单元，但当前缺失
+    # Rule 1. History Mismatch: User used units before at this building, but current is missing it
+    # 规则 1. 历史不符：用户以前在该建筑使用过单元，但当前缺失
     if user_history_unit and not suggested_unit_number:
         categories.append("history_mismatch")
         
-    # 2. Asset Gap: Matches a known multi-unit building but missing unit
-    # 2. 资产缺失：匹配已知的多单元建筑但缺失单元
+    # Rule 2. Asset Gap: Matches a known multi-unit building in asset library but missing unit
+    # 规则 2. 资产库缺失：匹配资产库中已知的多单元建筑但缺失单元
     if asset_data.get("has_known_units") and not suggested_unit_number:
         if "history_mismatch" not in categories:
             categories.append("asset_gap")
             
-    # 3. Location Drift: GPS differs from Asset center or History
-    # 3. 位置偏移：GPS 与资产中心或历史记录不同
+    # Rule 3. Location Drift: GPS significantly differs from Asset center or History
+    # 规则 3. 位置严重偏移：GPS 与资产中心或历史记录存在显著偏差
     if bool(hints.get("gps_drift_detected")):
         categories.append("location_drift")
-        
-    # 4. Status-based categories
-    # 4. 基于状态的类别
-    if decision == "review":
-        categories.append("manual_review")
-    if decision == "reject":
-        categories.append("reject")
-        
-    # Fallback for other issues (like parser disagreement)
-    if not categories and bool(hints.get("parser_disagreement")):
-        categories.append("model_conflict")
         
     return categories
 
@@ -359,7 +348,9 @@ def list_dirty_address_diagnostics(
         params.append(str(batch_id))
         
     sql += " ORDER BY acr.updated_at DESC, acr.raw_id DESC LIMIT %s"
-    params.append(max(safe_limit * 2, 100)) # Fetch slightly more to filter effectively
+    # Fetch a larger sample to ensure we find enough rule-conforming rows
+    # 获取更大的样本，以确保我们找到足够的符合规则的行
+    params.append(min(safe_limit * 10, 2000)) 
     rows = fetch_all(sql, tuple(params))
 
     items: list[dict[str, Any]] = []
@@ -367,9 +358,6 @@ def list_dirty_address_diagnostics(
         "history_mismatch": 0,
         "asset_gap": 0,
         "location_drift": 0,
-        "manual_review": 0,
-        "reject": 0,
-        "model_conflict": 0
     }
 
     for row in rows:

@@ -566,23 +566,27 @@ def _decision_policy_calibration_proposal(
     for hint in tuning_hints.get("hints") or []:
         bucket = str(hint.get("target_bucket") or "")
         if bucket == "MODEL_MORE_AGGRESSIVE_ACCEPT":
+            # Separate accept and enrich recovery tuning
+            # 分开处理 accept 和 enrich 恢复的调优
             changes.extend(
                 [
                     {
                         "threshold": "assist_accept_score_threshold",
                         "direction": "increase",
                         "step": 0.02,
-                        "reason": "reduce aggressive accept recoveries before assist rollout",
+                        "reason": "reduce aggressive accept recoveries",
                     },
                     {
                         "threshold": "assist_accept_parse_score_threshold",
                         "direction": "increase",
                         "step": 0.02,
-                        "reason": "require slightly stronger parse quality for accept recovery",
+                        "reason": "require stronger parse quality for accept recovery",
                     },
                 ]
             )
         elif bucket == "MODEL_MORE_CONSERVATIVE_REVIEW":
+            # Review escalation tuning
+            # Review 升级调优
             changes.extend(
                 [
                     {
@@ -595,13 +599,13 @@ def _decision_policy_calibration_proposal(
                         "threshold": "assist_review_parse_score_threshold",
                         "direction": "decrease",
                         "step": 0.02,
-                        "reason": "narrow review escalation to weaker parse-confidence cases",
+                        "reason": "narrow review escalation scope",
                     },
                     {
                         "threshold": "assist_review_reference_score_threshold",
                         "direction": "increase",
                         "step": 0.02,
-                        "reason": "escalate review only when reference support is weaker",
+                        "reason": "stricter reference requirement for review escalation",
                     },
                 ]
             )
@@ -823,6 +827,22 @@ def _predict_gold_rows_with_runtime(
                 current["bt_allowed_transitions"] = shadow_assist.get("bt_allowed_transitions")
                 current["bt_override_applied"] = shadow_assist.get("bt_override_applied")
                 current["assist_policy_mode"] = shadow_assist.get("assist_policy_mode")
+                current["reranker_impact_detected"] = shadow_assist.get("reranker_impact_detected", False)
+                
+                # New: Detailed Reranker impact tracking
+                # 新增：详细的重排器影响跟踪
+                if current["reranker_impact_detected"]:
+                    parser_result = result.get("parser_result") or {}
+                    candidates = parser_result.get("candidates") or []
+                    if candidates:
+                        h_best = max(candidates, key=lambda x: x.get("score") or 0)
+                        m_best = parser_result.get("best_candidate") or {}
+                        current["reranker_impact_detail"] = {
+                            "heuristic_best_parser": h_best.get("parser_name"),
+                            "ml_best_parser": m_best.get("parser_name"),
+                            "h_key": h_best.get("parsed", {}).get("full_address_key"),
+                            "m_key": m_best.get("parsed", {}).get("full_address_key")
+                        }
                 
                 current["shadow_disagreement_reason"] = shadow_assist.get("disagreement_reason")
                 current["assist_eligible"] = shadow_assist.get("assist_eligible")
@@ -843,6 +863,7 @@ def _predict_gold_rows_with_runtime(
                 current["bt_allowed_transitions"] = []
                 current["bt_override_applied"] = False
                 current["assist_policy_mode"] = None
+                current["reranker_impact_detected"] = False
                 current["shadow_disagreement_reason"] = "runtime_error"
                 current["assist_eligible"] = False
                 current["assist_recommended_decision"] = None
@@ -1141,6 +1162,30 @@ def run_baseline_evaluation(
         markdown_report = generate_markdown_report(metrics_json, locale=os.getenv("ADDRESSFORGE_LOCALE", "en"))
         # Add runtime identity to metrics for transparency
         # 将运行时标识添加到指标中以提高透明度
+        total_eval = len(predicted)
+        impact_rows = [r for r in predicted if r.get("reranker_impact_detected")]
+        
+        impact_by_direction: dict[str, int] = {}
+        for r in impact_rows:
+            detail = r.get("reranker_impact_detail") or {}
+            key = f"{detail.get('heuristic_best_parser')} -> {detail.get('ml_best_parser')}"
+            impact_by_direction[key] = impact_by_direction.get(key, 0) + 1
+
+        metrics_json["reranker_metrics"] = {
+            "impact_count": len(impact_rows),
+            "impact_rate": round(len(impact_rows) / total_eval, 4) if total_eval > 0 else 0.0,
+            "impact_by_direction": impact_by_direction,
+            "impact_samples": [
+                {
+                    "raw_id": r.get("raw_id"),
+                    "raw_text": r.get("raw_address_text"),
+                    "h_parser": r.get("reranker_impact_detail", {}).get("heuristic_best_parser"),
+                    "m_parser": r.get("reranker_impact_detail", {}).get("ml_best_parser"),
+                }
+                for r in impact_rows[:20]
+            ]
+        }
+        
         metrics_json["runtime_identity"] = {
             "decision_model": target_runtime["model_service"].describe_runtime(),
             "reranker_model": target_runtime["reranker_service"].describe_runtime(),
