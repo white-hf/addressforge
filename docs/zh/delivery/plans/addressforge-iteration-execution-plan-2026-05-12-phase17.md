@@ -30,6 +30,12 @@
   - `multi_unit`
   - `commercial`
   baseline / compare / shadow
+- 对 `assist_trial` 额外输出：
+  - `eligible_count`
+  - `applied_count`
+  - `transition_counts`
+  - `gold_match_rate`
+  作为是否继续扩大 BuildingType assist 的运营证据
 
 ### 需求 17-2：Retrieval fusion policy
 交付要求：
@@ -71,4 +77,3 @@
 ## 8. 后续衔接
 Phase 17 完成后，进入：
 - `Phase 18: Rollout, Gate, Operations Completion`
-

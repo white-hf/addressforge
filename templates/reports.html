@@ -118,7 +118,13 @@
                         <input type="text" id="dirty-source-name" placeholder="Source Name" class="text-xs p-2 border rounded">
                         <input type="text" id="dirty-batch-id" placeholder="Batch ID" class="text-xs p-2 border rounded">
                         <input type="number" id="dirty-limit" placeholder="Limit" class="text-xs p-2 border rounded" min="1" max="500" value="100">
-                        <button class="btn primary py-2 px-4 text-xs" onclick="loadDirtyAddressDiagnostics()">Load Dirty Rows</button>
+                        <div class="flex gap-2">
+                            <button class="btn primary py-2 px-4 text-xs" onclick="loadDirtyAddressDiagnostics()">Load Dirty Rows</button>
+                            <button class="btn soft py-2 px-4 text-xs" onclick="previewDirtyReviewReclean()">Preview Reclean</button>
+                            <button class="btn soft py-2 px-4 text-xs" onclick="loadDirtyReviewEvidence()">Load Evidence</button>
+                            <button class="btn soft py-2 px-4 text-xs" onclick="loadResidualReviewBuckets()">Load Residual Buckets</button>
+                            <button class="btn soft py-2 px-4 text-xs" onclick="recleanDirtyReviewBacklog()">Reclean Reviews</button>
+                        </div>
                     </div>
                 </div>
                 <div id="dirty-diagnostics-summary" class="mt-4 text-xs text-slate-500"></div>
@@ -141,6 +147,38 @@
                     </tbody>
                 </table>
             </div>
+            <div class="p-4 border-top bg-slate-50">
+                <div class="flex items-center justify-between mb-3">
+                    <div>
+                        <div class="font-bold text-sm">Review Opportunity Leaderboard / 批次重跑优先级</div>
+                        <div class="text-xs text-slate-500 mt-1">Top batches ranked by current review load so the next reclean target is obvious. / 按当前 review 压力排序，帮助优先选择最值得重跑的批次。</div>
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="btn soft py-2 px-4 text-xs" onclick="loadReviewOpportunities()">Load Opportunities</button>
+                        <button class="btn soft py-2 px-4 text-xs" onclick="previewTopReviewOpportunities()">Preview Top Batches</button>
+                        <button class="btn soft py-2 px-4 text-xs" onclick="recleanTopReviewOpportunities()">Reclean Top Batches</button>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-slate-100 text-slate-400 uppercase text-xs">
+                            <tr>
+                                <th class="p-3">Source</th>
+                                <th class="p-3">Batch</th>
+                                <th class="p-3">Total</th>
+                                <th class="p-3">Review</th>
+                                <th class="p-3">Accept</th>
+                                <th class="p-3">Enrich</th>
+                                <th class="p-3">Pending</th>
+                                <th class="p-3">Review Rate</th>
+                            </tr>
+                        </thead>
+                        <tbody id="review-opportunities-table">
+                            <tr><td colspan="8" class="p-6 text-center text-slate-400">No opportunity data loaded yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -159,12 +197,12 @@ function renderDirtySummary(data) {
     const counts = (data && data.counts && data.counts.by_category) || {};
     const total = (data && data.counts && data.counts.total) || 0;
     const pills = [
-        ['missing_unit', 'Missing Unit'],
-        ['gps_conflict', 'GPS Conflict'],
-        ['reference_gap', 'Reference Gap'],
-        ['parser_disagreement', 'Parser Disagreement'],
+        ['history_mismatch', 'History Mismatch'],
+        ['asset_gap', 'Asset Gap'],
+        ['location_drift', 'Location Drift'],
         ['manual_review', 'Manual Review'],
         ['reject', 'Reject'],
+        ['model_conflict', 'Model Conflict'],
     ].map(([key, label]) => `
         <span class="inline-flex items-center rounded-full bg-slate-100 text-slate-700 px-2 py-1 mr-2 mb-2">
             ${label}: ${counts[key] || 0}
@@ -176,28 +214,51 @@ function renderDirtySummary(data) {
     `;
 }
 
-function renderSuggestedAddress(suggested) {
+function renderSuggestedAddress(item) {
+    const suggested = item.suggested_address || {};
+    const evidence = item.evidence || {};
+    
+    let html = '';
+    
+    // Hallucination Warning
+    if (item.is_hallucination) {
+        html += `<div class="mb-2 p-2 bg-rose-50 text-rose-600 rounded border border-rose-100 font-bold">⚠️ Hallucination Detected / 检测到模型幻觉</div>`;
+    }
+
     const pieces = [
         suggested.street_number,
         suggested.street_name,
-        suggested.unit_number ? `#${suggested.unit_number}` : '',
+        suggested.unit_number ? `<span class="font-bold text-blue-600 underline">#${suggested.unit_number}</span>` : '',
         suggested.city,
         suggested.province,
         suggested.postal_code,
     ].filter(Boolean);
-    return pieces.length ? escapeHtml(pieces.join(', ')) : '<span class="text-slate-400">No structured suggestion</span>';
+    
+    html += pieces.length ? pieces.join(', ') : '<span class="text-slate-400">No structured suggestion</span>';
+    
+    // Show Evidence Source
+    if (evidence.user_history_unit) {
+        html += `<div class="mt-2 text-[10px] text-emerald-600 font-bold uppercase">💡 From User History (${evidence.user_history_count}x)</div>`;
+    } else if (evidence.asset_known_units > 0) {
+        html += `<div class="mt-2 text-[10px] text-blue-600 font-bold uppercase">🏢 From Asset Library (${evidence.asset_known_units} units)</div>`;
+    }
+    
+    return html;
 }
 
 function renderHints(item) {
     const hints = item.hints || {};
+    const evidence = item.evidence || {};
     const details = [];
-    if (hints.gps_conflict) details.push('GPS conflict');
+    
+    if (evidence.gps_drift_meters > 0) {
+        const color = evidence.gps_drift_meters > 500 ? 'text-rose-600 font-bold' : 'text-orange-600';
+        details.push(`<span class="${color}">GPS Drift: ${evidence.gps_drift_meters}m</span>`);
+    }
+    
     if (hints.reference_gap_reason) details.push(`Gap: ${escapeHtml(hints.reference_gap_reason)}`);
     if (hints.parser_disagreement) details.push('Parser disagreement');
-    if (hints.reference_score !== null && hints.reference_score !== undefined) details.push(`Ref score: ${escapeHtml(hints.reference_score)}`);
-    if (item.reference && item.reference.reference_unit_numbers && item.reference.reference_unit_numbers.length) {
-        details.push(`Ref units: ${escapeHtml(item.reference.reference_unit_numbers.join(', '))}`);
-    }
+    
     return details.length ? details.join('<br>') : '<span class="text-slate-400">-</span>';
 }
 
@@ -240,6 +301,341 @@ async function loadDirtyAddressDiagnostics() {
         `).join('');
     } catch (e) {
         tbody.innerHTML = '<tr><td colspan="7" class="p-8 text-center text-rose-500">Failed to load dirty-address diagnostics.</td></tr>';
+    }
+}
+
+async function recleanDirtyReviewBacklog() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const batchId = document.getElementById('dirty-batch-id').value.trim();
+    const limit = document.getElementById('dirty-limit').value.trim() || '100';
+    const payload = {
+        batch_size: Number(limit) || 100,
+        requested_by: 'reports_ui',
+        notes: 'Triggered from dirty address diagnostics',
+    };
+    if (sourceName) payload.source_name = sourceName;
+    if (batchId) payload.batch_id = batchId;
+
+    if (!sourceName && !batchId) {
+        if (typeof showToast === 'function') {
+            showToast('Enter Source Name or Batch ID before re-cleaning reviews.', 'warn');
+        }
+        return;
+    }
+
+    if (typeof showToast === 'function') showToast('Queueing targeted review reclean...', 'info');
+    try {
+        const res = await fetch('/api/v1/cleaning/reclean-reviews', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.reason || 'Failed to queue reclean');
+        }
+        if (typeof showToast === 'function') {
+            showToast(`Queued review reclean for ${data.affected_records || 0} rows.`, 'success');
+        }
+        loadDirtyAddressDiagnostics();
+    } catch (e) {
+        if (typeof showToast === 'function') {
+            showToast('Failed to queue targeted review reclean.', 'error');
+        }
+    }
+}
+
+async function previewDirtyReviewReclean() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const batchId = document.getElementById('dirty-batch-id').value.trim();
+    const limit = document.getElementById('dirty-limit').value.trim() || '100';
+    const payload = {
+        preview_limit: Number(limit) || 100,
+        requested_by: 'reports_ui',
+        notes: 'Previewed from dirty address diagnostics',
+    };
+    if (sourceName) payload.source_name = sourceName;
+    if (batchId) payload.batch_id = batchId;
+
+    if (!sourceName && !batchId) {
+        if (typeof showToast === 'function') {
+            showToast('Enter Source Name or Batch ID before previewing reclean impact.', 'warn');
+        }
+        return;
+    }
+
+    if (typeof showToast === 'function') showToast('Previewing targeted review reclean...', 'info');
+    try {
+        const res = await fetch('/api/v1/cleaning/reclean-reviews-preview', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.reason || 'Failed to preview reclean');
+        }
+        const counts = data.decision_counts || {};
+        const recoveryRate = ((data.projected_recovery_rate || 0) * 100).toFixed(1);
+        const remainingRate = ((data.projected_remaining_review_rate || 0) * 100).toFixed(1);
+        const summaryEl = document.getElementById('dirty-diagnostics-summary');
+        summaryEl.innerHTML += `
+            <div class="mt-3 p-3 rounded bg-emerald-50 border border-emerald-100 text-emerald-800">
+                Preview sampled <strong>${data.sampled_rows || 0}</strong> review rows:
+                accept <strong>${counts.accept || 0}</strong>,
+                enrich <strong>${counts.enrich || 0}</strong>,
+                review <strong>${counts.review || 0}</strong>.
+                Recovery rate <strong>${recoveryRate}%</strong>,
+                remaining review rate <strong>${remainingRate}%</strong>.
+            </div>
+        `;
+        if (typeof showToast === 'function') {
+            showToast('Preview completed.', 'success');
+        }
+    } catch (e) {
+        if (typeof showToast === 'function') {
+            showToast('Failed to preview targeted review reclean.', 'error');
+        }
+    }
+}
+
+async function loadDirtyReviewEvidence() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const batchId = document.getElementById('dirty-batch-id').value.trim();
+    const payload = {
+        requested_by: 'reports_ui',
+        notes: 'Evidence requested from dirty address diagnostics',
+    };
+    if (sourceName) payload.source_name = sourceName;
+    if (batchId) payload.batch_id = batchId;
+
+    if (!sourceName && !batchId) {
+        if (typeof showToast === 'function') {
+            showToast('Enter Source Name or Batch ID before loading reclean evidence.', 'warn');
+        }
+        return;
+    }
+
+    if (typeof showToast === 'function') showToast('Loading post-reclean evidence...', 'info');
+    try {
+        const res = await fetch('/api/v1/cleaning/reclean-reviews-evidence', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.reason || 'Failed to load reclean evidence');
+        }
+        const counts = data.decision_counts || {};
+        const reviewReasons = data.remaining_review_reason_counts || {};
+        const topReason = Object.entries(reviewReasons)[0];
+        const reviewBuildingTypes = data.remaining_review_building_type_counts || {};
+        const topReviewType = Object.entries(reviewBuildingTypes)[0];
+        const reviewRate = ((data.review_rate || 0) * 100).toFixed(1);
+        const recoveredRate = ((data.recovered_rate || 0) * 100).toFixed(1);
+        const summaryEl = document.getElementById('dirty-diagnostics-summary');
+        summaryEl.innerHTML += `
+            <div class="mt-3 p-3 rounded bg-blue-50 border border-blue-100 text-blue-800">
+                Current batch state across <strong>${data.total_rows || 0}</strong> rows:
+                accept <strong>${counts.accept || 0}</strong>,
+                enrich <strong>${counts.enrich || 0}</strong>,
+                review <strong>${counts.review || 0}</strong>,
+                pending <strong>${counts.pending || 0}</strong>.
+                Review rate <strong>${reviewRate}%</strong>,
+                recovered rate <strong>${recoveredRate}%</strong>.
+                ${topReason ? `Top remaining review reason: <strong>${escapeHtml(topReason[0])}</strong> (${topReason[1]}).` : ''}
+                ${topReviewType ? `Top remaining review type: <strong>${escapeHtml(topReviewType[0])}</strong> (${topReviewType[1]}).` : ''}
+            </div>
+        `;
+        if (typeof showToast === 'function') {
+            showToast('Evidence loaded.', 'success');
+        }
+    } catch (e) {
+        if (typeof showToast === 'function') {
+            showToast('Failed to load reclean evidence.', 'error');
+        }
+    }
+}
+
+async function loadReviewOpportunities() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const limit = document.getElementById('dirty-limit').value.trim() || '20';
+    const payload = {
+        preview_limit: Number(limit) || 20,
+        requested_by: 'reports_ui',
+        notes: 'Opportunity leaderboard requested from dirty address diagnostics',
+    };
+    if (sourceName) payload.source_name = sourceName;
+
+    const tbody = document.getElementById('review-opportunities-table');
+    tbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-slate-400">Loading opportunities...</td></tr>';
+    try {
+        const res = await fetch('/api/v1/cleaning/reclean-review-opportunities', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.reason || 'Failed to load opportunities');
+        }
+        if (!data.items || data.items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-slate-400">No review-heavy batches found.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.items.map(item => `
+            <tr class="border-t">
+                <td class="p-3 text-xs">${escapeHtml(item.source_name || '-')}</td>
+                <td class="p-3 text-xs">${escapeHtml(item.batch_id || '-')}</td>
+                <td class="p-3 text-xs">${escapeHtml(item.total_rows || 0)}</td>
+                <td class="p-3 text-xs font-semibold text-rose-700">${escapeHtml(item.review_count || 0)}</td>
+                <td class="p-3 text-xs">${escapeHtml(item.accept_count || 0)}</td>
+                <td class="p-3 text-xs">${escapeHtml(item.enrich_count || 0)}</td>
+                <td class="p-3 text-xs">${escapeHtml(item.pending_count || 0)}</td>
+                <td class="p-3 text-xs">${(((item.review_rate || 0) * 100).toFixed(1))}%</td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-rose-500">Failed to load review opportunities.</td></tr>';
+    }
+}
+
+async function previewTopReviewOpportunities() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const opportunityLimit = parseInt(document.getElementById('dirty-limit').value.trim() || '3', 10);
+    const summaryEl = document.getElementById('dirty-diagnostics-summary');
+
+    if (typeof showToast === 'function') showToast('Previewing top review-heavy batches...', 'info');
+    try {
+        const res = await fetch('/api/v1/cleaning/preview-top-review-opportunities', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                source_name: sourceName || null,
+                opportunity_limit: Number.isFinite(opportunityLimit) ? opportunityLimit : 3,
+                preview_limit: 100,
+                requested_by: 'reports_ui',
+                notes: 'Previewed from review opportunity leaderboard',
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.reason || 'Failed to preview top review opportunities');
+        }
+        const counts = data.decision_counts || {};
+        const batches = (data.selected_batches || []).map(
+            item => `${item.source_name}:${item.batch_id}`,
+        );
+        const recoveryRate = ((data.projected_recovery_rate || 0) * 100).toFixed(1);
+        const remainingRate = ((data.projected_remaining_review_rate || 0) * 100).toFixed(1);
+        summaryEl.innerHTML += `
+            <div class="mt-3 p-3 rounded bg-fuchsia-50 border border-fuchsia-100 text-fuchsia-800">
+                Previewed <strong>${data.sampled_rows || 0}</strong> review rows across
+                <strong>${batches.length}</strong> top batches.
+                accept <strong>${counts.accept || 0}</strong>,
+                enrich <strong>${counts.enrich || 0}</strong>,
+                review <strong>${counts.review || 0}</strong>.
+                Recovery rate <strong>${recoveryRate}%</strong>,
+                remaining review rate <strong>${remainingRate}%</strong>.
+                ${batches.length ? `Batches: <strong>${escapeHtml(batches.join(', '))}</strong>.` : ''}
+            </div>
+        `;
+        if (typeof showToast === 'function') showToast('Top review-heavy batch preview completed.', 'success');
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Failed to preview top review-heavy batches.', 'error');
+    }
+}
+
+async function recleanTopReviewOpportunities() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const opportunityLimit = parseInt(document.getElementById('dirty-limit').value.trim() || '3', 10);
+    const summaryEl = document.getElementById('dirty-diagnostics-summary');
+
+    if (typeof showToast === 'function') showToast('Queueing top review-heavy batches for reclean...', 'info');
+    try {
+        const res = await fetch('/api/v1/cleaning/reclean-top-review-opportunities', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                source_name: sourceName || null,
+                opportunity_limit: Number.isFinite(opportunityLimit) ? opportunityLimit : 3,
+                batch_size: 1000,
+                requested_by: 'reports_ui',
+                notes: 'Triggered from review opportunity leaderboard',
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.reason || 'Failed to queue top review opportunities reclean');
+        }
+        const processed = (data.processed_batches || []).map(
+            item => `${item.source_name}:${item.batch_id}`,
+        );
+        summaryEl.innerHTML += `
+            <div class="mt-3 p-3 rounded bg-violet-50 border border-violet-100 text-violet-800">
+                Requeued <strong>${processed.length}</strong> top batches.
+                Affected review rows <strong>${data.affected_records || 0}</strong>.
+                ${processed.length ? `Batches: <strong>${escapeHtml(processed.join(', '))}</strong>.` : ''}
+            </div>
+        `;
+        if (typeof showToast === 'function') showToast('Top review-heavy batches queued.', 'success');
+        loadReviewOpportunities();
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Failed to queue top review-heavy batches.', 'error');
+    }
+}
+
+async function loadResidualReviewBuckets() {
+    const sourceName = document.getElementById('dirty-source-name').value.trim();
+    const batchId = document.getElementById('dirty-batch-id').value.trim();
+    const limit = document.getElementById('dirty-limit').value.trim() || '10';
+    const payload = {
+        preview_limit: Number(limit) || 10,
+        requested_by: 'reports_ui',
+        notes: 'Residual review buckets requested from dirty address diagnostics',
+    };
+    if (sourceName) payload.source_name = sourceName;
+    if (batchId) payload.batch_id = batchId;
+
+    if (!sourceName && !batchId) {
+        if (typeof showToast === 'function') {
+            showToast('Enter Source Name or Batch ID before loading residual buckets.', 'warn');
+        }
+        return;
+    }
+
+    if (typeof showToast === 'function') showToast('Loading residual review buckets...', 'info');
+    try {
+        const res = await fetch('/api/v1/cleaning/review-residual-buckets', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || data.status !== 'success') {
+            throw new Error(data.reason || 'Failed to load residual buckets');
+        }
+        const topReason = Object.entries(data.reason_counts || {})[0];
+        const topType = Object.entries(data.building_type_counts || {})[0];
+        const topDisagreement = Object.entries(data.parser_disagreement_kind_counts || {})[0];
+        const topGap = Object.entries(data.reference_gap_reason_counts || {})[0];
+        const summaryEl = document.getElementById('dirty-diagnostics-summary');
+        summaryEl.innerHTML += `
+            <div class="mt-3 p-3 rounded bg-amber-50 border border-amber-100 text-amber-800">
+                ${topReason ? `Top residual reason: <strong>${escapeHtml(topReason[0])}</strong> (${topReason[1]}).` : ''}
+                ${topType ? `Top residual type: <strong>${escapeHtml(topType[0])}</strong> (${topType[1]}).` : ''}
+                ${topDisagreement ? `Top disagreement kind: <strong>${escapeHtml(topDisagreement[0])}</strong> (${topDisagreement[1]}).` : ''}
+                ${topGap ? `Top reference gap: <strong>${escapeHtml(topGap[0])}</strong> (${topGap[1]}).` : ''}
+            </div>
+        `;
+        if (typeof showToast === 'function') {
+            showToast('Residual review buckets loaded.', 'success');
+        }
+    } catch (e) {
+        if (typeof showToast === 'function') {
+            showToast('Failed to load residual review buckets.', 'error');
+        }
     }
 }
 

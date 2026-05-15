@@ -81,6 +81,66 @@
 - **Dirty address diagnostics**
   - 将 `validation_json` / `reference_json` / `parser_json` 中已有的诊断结构产品化为控制台专门列表。
   - 优先支持按 `batch_id` 查看 API 刚导入并清洗完成的一批新数据。
+- **Scoped review backlog reclean**
+  - `reclean-reviews` 不再只支持全工作区回滚。
+  - 现在应支持按：
+    - `source_name`
+    - `batch_id`
+    精准重跑 review backlog。
+  - 目标：
+    - 先让特定新导入批次应用最新 Decision / Reranker / BuildingType 逻辑
+    - 再决定是否需要全量回放历史 review。
+  - 同时提供：
+    - `reclean-reviews-preview`
+    - 在不修改数据库的前提下，先预估当前筛选批次的 review 样本在最新逻辑下会变成多少：
+      - `accept`
+      - `enrich`
+      - `review`
+    - `reclean-reviews-evidence`
+    - 在实际重跑后，按 `source_name / batch_id` 返回当前真实决策分布：
+      - `accept`
+      - `enrich`
+      - `review`
+      - `pending`
+    - 并给出：
+      - `review_rate`
+      - `recovered_rate`
+    - 同时暴露当前残余 review 的主桶：
+      - `remaining_review_reason_counts`
+      - `remaining_review_building_type_counts`
+    - 目标：
+      - 让下一轮 Decision / BuildingType / policy 优化直接针对剩余 stubborn review 桶，而不是盲目继续调参。
+    - 同时提供：
+      - `reclean-review-opportunities`
+    - 作用：
+      - 按 `source_name / batch_id` 输出当前 review 最重的批次排行
+      - 帮助运营优先挑选最值得 preview / reclean 的目标批次
+    - 同时提供：
+      - `preview-top-review-opportunities`
+    - 作用：
+      - 对 leaderboard 中 top N 个 review 最重批次做聚合预估
+      - 在真正触发批量 reclean 前，先量化预计的：
+        - `accept`
+        - `enrich`
+        - `review`
+        转化分布
+      - 让运营先判断这一轮自动回放是否值得执行
+    - 同时提供：
+      - `reclean-top-review-opportunities`
+    - 作用：
+      - 按当前 leaderboard 自动挑选 top N 个 review 最重批次
+      - 统一重置为 `pending` 并触发一次 cleaning job
+      - 让 backlog 消化从“逐批手动点击”变成“按优先级自动执行”
+    - 同时提供：
+      - `review-residual-buckets`
+    - 作用：
+      - 对当前筛选批次直接输出剩余 review 的：
+        - `reason`
+        - `building_type`
+        - `parser_disagreement_kind`
+        - `reference_gap_reason`
+      主桶分布
+      - 让下一轮 ML / policy 优化能够直接对准真实残余桶
 
 ## 5. 预期收益
 - 让下一代 ML 从“工程原型”变成“生产能力”

@@ -74,6 +74,64 @@ Delivery requirements:
 - **Dirty address diagnostics**
   - productize existing diagnostics from `validation_json` / `reference_json` / `parser_json` into a dedicated console list
   - support batch-oriented inspection immediately after API import and cleaning
+- **Scoped review backlog reclean**
+  - `reclean-reviews` must no longer be workspace-only.
+  - It should support targeted review-backlog replay by:
+    - `source_name`
+    - `batch_id`
+  - Goal:
+    - let a newly imported batch absorb the latest Decision / Reranker / BuildingType behavior first
+    - decide later whether a full historical review replay is necessary
+  - It should also provide:
+    - `reclean-reviews-preview`
+    - to estimate, without mutating the database, how many filtered review rows would now become:
+      - `accept`
+      - `enrich`
+      - `review`
+    - `reclean-reviews-evidence`
+    - to return the actual current decision distribution after replay for a filtered `source_name / batch_id`:
+      - `accept`
+      - `enrich`
+      - `review`
+      - `pending`
+    - together with:
+      - `review_rate`
+      - `recovered_rate`
+    - It should also expose the dominant residual review buckets:
+      - `remaining_review_reason_counts`
+      - `remaining_review_building_type_counts`
+    - Goal:
+      - let the next Decision / BuildingType / policy iteration target the stubborn residual review buckets directly instead of tuning blindly.
+    - It should also provide:
+      - `reclean-review-opportunities`
+    - Purpose:
+      - rank the most review-heavy batches by `source_name / batch_id`
+      - help operators choose the highest-value preview / reclean target first
+    - It should also provide:
+      - `preview-top-review-opportunities`
+    - Purpose:
+      - aggregate a projected reclean preview for the top N most review-heavy batches
+      - quantify the expected:
+        - `accept`
+        - `enrich`
+        - `review`
+        conversion mix before triggering a bulk replay
+      - let operators decide whether the next automated replay wave is worth running
+    - It should also provide:
+      - `reclean-top-review-opportunities`
+    - Purpose:
+      - automatically select the top N most review-heavy batches from the leaderboard
+      - reset them to `pending` and trigger a single cleaning job
+      - turn backlog reduction into a prioritized batch operation instead of a manual per-batch click path
+    - It should also provide:
+      - `review-residual-buckets`
+    - Purpose:
+      - expose the dominant remaining review buckets for the current filtered batch across:
+        - `reason`
+        - `building_type`
+        - `parser_disagreement_kind`
+        - `reference_gap_reason`
+      - let the next ML / policy iteration target the real residual buckets directly
 
 ## 5. Expected Benefit
 - turn the next-generation ML system from an engineering prototype into a production capability

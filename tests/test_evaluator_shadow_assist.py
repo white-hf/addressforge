@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from addressforge.learning.evaluator import (
+    _building_type_assist_summary,
     _decision_assist_rollout_readiness,
     _decision_policy_calibration_proposal,
     _decision_shadow_assist_summary,
@@ -11,6 +12,59 @@ from addressforge.learning.evaluator import (
 
 
 class TestEvaluatorShadowAssist(unittest.TestCase):
+    def test_building_type_assist_summary_tracks_transitions_and_gold_match(self):
+        rows = [
+            {
+                "source_id": "1",
+                "raw_address_text": "A",
+                "label_json": '{"building_type":"multi_unit"}',
+                "building_type": "single_unit",
+                "ml_building_type": "multi_unit",
+                "bt_confidence": 0.95,
+                "bt_assist_enabled": True,
+                "assist_policy_mode": "assist_trial",
+                "bt_allowed_transitions": [["single_unit", "multi_unit"], ["multi_unit", "single_unit"]],
+                "bt_override_applied": True,
+            },
+            {
+                "source_id": "2",
+                "raw_address_text": "B",
+                "label_json": '{"building_type":"single_unit"}',
+                "building_type": "multi_unit",
+                "ml_building_type": "single_unit",
+                "bt_confidence": 0.91,
+                "bt_assist_enabled": True,
+                "assist_policy_mode": "assist_trial",
+                "bt_allowed_transitions": [["single_unit", "multi_unit"], ["multi_unit", "single_unit"]],
+                "bt_override_applied": False,
+            },
+            {
+                "source_id": "3",
+                "raw_address_text": "C",
+                "label_json": '{"building_type":"commercial"}',
+                "building_type": "single_unit",
+                "ml_building_type": "commercial",
+                "bt_confidence": 0.99,
+                "bt_assist_enabled": True,
+                "assist_policy_mode": "assist_trial",
+                "bt_allowed_transitions": [["single_unit", "multi_unit"], ["multi_unit", "single_unit"]],
+                "bt_override_applied": False,
+            },
+        ]
+
+        summary = _building_type_assist_summary(rows)
+        self.assertEqual(summary["compared"], 3)
+        self.assertEqual(summary["eligible_count"], 2)
+        self.assertEqual(summary["applied_count"], 1)
+        self.assertAlmostEqual(summary["gold_match_rate"], 1.0)
+        self.assertEqual(summary["transition_counts"]["single_unit->multi_unit"], 1)
+        self.assertEqual(summary["transition_counts"]["multi_unit->single_unit"], 1)
+        self.assertEqual(summary["transition_counts"]["single_unit->commercial"], 1)
+        self.assertEqual(summary["eligible_transition_counts"]["single_unit->multi_unit"], 1)
+        self.assertEqual(summary["eligible_transition_counts"]["multi_unit->single_unit"], 1)
+        self.assertNotIn("single_unit->commercial", summary["eligible_transition_counts"])
+        self.assertEqual(summary["applied_transition_counts"]["single_unit->multi_unit"], 1)
+
     def test_decision_shadow_assist_summary_tracks_advantage_and_buckets(self):
         rows = [
             {

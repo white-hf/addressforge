@@ -29,6 +29,12 @@ Delivery requirements:
   - `single_unit`
   - `multi_unit`
   - `commercial`
+- emit additional `assist_trial` evidence for:
+  - `eligible_count`
+  - `applied_count`
+  - `transition_counts`
+  - `gold_match_rate`
+  so rollout decisions for BuildingType assist can be evidence-based
 
 ### Requirement 17-2: Retrieval fusion policy
 Delivery requirements:
@@ -67,4 +73,3 @@ Delivery requirements:
 ## 8. Next Dependency
 After Phase 17:
 - `Phase 18: Rollout, Gate, And Operations Completion`
-

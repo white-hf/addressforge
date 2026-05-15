@@ -620,6 +620,43 @@ def _parser_candidates(
     return candidates
 
 
+def _classify_parser_disagreement(candidates: list[dict[str, Any]]) -> tuple[bool, bool, str]:
+    """
+    Returns:
+    - parser_disagreement: whether close candidates disagree at all
+    - hard_parser_disagreement: whether the disagreement changes the base address structure
+    - disagreement_kind: unit_only / base_address / none
+    """
+    if len(candidates) < 2:
+        return False, False, "none"
+
+    full_keys = {
+        (
+            str(item.get("street_number") or "").strip(),
+            normalize_street_name(item.get("street_name")) or "",
+            canonicalize_unit_number(item.get("unit_number")) or "",
+            normalize_city(item.get("city")) or "",
+            normalize_province(item.get("province"), get_profile("CA")) or "",
+        )
+        for item in candidates
+    }
+    if len(full_keys) < 2:
+        return False, False, "none"
+
+    base_keys = {
+        (
+            str(item.get("street_number") or "").strip(),
+            normalize_street_name(item.get("street_name")) or "",
+            normalize_city(item.get("city")) or "",
+            normalize_province(item.get("province"), get_profile("CA")) or "",
+        )
+        for item in candidates
+    }
+    if len(base_keys) == 1:
+        return True, False, "unit_only"
+    return True, True, "base_address"
+
+
 class AddressPlatformService:
     def __init__(
         self,
@@ -1199,17 +1236,7 @@ class AddressPlatformService:
             if canonicalize_unit_number(item.get("unit_number"))
             and canonicalize_unit_number(item.get("unit_number")) != normalized_unit
         ]
-        parser_disagreement = False
-        if len(close_candidates) >= 2:
-            normalized_pairs = {
-                (
-                    str(item.get("street_number") or "").strip(),
-                    normalize_street_name(item.get("street_name")) or "",
-                    canonicalize_unit_number(item.get("unit_number")) or "",
-                )
-                for item in close_candidates
-            }
-            parser_disagreement = len(normalized_pairs) >= 2
+        parser_disagreement, hard_parser_disagreement, parser_disagreement_kind = _classify_parser_disagreement(close_candidates)
 
         # Phase 17: BuildingTypeModel Inference (BEFORE Decision Logic)
         # 第 17 阶段：BuildingTypeModel 推理（在决策逻辑之前）
@@ -1221,7 +1248,9 @@ class AddressPlatformService:
                 "hints": {
                     "reference_score": ref_score,
                     "gps_conflict": bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
-                    "parser_disagreement": parser_disagreement
+                    "parser_disagreement": parser_disagreement,
+                    "hard_parser_disagreement": hard_parser_disagreement,
+                    "parser_disagreement_kind": parser_disagreement_kind,
                 }
             },
             reference_context=reference,
@@ -1281,7 +1310,10 @@ class AddressPlatformService:
             reason = "Multi-unit address includes a parsed unit with sufficient parser confidence."
         elif not normalized_unit and close_unit_candidates and building_type in {"multi_unit", "commercial"}:
             decision = "enrich"
-            reason = "Another strong parser candidate found a likely unit."
+            if building_type == "multi_unit" and parser_disagreement and not hard_parser_disagreement:
+                reason = "Multi-unit residential address is likely valid, but unit details may be recovered from soft disagreement."
+            else:
+                reason = "Another strong parser candidate found a likely unit."
         elif (
             parser_disagreement
             and building_type == "single_unit"
@@ -1306,7 +1338,36 @@ class AddressPlatformService:
         ):
             decision = "accept"
             reason = "Single-unit structure matches a known recoverable review pattern."
-        elif parser_disagreement and parse_score >= self._policy_float("parser_disagreement_review_threshold", 0.72):
+        elif (
+            building_type == "single_unit"
+            and not normalized_unit
+            and not reference
+            and not parser_disagreement
+            and not close_unit_candidates
+            and parse_score >= self._policy_float("single_unit_moderate_accept_threshold", 0.74)
+        ):
+            decision = "accept"
+            reason = "Single-unit residential address is complete enough to accept at moderate confidence."
+        elif (
+            building_type == "multi_unit"
+            and not normalized_unit
+            and not reference
+            and not hard_parser_disagreement
+            and parse_score >= self._policy_float("multi_unit_missing_unit_enrich_threshold", 0.68)
+        ):
+            decision = "enrich"
+            reason = "Multi-unit residential address is likely valid, but unit details may be missing."
+        elif (
+            building_type == "single_unit"
+            and not normalized_unit
+            and not reference
+            and parser_disagreement
+            and not hard_parser_disagreement
+            and parse_score >= self._policy_float("single_unit_soft_disagreement_accept_threshold", 0.74)
+        ):
+            decision = "accept"
+            reason = "Single-unit residential address is complete enough to accept despite soft unit-only disagreement."
+        elif hard_parser_disagreement and parse_score >= self._policy_float("parser_disagreement_review_threshold", 0.72):
             decision = "review"
             reason = "Strong parser candidates disagree on the structured address."
         elif building_type == "commercial" and parse_score >= self._policy_float("commercial_review_threshold", 0.72):
@@ -1350,7 +1411,9 @@ class AddressPlatformService:
                 "hints": {
                     "reference_score": ref_score,
                     "gps_conflict": bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
-                    "parser_disagreement": parser_disagreement
+                    "parser_disagreement": parser_disagreement,
+                    "hard_parser_disagreement": hard_parser_disagreement,
+                    "parser_disagreement_kind": parser_disagreement_kind,
                 }
             },
             reference_context=reference,
@@ -1452,6 +1515,8 @@ class AddressPlatformService:
                 "reference_score": round(ref_score, 4),
                 "reference_gap_reason": reference_gap_reason,
                 "parser_disagreement": parser_disagreement,
+                "hard_parser_disagreement": hard_parser_disagreement,
+                "parser_disagreement_kind": parser_disagreement_kind,
                 "alternate_unit_candidates": [
                     canonicalize_unit_number(item.get("unit_number"))
                     for item in close_unit_candidates

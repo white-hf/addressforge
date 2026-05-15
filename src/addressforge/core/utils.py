@@ -170,3 +170,17 @@ def ttl_cache(seconds: int = 60):
         wrapper.clear_cache = clear_cache
         return wrapper
     return decorator
+
+def simple_string_similarity(s1: str, s2: str) -> float:
+    """
+    Returns a simple Jaccard similarity between two strings based on characters.
+    返回两个字符串之间简单的基于字符的 Jaccard 相似度。
+    """
+    if not s1 or not s2:
+        return 0.0
+    s1, s2 = s1.upper(), s2.upper()
+    set1 = set(s1)
+    set2 = set(s2)
+    intersection = len(set1.intersection(set2))
+    union = len(set1.union(set2))
+    return intersection / union if union > 0 else 0.0

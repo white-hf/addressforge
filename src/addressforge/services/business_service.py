@@ -1,9 +1,60 @@
 from pathlib import Path
 from datetime import datetime
 import json
-from addressforge.core.common import fetch_all
+from addressforge.core.common import fetch_all, haversine_meters
 from addressforge.core.config import ADDRESSFORGE_DATABASE, ADDRESSFORGE_WORKSPACE_NAME
-from addressforge.core.utils import ttl_cache
+from addressforge.core.utils import ttl_cache, generate_user_hash, simple_string_similarity
+
+
+def _get_user_history_evidence(workspace_name: str, user_hash_key: str, base_address_key: str) -> dict[str, Any]:
+    """
+    Fetches the user's historical unit usage for a specific building.
+    获取用户对特定建筑物的历史单元使用情况。
+    """
+    if not user_hash_key or not base_address_key:
+        return {}
+        
+    query = """
+        SELECT cu.unit_number, f.use_count
+        FROM user_address_fact f
+        JOIN canonical_unit cu ON f.unit_address_id = cu.unit_id
+        JOIN canonical_building cb ON f.building_address_id = cb.building_id
+        WHERE f.user_hash_key = %s 
+          AND cb.building_key = %s
+          AND cb.workspace_name = %s
+        ORDER BY f.use_count DESC LIMIT 1
+    """
+    rows = fetch_all(query, (user_hash_key, base_address_key, workspace_name))
+    return rows[0] if rows else {}
+
+
+def _get_asset_evidence(workspace_name: str, base_address_key: str) -> dict[str, Any]:
+    """
+    Fetches canonical building data including its inferred type and known units.
+    获取规范化的建筑物数据，包括其推断的类型和已知单元。
+    """
+    if not base_address_key:
+        return {}
+        
+    query = """
+        SELECT building_id, street_number, street_name, latitude, longitude, is_active
+        FROM canonical_building
+        WHERE building_key = %s AND workspace_name = %s
+        LIMIT 1
+    """
+    rows = fetch_all(query, (base_address_key, workspace_name))
+    if not rows:
+        return {}
+        
+    building = rows[0]
+    # Check if it has multiple units in canonical_unit
+    units = fetch_all(
+        "SELECT COUNT(*) as cnt FROM canonical_unit WHERE building_key = %s AND workspace_name = %s",
+        (base_address_key, workspace_name)
+    )
+    building["has_known_units"] = bool(units and units[0]["cnt"] > 0)
+    building["known_unit_count"] = units[0]["cnt"] if units else 0
+    return building
 
 
 def _table_has_column(table_name: str, column_name: str) -> bool:
@@ -214,29 +265,42 @@ def _classify_dirty_categories(
     reason: str,
     hints: dict[str, Any],
     suggested_unit_number: str | None,
-    reference_json: dict[str, Any],
+    user_history_unit: str | None,
+    asset_data: dict[str, Any],
 ) -> list[str]:
+    """
+    Classifies dirty addresses into simplified, evidence-based categories.
+    将脏地址分类为简化的、基于证据的类别。
+    """
     categories: list[str] = []
-    reason_text = reason.lower()
-    if decision == "enrich" and (
-        "unit may be missing" in reason_text
-        or (
-            building_type == "multi_unit"
-            and not suggested_unit_number
-            and bool(reference_json.get("reference_unit_numbers"))
-        )
-    ):
-        categories.append("missing_unit")
-    if bool(hints.get("gps_conflict")):
-        categories.append("gps_conflict")
-    if str(hints.get("reference_gap_reason") or "").strip():
-        categories.append("reference_gap")
-    if bool(hints.get("parser_disagreement")):
-        categories.append("parser_disagreement")
+    
+    # 1. History Mismatch: User used units before, but current is missing it
+    # 1. 历史不符：用户以前使用过单元，但当前缺失
+    if user_history_unit and not suggested_unit_number:
+        categories.append("history_mismatch")
+        
+    # 2. Asset Gap: Matches a known multi-unit building but missing unit
+    # 2. 资产缺失：匹配已知的多单元建筑但缺失单元
+    if asset_data.get("has_known_units") and not suggested_unit_number:
+        if "history_mismatch" not in categories:
+            categories.append("asset_gap")
+            
+    # 3. Location Drift: GPS differs from Asset center or History
+    # 3. 位置偏移：GPS 与资产中心或历史记录不同
+    if bool(hints.get("gps_drift_detected")):
+        categories.append("location_drift")
+        
+    # 4. Status-based categories
+    # 4. 基于状态的类别
     if decision == "review":
         categories.append("manual_review")
     if decision == "reject":
         categories.append("reject")
+        
+    # Fallback for other issues (like parser disagreement)
+    if not categories and bool(hints.get("parser_disagreement")):
+        categories.append("model_conflict")
+        
     return categories
 
 
@@ -248,10 +312,11 @@ def list_dirty_address_diagnostics(
     limit: int = 100,
 ) -> dict[str, Any]:
     """
-    Returns dirty-address diagnostics for newly cleaned data.
-    返回新清洗数据中的脏地址诊断列表，支持按 source_name / batch_id 过滤。
+    Returns simplified dirty-address diagnostics based on deterministic evidence (assets, history).
+    返回基于确定性证据（资产、历史记录）的简化脏地址诊断。
     """
     safe_limit = max(1, min(int(limit), 500))
+    # Using the optimized composite index idx_cleaning_full_scan
     sql = """
         SELECT
             acr.raw_id,
@@ -261,6 +326,7 @@ def list_dirty_address_diagnostics(
             acr.reason,
             acr.building_type,
             acr.suggested_unit_number,
+            acr.base_address_key,
             acr.validation_json,
             acr.reference_json,
             acr.parser_json,
@@ -272,7 +338,6 @@ def list_dirty_address_diagnostics(
             r.latitude,
             r.longitude,
             r.source_payload,
-            JSON_UNQUOTE(JSON_EXTRACT(r.source_payload, '$.batch_id')) AS batch_id,
             acr.updated_at
         FROM address_cleaning_result acr
         JOIN raw_address_record r
@@ -292,96 +357,129 @@ def list_dirty_address_diagnostics(
     if batch_id:
         sql += " AND JSON_UNQUOTE(JSON_EXTRACT(r.source_payload, '$.batch_id')) = %s"
         params.append(str(batch_id))
+        
     sql += " ORDER BY acr.updated_at DESC, acr.raw_id DESC LIMIT %s"
-    params.append(max(safe_limit * 4, 200))
+    params.append(max(safe_limit * 2, 100)) # Fetch slightly more to filter effectively
     rows = fetch_all(sql, tuple(params))
 
     items: list[dict[str, Any]] = []
     category_counts: dict[str, int] = {
-        "missing_unit": 0,
-        "gps_conflict": 0,
-        "reference_gap": 0,
-        "parser_disagreement": 0,
+        "history_mismatch": 0,
+        "asset_gap": 0,
+        "location_drift": 0,
         "manual_review": 0,
         "reject": 0,
+        "model_conflict": 0
     }
+
     for row in rows:
         validation = _json_dict(row.get("validation_json"))
         reference = _json_dict(row.get("reference_json"))
         parser_json = _json_dict(row.get("parser_json"))
-        hints = validation.get("hints") if isinstance(validation.get("hints"), dict) else {}
-        canonical = validation.get("canonical") if isinstance(validation.get("canonical"), dict) else {}
-        parsed = (
-            parser_json.get("best_candidate", {}).get("parsed")
-            if isinstance(parser_json.get("best_candidate"), dict)
-            else {}
-        ) or {}
+        payload = _json_dict(row.get("source_payload"))
+        
+        raw_text = str(row.get("raw_address_text") or "").strip()
+        base_key = str(row.get("base_address_key") or "").strip()
+        
+        # 1. Evidence: User History
+        # 1. 证据：用户历史记录
+        user_name = payload.get("consignee")
+        user_phone = payload.get("mobile")
+        user_hash = generate_user_hash(user_name, user_phone) if user_name and user_phone else None
+        user_evidence = _get_user_history_evidence(workspace_name, user_hash, base_key) if user_hash else {}
+        user_history_unit = user_evidence.get("unit_number")
+        
+        # 2. Evidence: Asset Library
+        # 2. 证据：资产库
+        asset_evidence = _get_asset_evidence(workspace_name, base_key)
+        
+        # 3. Guard: Hallucination Detection (Levenshtein/Jaccard)
+        # 3. 守卫：幻觉检测
+        best_candidate = parser_json.get("best_candidate") or {}
+        parsed = best_candidate.get("parsed") or {}
+        cand_sn = str(parsed.get("street_number") or "")
+        cand_st = str(parsed.get("street_name") or "")
+        
+        is_hallucination = False
+        if cand_sn and cand_sn not in raw_text:
+            # If street number is completely missing from raw text (e.g. 123), it's a hallucination
+            is_hallucination = True
+        elif cand_st and simple_string_similarity(cand_st, raw_text) < 0.3:
+            is_hallucination = True
+            
+        # 4. GPS Drift Calculation
+        # 4. GPS 偏移计算
+        gps_drift_m = 0.0
+        gps_drift_detected = False
+        curr_lat = row.get("latitude")
+        curr_lon = row.get("longitude")
+        if curr_lat and curr_lon and asset_evidence.get("latitude"):
+            gps_drift_m = haversine_meters(
+                float(curr_lat), float(curr_lon),
+                float(asset_evidence["latitude"]), float(asset_evidence["longitude"])
+            )
+            if gps_drift_m > 250: # Threshold for drift
+                gps_drift_detected = True
+
         decision = str(row.get("decision") or validation.get("decision") or "").strip().lower()
         building_type = str(row.get("building_type") or validation.get("building_type") or "").strip().lower()
-        reason = str(row.get("reason") or validation.get("reason") or "").strip()
-        suggested_unit_number = _pick_first_non_empty(
-            row.get("suggested_unit_number"),
-            validation.get("suggested_unit_number"),
-            canonical.get("unit_number"),
-            (reference.get("reference_unit_numbers") or [None])[0] if isinstance(reference.get("reference_unit_numbers"), list) else None,
-        )
+        suggested_unit = row.get("suggested_unit_number")
+        
+        hints = (validation.get("hints") or {}).copy()
+        hints["gps_drift_detected"] = gps_drift_detected
+        hints["gps_drift_meters"] = gps_drift_m
+        hints["is_hallucination"] = is_hallucination
+        
         categories = _classify_dirty_categories(
             decision=decision,
             building_type=building_type,
-            reason=reason,
+            reason=str(row.get("reason") or ""),
             hints=hints,
-            suggested_unit_number=suggested_unit_number,
-            reference_json=reference,
+            suggested_unit_number=suggested_unit,
+            user_history_unit=user_history_unit,
+            asset_data=asset_evidence,
         )
+        
         if not categories:
             continue
-        for category in categories:
-            category_counts[category] = category_counts.get(category, 0) + 1
-        items.append(
-            {
-                "raw_id": row.get("raw_id"),
-                "source_name": row.get("source_name"),
-                "batch_id": _pick_first_non_empty(row.get("batch_id")),
-                "raw_address_text": row.get("raw_address_text"),
-                "decision": decision,
-                "confidence": float(row.get("confidence") or validation.get("confidence") or 0.0),
-                "reason": reason,
-                "building_type": building_type,
-                "categories": categories,
-                "primary_category": categories[0],
-                "suggested_unit_number": suggested_unit_number,
-                "suggested_address": {
-                    "street_number": _pick_first_non_empty(canonical.get("street_number"), parsed.get("street_number")),
-                    "street_name": _pick_first_non_empty(canonical.get("street_name"), parsed.get("street_name")),
-                    "unit_number": suggested_unit_number,
-                    "city": _pick_first_non_empty(canonical.get("city"), row.get("city"), parsed.get("city")),
-                    "province": _pick_first_non_empty(canonical.get("province"), row.get("province"), parsed.get("province")),
-                    "postal_code": _pick_first_non_empty(canonical.get("postal_code"), row.get("postal_code"), parsed.get("postal_code")),
-                    "country_code": _pick_first_non_empty(canonical.get("country_code"), row.get("country_code"), "CA"),
-                },
-                "hints": {
-                    "gps_conflict": bool(hints.get("gps_conflict")),
-                    "reference_score": hints.get("reference_score"),
-                    "reference_gap_reason": hints.get("reference_gap_reason"),
-                    "parser_disagreement": bool(hints.get("parser_disagreement")),
-                    "reference_available": bool(hints.get("reference_available") or reference),
-                },
-                "reference": {
-                    "external_id": reference.get("external_id"),
-                    "reference_unit_numbers": reference.get("reference_unit_numbers") or [],
-                },
-                "updated_at": str(row.get("updated_at") or ""),
-            }
-        )
+            
+        for cat in categories:
+            if cat in category_counts:
+                category_counts[cat] += 1
+
+        items.append({
+            "raw_id": row.get("raw_id"),
+            "source_name": row.get("source_name"),
+            "raw_address_text": raw_text,
+            "decision": decision,
+            "confidence": float(row.get("confidence") or validation.get("confidence") or 0.0),
+            "building_type": building_type,
+            "categories": categories,
+            "primary_category": categories[0],
+            "is_hallucination": is_hallucination,
+            "evidence": {
+                "user_history_unit": user_history_unit,
+                "user_history_count": user_evidence.get("use_count"),
+                "asset_found": bool(asset_evidence),
+                "asset_known_units": asset_evidence.get("known_unit_count", 0),
+                "gps_drift_meters": round(gps_drift_m, 1)
+            },
+            "suggested_address": {
+                "street_number": cand_sn if not is_hallucination else None,
+                "street_name": cand_st if not is_hallucination else None,
+                "unit_number": suggested_unit or user_history_unit,
+                "city": row.get("city"),
+                "province": row.get("province"),
+                "postal_code": row.get("postal_code"),
+            },
+            "updated_at": str(row.get("updated_at") or ""),
+        })
+
         if len(items) >= safe_limit:
             break
+
     return {
         "workspace_name": workspace_name,
-        "filters": {
-            "source_name": source_name,
-            "batch_id": batch_id,
-            "limit": safe_limit,
-        },
         "counts": {
             "total": len(items),
             "by_category": category_counts,

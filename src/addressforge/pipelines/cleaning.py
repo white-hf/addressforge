@@ -71,6 +71,25 @@ def _get_existing_result(workspace_name: str, raw_id: int) -> dict[str, Any] | N
     return rows[0] if rows else None
 
 
+def _coerce_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, str):
+            try:
+                reparsed = json.loads(parsed)
+            except Exception:
+                return {}
+            return reparsed if isinstance(reparsed, dict) else {}
+    return {}
+
+
 def _extract_feature_flags(raw_text: str, building_type: str, parsed: dict) -> dict[str, int]:
     """
     Identifies high-value structural patterns for strategic sampling.
@@ -118,13 +137,14 @@ def _upsert_stage_result(
     validation_result: dict[str, Any] | None = None,
     checkpoint_error: str | None = None,
 ) -> None:
-    validation = validation_result or {}
+    parse_payload = _coerce_json_object(parse_result)
+    validation = _coerce_json_object(validation_result)
     canonical = validation.get("canonical") or {}
     reference = validation.get("reference") or {}
     
     # Extract structural feature flags for future strategic sampling
     # 提取结构化特征标记以用于未来的战略抽样
-    best_candidate = (parse_result or {}).get("best_candidate") or {}
+    best_candidate = parse_payload.get("best_candidate") or {}
     parsed_data = best_candidate.get("parsed") or {}
     feature_flags = _extract_feature_flags(
         str(raw_row.get("raw_address_text") or ""), 
@@ -172,8 +192,8 @@ def _upsert_stage_result(
                 validation.get("suggested_unit_number"),
                 canonical.get("base_address_key"),
                 canonical.get("full_address_key"),
-                dumps_payload(parse_result) if parse_result else None,
-                dumps_payload(validation_result) if validation_result else None,
+                dumps_payload(parse_payload) if parse_payload else None,
+                dumps_payload(validation) if validation else None,
                 dumps_payload(reference) if reference else None,
                 dumps_payload(feature_flags),
                 checkpoint_stage,

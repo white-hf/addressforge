@@ -420,6 +420,69 @@ def _decision_assist_rollout_readiness(shadow_summary: dict[str, Any] | None) ->
     }
 
 
+def _building_type_assist_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    compared = 0
+    eligible_count = 0
+    applied_count = 0
+    gold_match_count = 0
+    transition_counts: dict[str, int] = {}
+    eligible_transition_counts: dict[str, int] = {}
+    applied_transition_counts: dict[str, int] = {}
+    samples: list[dict[str, Any]] = []
+
+    for row in rows:
+        gold_value = _extract_gold_value(_normalize_label_json(row.get("label_json")), "building_type")
+        if gold_value in (None, ""):
+            continue
+        compared += 1
+        heuristic_value = _extract_predicted_value(row, "building_type")
+        ml_value = _extract_predicted_value(row, "ml_building_type")
+        if not ml_value or ml_value == heuristic_value:
+            continue
+        transition = f"{heuristic_value or 'unknown'}->{ml_value}"
+        transition_counts[transition] = transition_counts.get(transition, 0) + 1
+        confidence = _to_float(row.get("bt_confidence"))
+        assist_enabled = bool(row.get("bt_assist_enabled"))
+        policy_mode = str(row.get("assist_policy_mode") or "").strip().lower()
+        allowed_transitions = row.get("bt_allowed_transitions") or []
+        is_allowed = [heuristic_value, ml_value] in allowed_transitions
+        is_eligible = assist_enabled and policy_mode == "assist_trial" and is_allowed and confidence >= 0.90
+        if is_eligible:
+            eligible_count += 1
+            eligible_transition_counts[transition] = eligible_transition_counts.get(transition, 0) + 1
+        was_applied = bool(row.get("bt_override_applied"))
+        if was_applied:
+            applied_count += 1
+            applied_transition_counts[transition] = applied_transition_counts.get(transition, 0) + 1
+            if ml_value == gold_value:
+                gold_match_count += 1
+        if len(samples) < 10:
+            samples.append(
+                {
+                    "source_id": row.get("source_id"),
+                    "raw_address_text": row.get("raw_address_text"),
+                    "heuristic_building_type": heuristic_value,
+                    "ml_building_type": ml_value,
+                    "gold_building_type": gold_value,
+                    "bt_confidence": confidence,
+                    "assist_eligible": is_eligible,
+                    "bt_override_applied": was_applied,
+                    "transition": transition,
+                }
+            )
+
+    return {
+        "compared": compared,
+        "eligible_count": eligible_count,
+        "applied_count": applied_count,
+        "gold_match_rate": round((gold_match_count / applied_count), 4) if applied_count > 0 else 0.0,
+        "transition_counts": transition_counts,
+        "eligible_transition_counts": eligible_transition_counts,
+        "applied_transition_counts": applied_transition_counts,
+        "samples": samples,
+    }
+
+
 def _decision_threshold_tuning_hints(
     shadow_summary: dict[str, Any] | None,
     readiness: dict[str, Any] | None,
@@ -755,6 +818,11 @@ def _predict_gold_rows_with_runtime(
                 # Phase 17: Extract ML BuildingType
                 # 第 17 阶段：提取 ML 建筑类型
                 current["ml_building_type"] = shadow_assist.get("ml_building_type")
+                current["bt_confidence"] = shadow_assist.get("bt_confidence")
+                current["bt_assist_enabled"] = shadow_assist.get("bt_assist_enabled")
+                current["bt_allowed_transitions"] = shadow_assist.get("bt_allowed_transitions")
+                current["bt_override_applied"] = shadow_assist.get("bt_override_applied")
+                current["assist_policy_mode"] = shadow_assist.get("assist_policy_mode")
                 
                 current["shadow_disagreement_reason"] = shadow_assist.get("disagreement_reason")
                 current["assist_eligible"] = shadow_assist.get("assist_eligible")
@@ -769,6 +837,12 @@ def _predict_gold_rows_with_runtime(
                 current["ml_shadow_decision"] = None
                 current["ml_shadow_score"] = None
                 current["ml_shadow_status"] = "error"
+                current["ml_building_type"] = None
+                current["bt_confidence"] = None
+                current["bt_assist_enabled"] = False
+                current["bt_allowed_transitions"] = []
+                current["bt_override_applied"] = False
+                current["assist_policy_mode"] = None
                 current["shadow_disagreement_reason"] = "runtime_error"
                 current["assist_eligible"] = False
                 current["assist_recommended_decision"] = None
@@ -959,7 +1033,8 @@ def run_baseline_evaluation(
             metrics_json["building_type_shadow_assist"] = {
                 "heuristic": building_metrics,
                 "ml_shadow": ml_building_metrics,
-                "shadow_advantage": float(ml_building_metrics.get("f1", 0.0)) - float(building_metrics.get("f1", 0.0)) if ml_building_metrics and building_metrics else 0.0
+                "shadow_advantage": float(ml_building_metrics.get("f1", 0.0)) - float(building_metrics.get("f1", 0.0)) if ml_building_metrics and building_metrics else 0.0,
+                "assist_summary": _building_type_assist_summary(gold_rows),
             }
         if unit_metrics:
             metrics_json["unit_number"] = unit_metrics
@@ -1176,6 +1251,7 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
     if bt_shadow_assist:
         bt_heuristic = bt_shadow_assist.get("heuristic") or {}
         bt_ml_shadow = bt_shadow_assist.get("ml_shadow") or {}
+        bt_assist_summary = bt_shadow_assist.get("assist_summary") or {}
         report.extend([
             "",
             "## 1.2 BuildingTypeModel Shadow",
@@ -1186,6 +1262,18 @@ def _generate_markdown_report(metrics: dict[str, Any], artifact: EvaluationArtif
             f"| Building Type Recall | {float(bt_heuristic.get('recall') or 0.0):.4f} | {float(bt_ml_shadow.get('recall') or 0.0):.4f} |",
             f"| Shadow Advantage | - | {float(bt_shadow_assist.get('shadow_advantage') or 0.0):+.4f} |",
         ])
+        if bt_assist_summary:
+            report.extend([
+                "",
+                "### BuildingType Assist Summary",
+                "| Metric | Value |",
+                "| :--- | :--- |",
+                f"| Eligible Count | {int(bt_assist_summary.get('eligible_count') or 0)} |",
+                f"| Applied Count | {int(bt_assist_summary.get('applied_count') or 0)} |",
+                f"| Gold Match Rate | {float(bt_assist_summary.get('gold_match_rate') or 0.0):.4f} |",
+                f"| Transition Counts | `{json.dumps(bt_assist_summary.get('transition_counts') or {}, ensure_ascii=False)}` |",
+                f"| Applied Transition Counts | `{json.dumps(bt_assist_summary.get('applied_transition_counts') or {}, ensure_ascii=False)}` |",
+            ])
 
     assist_readiness = metrics.get("decision_assist_rollout_readiness") or {}
     if assist_readiness:

@@ -193,6 +193,41 @@
   - 还是仍然应该保持：
   - `shadow_only` / `needs_more_assist_calibration`
 
+当前实现推进（2026-05-15）：
+- 为了直接压当前最大的 `review` 桶，runtime decision policy 已新增两条保守自动恢复规则：
+  - `single_unit_moderate_accept_threshold`
+  - `multi_unit_missing_unit_enrich_threshold`
+- 目标不是放开所有 moderate-confidence 地址，而是只收：
+  - 结构完整、无 reference、无 parser disagreement、无 alternate unit 候选的 `single_unit` 住宅地址
+  - 结构完整、无 reference、无 parser disagreement 的 `multi_unit` 缺 unit 住宅地址
+- 当前行为：
+  - `single_unit + moderate confidence + complete structure` 可直接 `accept`
+  - `multi_unit + moderate confidence + missing unit` 可直接 `enrich`
+- 设计意图：
+  - 优先减少 `Review Suggested` 中最大的住宅 `moderate confidence` 桶
+  - 不依赖把整个 runtime 直接切到 `assist_trial`
+  - 保持：
+    - commercial 守卫
+    - parser disagreement 守卫
+    - incomplete 守卫
+
+当前实现推进（继续）：
+- 已将 `parser_disagreement` 拆分为：
+  - `soft disagreement`
+  - `hard disagreement`
+- 当前判定逻辑：
+  - 若 close candidates 仅在同一 base address 上对 `unit_number` 有分歧，则视为：
+    - `parser_disagreement = true`
+    - `hard_parser_disagreement = false`
+    - `parser_disagreement_kind = unit_only`
+  - 若 close candidates 连 `street_number / street_name / city / province` 主体都冲突，则视为：
+    - `hard_parser_disagreement = true`
+    - 继续保守 `review`
+- 当前收益：
+  - `single_unit` 住宅地址在 soft disagreement 下可继续进入自动 `accept`
+  - `multi_unit` 缺 unit 地址在 soft disagreement 下可继续进入 `enrich`
+  - 只有真正的 base-address 硬冲突才继续进入 `review`
+
 ## 5. 预期收益
 - 让 ML 从“离线更好”进化成“在线可观察、可对比”
 - 为后续真正替代 heuristic 做证据积累

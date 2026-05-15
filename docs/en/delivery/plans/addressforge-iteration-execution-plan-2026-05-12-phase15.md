@@ -187,6 +187,41 @@ The purpose is not to enable override yet. The purpose is to answer:
   - or should remain:
   - `shadow_only` / `needs_more_assist_calibration`
 
+Current implementation progress (2026-05-15):
+- To directly reduce the largest live `review` bucket, the runtime decision policy now adds two conservative recovery thresholds:
+  - `single_unit_moderate_accept_threshold`
+  - `multi_unit_missing_unit_enrich_threshold`
+- The goal is not to open all moderate-confidence addresses, but only to recover:
+  - structurally complete `single_unit` residential addresses with no reference, no parser disagreement, and no alternate-unit evidence
+  - structurally complete `multi_unit` residential addresses that likely miss unit detail but have no reference and no parser disagreement
+- Current behavior:
+  - `single_unit + moderate confidence + complete structure` can now move directly to `accept`
+  - `multi_unit + moderate confidence + missing unit` can now move to `enrich`
+- Design intent:
+  - reduce the largest residential `moderate confidence` review bucket first
+  - avoid requiring a full runtime switch to `assist_trial`
+  - keep the existing:
+    - commercial guards
+    - parser-disagreement guards
+    - incomplete-address guards
+
+Current implementation progress (continued):
+- `parser_disagreement` is now split into:
+  - `soft disagreement`
+  - `hard disagreement`
+- Current classification:
+  - if close candidates only disagree on `unit_number` while preserving the same base address, the request is now treated as:
+    - `parser_disagreement = true`
+    - `hard_parser_disagreement = false`
+    - `parser_disagreement_kind = unit_only`
+  - if close candidates disagree on the base structure itself (`street_number / street_name / city / province`), the request is treated as:
+    - `hard_parser_disagreement = true`
+    - and remains conservatively in `review`
+- Current benefit:
+  - residential `single_unit` addresses can now still auto-`accept` under soft disagreement
+  - `multi_unit` addresses missing unit detail can now still auto-`enrich` under soft disagreement
+  - only true base-address conflicts remain blocked in `review`
+
 ## 5. Expected Benefit
 - evolve ML from “offline is better” to “online is observable and comparable”
 - build evidence for later heuristic replacement

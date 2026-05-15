@@ -128,7 +128,8 @@ CREATE TABLE IF NOT EXISTS gold_label (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_gold_label_source (workspace_name, source_name, source_id, task_type),
     KEY idx_gold_label_workspace_status (workspace_name, review_status, task_type, created_at),
-    KEY idx_gold_label_workspace_source (workspace_name, label_source, created_at)
+    KEY idx_gold_label_workspace_source (workspace_name, label_source, created_at),
+    KEY idx_gold_label_source_id (workspace_name, source_id)
 ) COMMENT='黄金标签表，存储经人工审核确认的真值数据';
 
 -- 表 8: gold_set_snapshot
@@ -180,7 +181,8 @@ CREATE TABLE IF NOT EXISTS active_learning_queue (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_active_learning_source (workspace_name, source_name, source_id, task_type),
-    KEY idx_active_learning_workspace_status (workspace_name, status, priority, created_at)
+    KEY idx_active_learning_workspace_status (workspace_name, status, priority, created_at),
+    KEY idx_active_learning_source_id (workspace_name, source_id)
 ) COMMENT='主动学习队列表，存储系统筛选出待人工审核的困难样本';
 
 -- 表 11: review_prescreen_cache
@@ -224,7 +226,9 @@ CREATE TABLE IF NOT EXISTS address_cleaning_result (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_cleaning_result_workspace_raw (workspace_name, raw_id),
     KEY idx_cleaning_result_workspace_processed (workspace_name, processed_at),
-    KEY idx_cleaning_result_decision (workspace_name, decision, processed_at)
+    KEY idx_cleaning_result_decision (workspace_name, decision, processed_at),
+    KEY idx_cleaning_result_confidence (workspace_name, confidence),
+    KEY idx_cleaning_result_full_scan (workspace_name, checkpoint_status, updated_at, raw_id)
 ) COMMENT='地址清洗结果表，记录每一条原始地址的最终结构化结果及决策';
 
 -- 表 13: historical_replay_run
