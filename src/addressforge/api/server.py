@@ -242,11 +242,37 @@ def _recover_candidate_unit_from_text(
         )
         if trailing_bare_unit_city_only_match:
             recovered_unit = canonicalize_unit_number(trailing_bare_unit_city_only_match.group(1))
+    
+    # Check for leading hyphen pattern: [unit]-[street_number] at the start of raw text (e.g. 215-2761 where street_number is 2761)
+    if not recovered_unit and street_number:
+        leading_hyphen_match = re.match(
+            rf"^\s*([A-Z0-9-]+)\s*-\s*{re.escape(street_number)}\b",
+            normalized_raw_text,
+        )
+        if leading_hyphen_match:
+            recovered_unit = canonicalize_unit_number(leading_hyphen_match.group(1))
+            if not parsed.get("unit_source"):
+                parsed["unit_source"] = "vector_retrieval_unit"
+
     if recovered_unit:
         parsed["unit_number"] = recovered_unit
         if not parsed.get("unit_source"):
             parsed["unit_source"] = "candidate_text_fallback"
 
+
+def _is_city_compatible(c1: str | None, c2: str | None) -> bool:
+    c1 = normalize_city(c1) or ""
+    c2 = normalize_city(c2) or ""
+    if not c1 or not c2:
+        return True
+    if c1 == c2:
+        return True
+    c1_tokens = {t for t in c1.upper().replace("-", " ").split() if t}
+    c2_tokens = {t for t in c2.upper().replace("-", " ").split() if t}
+    if not c1_tokens or not c2_tokens:
+        return True
+    overlap = c1_tokens & c2_tokens
+    return bool(overlap) and (len(overlap) / min(len(c1_tokens), len(c2_tokens))) >= 0.5
 
 def _score_candidate(
     parsed: dict[str, Any],
@@ -257,6 +283,7 @@ def _score_candidate(
     match_rule_weights: dict[str, Any] | None = None,
     candidate_feature_weights: dict[str, Any] | None = None,
     candidate_pair_weights: dict[str, Any] | None = None,
+    request_city: str | None = None,
 ) -> float:
     parse_confidence = float(parsed.get("parse_confidence") or 0.0)
     unit_confidence = float(parsed.get("unit_confidence") or 0.0)
@@ -278,6 +305,13 @@ def _score_candidate(
         base_score += 0.05
     if parsed.get("postal_code"):
         base_score += 0.03
+    cand_city = str(parsed.get("city") or "").strip().upper()
+    if cand_city and raw_text:
+        if cand_city not in normalized_raw_text:
+            base_score -= 0.12
+    if request_city:
+        if cand_city and not _is_city_compatible(cand_city, request_city):
+            base_score -= 0.20
     if parser_name and isinstance(parser_weights, dict):
         try:
             parser_weight = float(parser_weights.get(parser_name) or 0.0)
@@ -603,6 +637,7 @@ def _parser_candidates(
             match_rule_weights=match_rule_weights,
             candidate_feature_weights=candidate_feature_weights,
             candidate_pair_weights=candidate_pair_weights,
+            request_city=request.city,
         )
         rules = [parser_name]
         if parsed.get("unit_source"):
@@ -616,6 +651,117 @@ def _parser_candidates(
                 match_rules=rules,
             )
         )
+    
+    # Deduplicate existing candidates and build seen_keys
+    seen_keys = set()
+    for item in list(candidates):
+        p = item.parsed
+        key = (
+            str(p.get("street_number") or "").strip().upper(),
+            (normalize_street_name(p.get("street_name")) or "").upper(),
+            (canonicalize_unit_number(p.get("unit_number")) or "").upper(),
+            (normalize_city(p.get("city")) or "").upper(),
+            (normalize_province(p.get("province"), profile) or "").upper(),
+        )
+        seen_keys.add(key)
+
+    # Hybrid Search: Retrieve Top-K semantic anchors from reference DB using vector engine
+    try:
+        semantic_anchors = get_vector_engine().retrieve(
+            raw_text,
+            top_k=3,
+            latitude=request.latitude,
+            longitude=request.longitude,
+        )
+        for anchor in semantic_anchors:
+            # 1. Street Number Validation (typo-tolerant and digit-block aligned)
+            anchor_sn = str(anchor.get("street_number") or "").strip()
+            if anchor_sn:
+                anchor_digits_match = re.search(r"\d+", anchor_sn)
+                if anchor_digits_match:
+                    anchor_digits = anchor_digits_match.group(0)
+                    digit_blocks = re.findall(r"\d+", raw_text)
+                    if not any(anchor_digits in db or db == anchor_digits for db in digit_blocks):
+                        logger.info("Skipping anchor %s: street number digits %s not in raw text", anchor.get("reference_id"), anchor_digits)
+                        continue
+
+            # 2. Street Name Validation (typo-tolerant using SequenceMatcher)
+            anchor_st = str(anchor.get("street_name") or "").strip().upper()
+            if anchor_st:
+                from difflib import SequenceMatcher
+                common_suffixes = {"RD", "ROAD", "ST", "STREET", "AVE", "AVENUE", "DR", "DRIVE", "LN", "LANE", "CRT", "COURT", "PL", "PLACE", "CRES", "CRESCENT"}
+                anchor_tokens = {t for t in anchor_st.replace("-", " ").split() if t and t not in common_suffixes}
+                raw_tokens = {t for t in raw_text.upper().replace(",", " ").replace("-", " ").split() if t}
+                has_close_match = False
+                for at in anchor_tokens:
+                    for rt in raw_tokens:
+                        if SequenceMatcher(None, at, rt).ratio() >= 0.70:
+                            has_close_match = True
+                            break
+                    if has_close_match:
+                        break
+                if anchor_tokens and not has_close_match:
+                    logger.info("Skipping anchor %s: street name %s has no close match in raw text", anchor.get("reference_id"), anchor_st)
+                    continue
+
+            parsed = {
+                "street_number": anchor.get("street_number"),
+                "street_name": anchor.get("street_name"),
+                "unit_number": None,  # Do NOT initialize with anchor's unit_number to avoid hallucination
+                "city": anchor.get("city") or anchor.get("municipality"),
+                "province": anchor.get("province"),
+                "postal_code": anchor.get("postal_code"),
+                "unit_source": "vector_retrieval",
+                "parse_confidence": 0.88,
+                "unit_confidence": 0.10,
+                "postal_confidence": 0.90,
+            }
+            parsed.setdefault("city", normalize_city(request.city) or parsed.get("city"))
+            parsed.setdefault("province", normalize_province(request.province, profile) or parsed.get("province"))
+            parsed.setdefault("postal_code", request.postal_code or parsed.get("postal_code"))
+            
+            _recover_candidate_unit_from_text(
+                raw_text,
+                parsed,
+                fallback_city=request.city or parsed.get("city"),
+                fallback_province=request.province or parsed.get("province"),
+            )
+            _ensure_candidate_feature_vector(parsed, raw_text)
+            
+            key = (
+                str(parsed.get("street_number") or "").strip().upper(),
+                (normalize_street_name(parsed.get("street_name")) or "").upper(),
+                (canonicalize_unit_number(parsed.get("unit_number")) or "").upper(),
+                (normalize_city(parsed.get("city")) or "").upper(),
+                (normalize_province(parsed.get("province"), profile) or "").upper(),
+            )
+            if key not in seen_keys:
+                score = _score_candidate(
+                    parsed,
+                    raw_text=raw_text,
+                    parser_name="vector_retrieval",
+                    parser_weights=parser_weights,
+                    match_rule_weights=match_rule_weights,
+                    candidate_feature_weights=candidate_feature_weights,
+                    candidate_pair_weights=candidate_pair_weights,
+                    request_city=request.city,
+                )
+                rules = ["vector_retrieval"]
+                if parsed.get("unit_source"):
+                    rules.append(str(parsed["unit_source"]))
+                candidates.append(
+                    CandidateView(
+                        parser_name="vector_retrieval",
+                        parser_version="v1",
+                        score=score,
+                        parsed=parsed,
+                        match_rules=rules,
+                    )
+                )
+                seen_keys.add(key)
+    except Exception as e:
+        logger.warning("Failed to retrieve semantic anchors during _parser_candidates: %s", e)
+
     candidates.sort(key=lambda item: item.score, reverse=True)
     return candidates
 
@@ -692,9 +838,21 @@ class AddressPlatformService:
                             binding = manifest.get("runtime_binding") or {}
                             if not default_profile: self._default_profile = binding.get("profile") or self._default_profile
                             if not default_parsers: self._default_parsers = tuple(binding.get("parsers") or self._default_parsers)
+                            # Prioritize manifest's decision_policy if no explicit policy was passed
                             if not decision_policy: self._decision_policy = binding.get("decision_policy") or self._decision_policy
             except Exception as e:
                 logger.warning("Failed to load active manifest during Service init: %s", e)
+
+        # Always try to load a local decision_policy.json if it exists, overriding previous loads
+        # 如果存在本地 decision_policy.json，则始终尝试加载它，覆盖之前的加载
+        local_policy_path = Path("runtime/models/decision_policy.json")
+        if local_policy_path.exists():
+            try:
+                local_policy = json.loads(local_policy_path.read_text(encoding="utf-8"))
+                self._decision_policy.update(local_policy)
+                logger.info("Overrode decision policy with local file: %s", local_policy_path)
+            except Exception as e:
+                logger.warning("Failed to load local decision_policy.json: %s", e)
 
         self._model_service = model_service or get_model_service(manifest=manifest)
         self._reranker_service = reranker_service or get_reranker_service(manifest=manifest)
@@ -809,6 +967,7 @@ class AddressPlatformService:
         parser_disagreement: bool,
         gps_conflict: bool,
         suggested_unit_number: str | None = None,
+        city_mismatch: bool = False,
     ) -> dict[str, Any]:
         policy_mode = self._assist_policy_mode()
         ml_decision = str(ml_result.get("ml_decision") or "").strip().lower()
@@ -828,11 +987,65 @@ class AddressPlatformService:
                 "guard_reason": "agree_with_heuristic",
                 "policy_mode": policy_mode,
             }
-        if ml_decision == "reject":
+
+
+        # Optimized: Use policy-based thresholds if available
+        # 优化：如果可用，则使用基于策略的阈值
+        accept_threshold = float(self._decision_policy.get("accept_threshold", 0.5))
+        ml_accept_prob = float(ml_result.get("probabilities", {}).get("accept", 0.0))
+        
+        # Override top-1 decision if accept probability meets optimized threshold
+        # 如果 accept 概率满足优化后的阈值，则覆盖 top-1 决策
+        if ml_accept_prob >= accept_threshold and ml_decision != "accept":
+            logger.info("ML Accept Probability (%.4f) exceeds threshold (%.4f); overriding decision to accept", ml_accept_prob, accept_threshold)
+            ml_decision = "accept"
+            ml_score = ml_accept_prob
+
+        # If in assist_trial mode and ML strongly recommends 'reject' while heuristic is 'review', bypass heuristic guards
+        # 如果处于 assist_trial 模式，且 ML 强烈推荐“拒绝”而启发式是“审核”，则绕过启发式安全防护
+        review_threshold = float(self._decision_policy.get("review_threshold", 0.05)) # Default to 0.05 for reject
+        ml_reject_prob = float(ml_result.get("probabilities", {}).get("reject", 0.0))
+
+        if (
+            policy_mode == "assist_trial"
+            and heuristic_decision == "review"
+            and ml_decision == "reject"
+            and ml_reject_prob >= review_threshold
+        ):
+            logger.info(
+                "Assist Trial Mode: ML Reject Probability (%.4f) exceeds threshold (%.4f); overriding decision to reject (reason: %s -> %s)",
+                ml_reject_prob,
+                review_threshold,
+                heuristic_decision,
+                ml_decision
+            )
             return {
-                "eligible": False,
-                "recommended_decision": None,
-                "guard_reason": "reject_override_not_enabled",
+                "eligible": True,
+                "recommended_decision": "reject",
+                "guard_reason": None,
+                "policy_mode": policy_mode,
+            }
+
+        # If in assist_trial mode and ML strongly recommends 'accept', bypass heuristic guards for review -> accept
+        # 如果处于 assist_trial 模式，且 ML 强烈推荐“接受”，则绕过启发式安全防护，允许 review -> accept
+        if (
+            policy_mode == "assist_trial"
+            and heuristic_decision == "review"
+            and ml_decision == "accept"
+            and ml_accept_prob >= accept_threshold # Ensure ML's confidence is above tuned threshold
+            and "incomplete" not in reason_text
+            and not city_mismatch
+        ):
+            logger.info(
+                "Assist Trial Mode: ML (%.4f) overrides heuristic review for accept (reason: %s -> %s)",
+                ml_accept_prob,
+                heuristic_decision,
+                ml_decision
+            )
+            return {
+                "eligible": True,
+                "recommended_decision": "accept",
+                "guard_reason": None,
                 "policy_mode": policy_mode,
             }
 
@@ -841,6 +1054,13 @@ class AddressPlatformService:
             # 规则：根据单元号是否存在，拆分 review -> accept 和 review -> enrich
             target_decision = "enrich" if suggested_unit_number else "accept"
             
+            if city_mismatch:
+                return {
+                    "eligible": False,
+                    "recommended_decision": None,
+                    "guard_reason": "city_mismatch_guard",
+                    "policy_mode": policy_mode,
+                }
             if building_type == "commercial":
                 return {
                     "eligible": False,
@@ -1108,7 +1328,12 @@ class AddressPlatformService:
         
         # New: Phase 13 - Step 1: Building Anchor Retrieval (Vector Bedrock)
         # 新增：第 13 阶段 - 步骤 1：建筑锚点检索（向量基石）
-        semantic_anchors = self._get_vector_engine().retrieve(request.raw_address_text, top_k=3)
+        semantic_anchors = self._get_vector_engine().retrieve(
+            request.raw_address_text,
+            top_k=3,
+            latitude=request.latitude,
+            longitude=request.longitude,
+        )
         
         # Inject semantic anchors into request for parser guidance
         # 将语义锚点注入请求以指导解析器
@@ -1218,6 +1443,23 @@ class AddressPlatformService:
                     }
                 )
                 ref_score = float(match.score)
+                # Penalize reference score if city matches user's request city but is different
+                req_city = normalize_city(request.city)
+                ref_city = normalize_city(reference.get("city") or reference.get("municipality"))
+                if req_city and ref_city and not _is_city_compatible(req_city, ref_city):
+                    ref_score -= 0.25
+                    logger.info("Reference city mismatch: request=%s, reference=%s. Penalizing ref_score.", req_city, ref_city)
+                
+                if ref_score < 0.65:
+                    logger.info("Reference score too low (%.4f) after penalties; discarding reference match.", ref_score)
+                    reference = None
+                    ref_score = 0.0
+                else:
+                    # Align canonical fields to the matched reference data
+                    if reference.get("street_name"):
+                        street_name = normalize_street_name(str(reference["street_name"]))
+                    if reference.get("street_number"):
+                        street_number = str(reference["street_number"]).strip()
             else:
                 # Diagnose reference gap
                 # 诊断参考差距
@@ -1457,6 +1699,9 @@ class AddressPlatformService:
             disagreement_reason = "model_reject_recovery"
         else:
             disagreement_reason = "general_disagreement"
+        req_city = normalize_city(request.city)
+        cand_city = normalize_city(parsed.get("city"))
+        city_mismatch = bool(req_city and cand_city and not _is_city_compatible(req_city, cand_city))
         assist_recommendation = self._shadow_assist_recommendation(
             heuristic_decision=decision,
             ml_result=ml_result,
@@ -1467,6 +1712,7 @@ class AddressPlatformService:
             parser_disagreement=parser_disagreement,
             gps_conflict=bool(ref_score < self._policy_float("gps_weak_match_threshold", 0.62)) if reference else False,
             suggested_unit_number=normalized_unit,
+            city_mismatch=city_mismatch,
         )
         heuristic_decision = decision
         decision_source = "heuristic"

@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from addressforge.core.common import fetch_all
 from addressforge.core.features import AddressFeatureExtractor
+from addressforge.api.server import AddressPlatformService, AddressRequest
 
 def train_decision_model(workspace_name="default"):
     print(f"Exporting 3-class training data for workspace: {workspace_name}")
@@ -19,17 +20,14 @@ def train_decision_model(workspace_name="default"):
     query = """
         SELECT 
             g.review_status as gold_status,
-            c.decision as system_decision,
-            r.raw_address_text,
-            c.parser_json,
-            c.validation_json,
-            c.reference_json
+            g.label_json as gold_json,
+            r.raw_address_text
         FROM gold_label g
         JOIN raw_address_record r ON g.source_id = CAST(r.raw_id AS CHAR)
-        LEFT JOIN address_cleaning_result c ON r.raw_id = c.raw_id
         WHERE g.workspace_name = %s
           AND (g.review_status IN ('accepted', 'rejected'))
           AND g.source_id REGEXP '^[0-9]+$'
+          AND g.task_type = 'review'
     """
     rows = fetch_all(query, (workspace_name,))
     
@@ -37,17 +35,32 @@ def train_decision_model(workspace_name="default"):
         print("No gold labels found for training.")
         return
 
-    print(f"Found {len(rows)} samples. Extracting features...")
+    print(f"Found {len(rows)} samples. Validating on-the-fly to extract latest features...")
     
+    service = AddressPlatformService()
     extractor = AddressFeatureExtractor()
     X_list = []
     y_list = []
     
-    # Class mapping: 0=reject, 1=accept, 2=review
-    for row in rows:
+    for i, row in enumerate(rows):
+        if i % 100 == 0:
+            print(f"Processing sample {i}/{len(rows)}...")
         gold_status = row["gold_status"]
-        system_dec = row["system_decision"]
+        raw_text = row["raw_address_text"]
+        gold_json = json.loads(row["gold_json"]) if isinstance(row["gold_json"], str) else row["gold_json"]
         
+        try:
+            val_res = service.validate(AddressRequest(
+                raw_address_text=raw_text,
+                city=gold_json.get("city"),
+                province=gold_json.get("province"),
+                postal_code=gold_json.get("postal_code"),
+            ))
+        except Exception as e:
+            print(f"Error validating on-the-fly: {e}")
+            continue
+            
+        system_dec = val_res.get("decision", "review")
         if gold_status == "rejected":
             target = 0
         elif system_dec == "review":
@@ -55,22 +68,21 @@ def train_decision_model(workspace_name="default"):
         else:
             target = 1
             
-        raw_text = row["raw_address_text"]
-        parser_json = json.loads(row["parser_json"]) if row.get("parser_json") else {}
-        parsed = parser_json.get("best_candidate", {}).get("parsed", {})
+        best = val_res.get("best_candidate") or {}
+        parsed = best.get("parsed") or {}
         
-        validation_ctx = json.loads(row["validation_json"]) if row.get("validation_json") else {}
-        reference_ctx = json.loads(row["reference_json"]) if row.get("reference_json") else {}
-
-        # For decision model, we assume semantic alignment is high for accepted/reviewed samples 
-        # that had a reference match
-        semantic_alignment = 1.0 if reference_ctx.get("external_id") else 0.0
+        validation_ctx = {
+            "confidence": val_res.get("confidence", 0.5),
+            "hints": val_res.get("hints", {})
+        }
+        reference_ctx = val_res.get("reference") or {}
+        semantic_alignment = best.get("semantic_alignment", 0.0)
 
         # Extract features
         features = extractor.extract_features(
             raw_text, 
             parsed, 
-            parser_name="hybrid",
+            parser_name=best.get("parser_name", "hybrid"),
             validation_context=validation_ctx,
             reference_context=reference_ctx,
             semantic_alignment=semantic_alignment

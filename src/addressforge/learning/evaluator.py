@@ -916,6 +916,21 @@ def _to_float(value: Any) -> float:
         return 0.0
 
 
+def _to_count(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value)
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
 def _compare_release_benchmark(candidate: dict[str, Any], active: dict[str, Any] | None) -> dict[str, Any]:
     if not active:
         return {
@@ -1003,6 +1018,11 @@ def run_baseline_evaluation(
         cleaning_coverage = 0.0 if sample_count <= 0 else round(min(0.99, cleaned_count / sample_count), 4)
         gold_coverage = 0.0 if sample_count <= 0 else round(min(0.99, gold_count / sample_count), 4)
         gold_rows = _load_gold_comparison_rows(workspace_name) if gold_count > 0 else []
+        target_runtime = _resolve_model_runtime(
+            workspace_name,
+            model_name,
+            model_version,
+        )
         if gold_rows:
             gold_rows = _predict_gold_rows_with_runtime(workspace_name, model_name, model_version, gold_rows)
         decision_metrics = _field_metrics(gold_rows, "decision") if gold_rows else None
@@ -1068,11 +1088,6 @@ def run_baseline_evaluation(
         if benchmark_path.exists() and not _skip_canada_benchmark():
             try:
                 from addressforge.learning.canada_benchmark import run_canada_address_benchmark
-                target_runtime = _resolve_model_runtime(
-                    workspace_name,
-                    model_name,
-                    model_version,
-                )
                 metrics_json["canada_benchmark"] = run_canada_address_benchmark(
                     benchmark_path,
                     workspace_name=workspace_name,
@@ -1117,8 +1132,8 @@ def run_baseline_evaluation(
             "disagreement_rate": _to_float((replay_result or {}).get("disagreement_rate")),
             "active_current_match_rate": _to_float((replay_result or {}).get("active_current_match_rate")),
             "candidate_current_match_rate": _to_float((replay_result or {}).get("candidate_current_match_rate")),
-            "mismatches": int((replay_result or {}).get("mismatches") or 0),
-            "failures": int((replay_result or {}).get("failures") or 0),
+            "mismatches": _to_count((replay_result or {}).get("mismatches")),
+            "failures": _to_count((replay_result or {}).get("failures")),
             "regression_detected": _to_float((replay_result or {}).get("disagreement_rate")),
             "status": "failed" if replay_error else "completed",
             "error": replay_error,
@@ -1162,8 +1177,8 @@ def run_baseline_evaluation(
         markdown_report = generate_markdown_report(metrics_json, locale=os.getenv("ADDRESSFORGE_LOCALE", "en"))
         # Add runtime identity to metrics for transparency
         # 将运行时标识添加到指标中以提高透明度
-        total_eval = len(predicted)
-        impact_rows = [r for r in predicted if r.get("reranker_impact_detected")]
+        total_eval = len(gold_rows)
+        impact_rows = [r for r in gold_rows if r.get("reranker_impact_detected")]
         
         impact_by_direction: dict[str, int] = {}
         for r in impact_rows:

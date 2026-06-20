@@ -21,6 +21,32 @@ from addressforge.core.config import ADDRESSFORGE_MODEL_ARTIFACT_DIR, ADDRESSFOR
 from addressforge.core.features import AddressFeatureExtractor
 from addressforge.core.utils import logger
 
+def is_street_name_match(s1: str | None, s2: str | None) -> bool:
+    if s1 is None or s2 is None:
+        return s1 == s2
+    s1_upper = s1.upper().strip()
+    s2_upper = s2.upper().strip()
+    if s1_upper == s2_upper:
+        return True
+    suffix_map = {
+        "ROAD": "RD", "RD": "RD",
+        "STREET": "ST", "ST": "ST",
+        "AVENUE": "AVE", "AVE": "AVE",
+        "BOULEVARD": "BLVD", "BLVD": "BLVD",
+        "LANE": "LN", "LN": "LN",
+        "DRIVE": "DR", "DR": "DR",
+        "COURT": "CRT", "CRT": "CRT",
+        "CIRCLE": "CIR", "CIR": "CIR",
+        "HIGHWAY": "HWY", "HWY": "HWY",
+        "TRAIL": "TRL", "TRL": "TRL",
+        "PLACE": "PL", "PL": "PL",
+        "TERRACE": "TER", "TER": "TER",
+        "CRESCENT": "CRES", "CRES": "CRES",
+        "WAY": "WAY",
+    }
+    def get_tokens(s: str) -> set[str]:
+        return {suffix_map.get(t, t) for t in s.split() if t}
+    return get_tokens(s1_upper) == get_tokens(s2_upper)
 
 class ParserRerankerTrainer:
     """
@@ -50,6 +76,7 @@ class ParserRerankerTrainer:
                 WHERE workspace_name = %s
                   AND review_status = 'accepted'
                   AND label_source = 'human'
+                  AND task_type = 'review'
                 GROUP BY source_id
             ) latest
               ON latest.latest_gold_label_id = g.gold_label_id
@@ -62,6 +89,7 @@ class ParserRerankerTrainer:
             WHERE g.workspace_name = %s
               AND g.review_status = 'accepted'
               AND g.label_source = 'human'
+              AND g.task_type = 'review'
             LIMIT %s
         """
         rows = fetch_all(query, (self.workspace_name, self.workspace_name, limit))
@@ -76,9 +104,24 @@ class ParserRerankerTrainer:
             if not candidates:
                 continue
 
-            gold_sn = str(gold_json.get("street_number") or "").strip()
-            gold_st = normalize_street_name(gold_json.get("street_name"))
-            gold_un = canonicalize_unit_number(gold_json.get("unit_number"))
+            best_cand_parsed = parser_json.get("best_candidate", {}).get("parsed", {})
+
+            # Define "Correct" target values from gold label with system fallback
+            gold_sn = gold_json.get("street_number")
+            if gold_sn is None:
+                gold_sn = best_cand_parsed.get("street_number")
+            gold_sn = str(gold_sn or "").strip()
+
+            gold_st = gold_json.get("street_name")
+            if gold_st is None:
+                gold_st = best_cand_parsed.get("street_name")
+            gold_st = normalize_street_name(gold_st)
+
+            gold_un = gold_json.get("unit_number")
+            if gold_un is None:
+                gold_un = best_cand_parsed.get("unit_number")
+            gold_un = canonicalize_unit_number(gold_un)
+
             gold_base_key = gold_json.get("base_address_key")
 
             best_h_score = max([float(c.get("score") or 0.5) for c in candidates])
@@ -90,7 +133,14 @@ class ParserRerankerTrainer:
                 cand_un = canonicalize_unit_number(parsed.get("unit_number"))
                 cand_base_key = parsed.get("base_address_key")
 
-                is_match = (cand_sn == gold_sn and cand_st == gold_st and cand_un == gold_un)
+                is_match = (
+                    cand_sn == gold_sn 
+                    and is_street_name_match(cand_st, gold_st) 
+                    and cand_un == gold_un
+                    and bool(cand_sn)
+                )
+                if not cand_sn and not gold_sn and not cand_st and not gold_st and not cand_un and not gold_un:
+                    is_match = True
                 semantic_alignment = 1.0 if gold_base_key and cand_base_key and gold_base_key == cand_base_key else 0.0
 
                 features = self.extractor.extract_features(

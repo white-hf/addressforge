@@ -88,11 +88,51 @@ class GeoNovaReferenceMatcher:
         self._workspace_name = workspace_name
         self._reference_map: dict[str, list[dict[str, object]]] | None = None
 
+    def _normalize_street_name_for_matching(self, street_name: str) -> str:
+        s_name = street_name.upper()
+        suffix_map = {
+            "ROAD": "RD", "RD": "RD",
+            "STREET": "ST", "ST": "ST",
+            "AVENUE": "AVE", "AVE": "AVE",
+            "BOULEVARD": "BLVD", "BLVD": "BLVD",
+            "LANE": "LN", "LN": "LN",
+            "DRIVE": "DR", "DR": "DR",
+            "COURT": "CRT", "CRT": "CRT",
+            "CIRCLE": "CIR", "CIR": "CIR",
+            "HIGHWAY": "HWY", "HWY": "HWY",
+            "TRAIL": "TRL", "TRL": "TRL",
+            "PLACE": "PL", "PL": "PL",
+            "TERRACE": "TER", "TER": "TER",
+        }
+        dir_map = {
+            "NORTH": "N", "N": "N",
+            "SOUTH": "S", "S": "S",
+            "EAST": "E", "E": "E",
+            "WEST": "W", "W": "W",
+            "NORTHEAST": "NE", "NE": "NE",
+            "NORTHWEST": "NW", "NW": "NW",
+            "SOUTHEAST": "SE", "SE": "SE",
+            "SOUTHWEST": "SW", "SW": "SW",
+        }
+        tokens = s_name.split()
+        if not tokens:
+            return s_name
+        if tokens[0] in dir_map:
+            tokens[0] = dir_map[tokens[0]]
+        if len(tokens) > 1 and tokens[-1] in dir_map:
+            tokens[-1] = dir_map[tokens[-1]]
+            if len(tokens) > 2 and tokens[-2] in suffix_map:
+                tokens[-2] = suffix_map[tokens[-2]]
+        elif tokens[-1] in suffix_map:
+            tokens[-1] = suffix_map[tokens[-1]]
+        return " ".join(tokens)
+
     def _coarse_reference_key(self, row: dict[str, object]) -> str:
+        s_name = self._normalize_street_name_for_matching(str(row.get("street_name") or ""))
         return "|".join(
             [
                 str(row.get("street_number") or "").upper(),
-                str(row.get("street_name") or "").upper(),
+                s_name,
                 str(row.get("province") or "").upper(),
             ]
         )
@@ -198,7 +238,8 @@ class GeoNovaReferenceMatcher:
     ) -> ReferenceMatchResult | None:
         if not street_number or not street_name or not province:
             return None
-        key = "|".join([street_number.upper(), street_name.upper(), province.upper()])
+        s_name = self._normalize_street_name_for_matching(street_name)
+        key = "|".join([street_number.upper(), s_name, province.upper()])
         candidates = self._load_reference_map().get(key, [])
         if not candidates:
             return None

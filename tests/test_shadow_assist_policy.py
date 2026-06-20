@@ -13,10 +13,16 @@ class DummyModelService:
     def predict_building_type(self, *args, **kwargs):  # pragma: no cover - not used in direct policy test
         return {"status": "no_model", "probabilities": {}}
 
+    def describe_runtime(self) -> dict[str, Any]:
+        return {"model_type": "dummy", "model_path": "n/a"}
+
 
 class DummyRerankerService:
     def rerank_candidates(self, raw_text, candidates, semantic_anchors=None):
         return list(candidates)
+
+    def describe_runtime(self) -> dict[str, Any]:
+        return {"model_type": "dummy", "model_path": "n/a"}
 
 
 class DummyVectorEngine:

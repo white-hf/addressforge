@@ -39,7 +39,13 @@ echo "API Server models reloaded."
 
 # Queue a job for the worker to reload its models
 # 为 worker 排队一个任务以重载其模型
-python3 -c "from addressforge.services.job_service import enqueue_job; enqueue_job('default', 'reload_models_once', {}, 'system', 0)"
-echo "Worker model reload job queued."
+python3 -c "
+from addressforge.services.job_service import enqueue_job
+try:
+    enqueue_job('default', 'reload_models_once', {}, 'system', 0)
+except ValueError as e:
+    print(f'Reload job enqueue status: {e}')
+"
+echo "Worker model reload job handled."
 
 echo "--- Evolution Cycle Completed ---"

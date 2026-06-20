@@ -889,6 +889,14 @@ def get_ingestion_runtime_config(workspace_name: str) -> dict[str, Any]:
     return {
         "mode": mode if mode in {"api", "db"} else "api",
         "source_name": source_name or ADDRESSFORGE_INGESTION_SOURCE_NAME,
+        "batch_list_override": str(
+            get_setting(
+                workspace_name,
+                "env.ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE",
+                "",
+            )
+            or ""
+        ).strip(),
         "api": {
             "batch_size": _coerce_positive_int(
                 get_setting(workspace_name, "ingestion.api.batch_size", ADDRESSFORGE_INGESTION_API_BATCH_SIZE),
@@ -963,7 +971,10 @@ def build_ingestion_provider_from_runtime_config(workspace_name: str, *, mode: s
     resolved_mode = (mode or config["mode"] or "api").strip().lower()
     resolved_source_name = str(source_name or config["source_name"] or ADDRESSFORGE_INGESTION_SOURCE_NAME).strip()
     if resolved_mode == "api":
-        return ApiIngestionProvider(source_name=resolved_source_name)
+        return ApiIngestionProvider(
+            source_name=resolved_source_name,
+            batch_list_override=str(config.get("batch_list_override") or "").strip(),
+        )
     if resolved_mode == "db":
         db_cfg = config["db"]
         return DatabaseIngestionProvider(
@@ -1568,13 +1579,29 @@ def _run_reload_models_job(job: dict[str, Any]) -> dict[str, Any]:
     Instructs the worker to reload all models in memory.
     指示 worker 重载内存中的所有模型。
     """
+    from pathlib import Path
+
     logger.info("Worker is hot-reloading models...")
+    from addressforge.models import bootstrap_default_registry
     from addressforge.services.model_service import get_model_service
     from addressforge.services.reranker_service import get_reranker_service
     from addressforge.core.retrieval import get_vector_engine
-    
-    get_model_service().reload_models()
-    get_reranker_service().reload_models()
+
+    snapshot = bootstrap_default_registry()
+    active_model = snapshot.get("model") if isinstance(snapshot, dict) else None
+    manifest = None
+    if active_model and active_model.get("artifact_path"):
+        artifact_path = Path(active_model["artifact_path"])
+        if artifact_path.exists():
+            try:
+                import json
+
+                manifest = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to load active manifest during worker reload: %s", exc)
+
+    get_model_service(manifest=manifest).reload_models(manifest=manifest)
+    get_reranker_service(manifest=manifest).reload_models(manifest=manifest)
     get_vector_engine().reload_models()
     
     return {

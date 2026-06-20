@@ -50,12 +50,14 @@ class ApiIngestionProvider(BaseIngestionProvider):
         token: str = ADDRESSFORGE_INGESTION_API_TOKEN,
         timeout: int = ADDRESSFORGE_INGESTION_API_TIMEOUT,
         source_name: str = ADDRESSFORGE_INGESTION_SOURCE_NAME,
+        batch_list_override: str = "",
         adapter_name: str = "legacy_batch_orders",
     ) -> None:
         super().__init__(source_name=source_name)
         self.api_url = api_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.batch_list_override = str(batch_list_override or "").strip()
         self.adapter = resolve_api_source_adapter(adapter_name)
 
     def fetch_page(self, cursor_value: str | None, batch_size: int) -> IngestionPage:
@@ -75,6 +77,7 @@ class ApiIngestionProvider(BaseIngestionProvider):
                     source_name=self.source_name,
                     timeout=self.timeout,
                     token=self.token,
+                    batch_list_override=self.batch_list_override,
                 ),
                 cursor_value,
                 batch_size or ADDRESSFORGE_INGESTION_API_BATCH_SIZE,

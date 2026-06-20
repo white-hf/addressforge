@@ -13,7 +13,7 @@ def test_hybrid_parser_extracts_apartment_unit_and_tail():
         profile=CANADA_PROFILE,
     )
     assert parsed["street_number"] == "2060"
-    assert parsed["street_name"] == "QUINGATE PL"
+    assert parsed["street_name"] == "QUINGATE PLACE"
     assert parsed["unit_number"] == "1123"
     assert parsed["city"] == "Halifax"
     assert parsed["province"] == "NS"
@@ -22,7 +22,7 @@ def test_hybrid_parser_extracts_apartment_unit_and_tail():
 def test_hybrid_parser_handles_dotted_unit_prefix():
     parsed = hybrid_canadian_parse_address("2060 Quingate Place, Apt. 1123, Halifax, NS", profile=CANADA_PROFILE)
     assert parsed["street_number"] == "2060"
-    assert parsed["street_name"] == "QUINGATE PL"
+    assert parsed["street_name"] == "QUINGATE PLACE"
     assert parsed["unit_number"] == "1123"
 
 
@@ -215,7 +215,7 @@ def test_validate_repeated_leading_unit_before_known_city_recovers_true_apartmen
 def test_hybrid_parser_recovers_no_comma_bare_trailing_unit_city_without_fallback():
     parsed = hybrid_canadian_parse_address("241 Broad Street 105 Bedford NS", profile=CANADA_PROFILE)
     assert parsed["street_number"] == "241"
-    assert parsed["street_name"] == "BROAD ST"
+    assert parsed["street_name"] == "BROAD STREET"
     assert parsed["unit_number"] == "105"
     assert parsed["city"] == "Bedford"
     assert parsed["province"] == "NS"
@@ -575,17 +575,29 @@ def test_hybrid_parser_recovers_route_only_before_city_pattern():
 def test_hybrid_parser_recovers_reversed_civic_before_city_pattern():
     parsed = hybrid_canadian_parse_address("Terrace Street 264 New Glasgow NS", profile=CANADA_PROFILE)
     assert parsed["street_number"] == "264"
-    assert parsed["street_name"] == "TERRACE ST"
+    assert parsed["street_name"] == "TERRACE STREET"
     assert parsed["unit_number"] is None
     assert parsed["city"] == "New Glasgow"
     assert parsed["province"] == "NS"
 
     parsed = hybrid_canadian_parse_address("Braemar Drive 11 Dartmouth NS", profile=CANADA_PROFILE)
     assert parsed["street_number"] == "11"
-    assert parsed["street_name"] == "BRAEMAR DR"
+    assert parsed["street_name"] == "BRAEMAR DRIVE"
     assert parsed["unit_number"] is None
     assert parsed["city"] == "Dartmouth"
     assert parsed["province"] == "NS"
+
+
+def test_hybrid_parser_does_not_default_missing_city_to_halifax():
+    parsed = hybrid_canadian_parse_address(
+        "Granville Street 285, New Glasgow, NS, B2H4Y8, CA",
+        profile=CANADA_PROFILE,
+    )
+    assert parsed["street_number"] is None
+    assert parsed["street_name"] is None
+    assert parsed["city"] == "New Glasgow"
+    assert parsed["province"] == "NS"
+    assert parsed["postal_code"] == "B2H 4Y8"
 
 
 def test_hybrid_parser_recovers_prefixed_civic_before_city_pattern():
@@ -956,54 +968,55 @@ def test_validate_trailing_bare_unit_without_comma_before_city_is_recovered():
 
 
 def test_hybrid_parser_handles_commercial_premise_without_civic_number():
-    parsed = hybrid_canadian_parse_address("Scotia Square Suite 500, Halifax, NS")
+    parsed = hybrid_canadian_parse_address("Scotia Square Suite 500, Halifax, NS", profile=CANADA_PROFILE)
     assert parsed["street_number"] is None
     assert parsed["street_name"] is None
     assert parsed["unit_number"] == "500"
 
-    prefixed = hybrid_canadian_parse_address("Suite 500 Scotia Square, Halifax, NS")
+    prefixed = hybrid_canadian_parse_address("Suite 500 Scotia Square, Halifax, NS", profile=CANADA_PROFILE)
     assert prefixed["street_number"] is None
     assert prefixed["street_name"] is None
     assert prefixed["unit_number"] == "500"
 
-    unit_prefixed = hybrid_canadian_parse_address("Unit 210 Park Lane Mall, Halifax, NS")
+    unit_prefixed = hybrid_canadian_parse_address("Unit 210 Park Lane Mall, Halifax, NS", profile=CANADA_PROFILE)
     assert unit_prefixed["street_number"] is None
     assert unit_prefixed["street_name"] is None
     assert unit_prefixed["unit_number"] == "210"
 
-    kiosk = hybrid_canadian_parse_address("Kiosk 2 Scotia Square, Halifax, NS")
+    kiosk = hybrid_canadian_parse_address("Kiosk 2 Scotia Square, Halifax, NS", profile=CANADA_PROFILE)
     assert kiosk["street_number"] is None
     assert kiosk["street_name"] is None
     assert kiosk["unit_number"] == "KIOSK 2"
 
 
 def test_hybrid_parser_handles_abbreviated_and_labeled_prefix_units():
-    lower = hybrid_canadian_parse_address("Lwr 123 Main St, Halifax, NS")
+    lower = hybrid_canadian_parse_address("Lwr 123 Main St, Halifax, NS", profile=CANADA_PROFILE)
     assert lower["street_number"] == "123"
     assert lower["street_name"] == "MAIN ST"
     assert lower["unit_number"] == "LWR"
 
-    upper = hybrid_canadian_parse_address("Upr 123 Main St, Halifax, NS")
+    upper = hybrid_canadian_parse_address("Upr 123 Main St, Halifax, NS", profile=CANADA_PROFILE)
     assert upper["street_number"] == "123"
     assert upper["street_name"] == "MAIN ST"
     assert upper["unit_number"] == "UPR"
 
-    door = hybrid_canadian_parse_address("Door 3 123 Main St, Halifax, NS")
+    door = hybrid_canadian_parse_address("Door 3 123 Main St, Halifax, NS", profile=CANADA_PROFILE)
     assert door["street_number"] == "123"
     assert door["street_name"] == "MAIN ST"
     assert door["unit_number"] == "DOOR 3"
 
-    lot = hybrid_canadian_parse_address("Lot 12 123 Main St, Halifax, NS")
+    lot = hybrid_canadian_parse_address("Lot 12 123 Main St, Halifax, NS", profile=CANADA_PROFILE)
     assert lot["street_number"] == "123"
     assert lot["street_name"] == "MAIN ST"
     assert lot["unit_number"] == "LOT 12"
 
-    trailing_door = hybrid_canadian_parse_address("123 Main St Door 3, Halifax, NS")
+    trailing_door = hybrid_canadian_parse_address("123 Main St Door 3, Halifax, NS", profile=CANADA_PROFILE)
     assert trailing_door["street_number"] == "123"
     assert trailing_door["street_name"] == "MAIN ST"
     assert trailing_door["unit_number"] == "DOOR 3"
 
-    trailing_lot = hybrid_canadian_parse_address("123 Main St Lot 12, Halifax, NS")
+    trailing_lot = hybrid_canadian_parse_address("123 Main St Lot 12, Halifax, NS", profile=CANADA_PROFILE)
     assert trailing_lot["street_number"] == "123"
     assert trailing_lot["street_name"] == "MAIN ST"
     assert trailing_lot["unit_number"] == "LOT 12"
+

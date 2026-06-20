@@ -116,9 +116,16 @@ class VectorRetrievalEngine:
         except Exception as e:
             logger.error(f"Failed to build vector index: {e}")
 
-    def retrieve(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def retrieve(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        latitude: float | None = None,
+        longitude: float | None = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Retrieves the top-k most semantically similar reference records.
+        Retrieves the top-k most semantically similar reference records,
+        optionally filtering or sorting based on physical GPS distance.
         """
         if not self._initialized:
             self._initialize()
@@ -131,19 +138,84 @@ class VectorRetrievalEngine:
             query_emb = self.model.encode([query_text], normalize_embeddings=True)
             query_emb = np.array(query_emb).astype('float32')
             
-            # Search index
-            distances, indices = self.index.search(query_emb, top_k)
+            # Safely parse query coordinates
+            try:
+                q_lat = float(latitude) if latitude is not None else None
+                q_lon = float(longitude) if longitude is not None else None
+            except (ValueError, TypeError):
+                q_lat, q_lon = None, None
+                
+            has_query_gps = (q_lat is not None and q_lon is not None)
             
-            results = []
-            for i in range(top_k):
+            # Determine search size
+            search_k = top_k
+            if has_query_gps:
+                search_k = max(top_k * 5, 30)
+                
+            if self.index:
+                search_k = min(search_k, self.index.ntotal)
+                
+            if search_k <= 0:
+                return []
+                
+            # Search index
+            distances, indices = self.index.search(query_emb, search_k)
+            
+            # Local imports to prevent circular references
+            from addressforge.core.common import haversine_meters
+            from addressforge.core.config import ADDRESSFORGE_GPS_CONFLICT_METERS
+            
+            max_dist = ADDRESSFORGE_GPS_CONFLICT_METERS
+            
+            raw_candidates = []
+            for i in range(search_k):
                 idx = indices[0][i]
                 if idx != -1 and idx < len(self.metadata):
                     score = float(distances[0][i])
                     record = dict(self.metadata[idx])
                     record["vector_score"] = score
-                    results.append(record)
                     
-            return results
+                    if has_query_gps:
+                        cand_lat = record.get("reference_lat")
+                        cand_lon = record.get("reference_lon")
+                        try:
+                            c_lat = float(cand_lat) if cand_lat is not None else None
+                            c_lon = float(cand_lon) if cand_lon is not None else None
+                        except (ValueError, TypeError):
+                            c_lat, c_lon = None, None
+                            
+                        if c_lat is not None and c_lon is not None:
+                            dist = haversine_meters(q_lat, q_lon, c_lat, c_lon)
+                            record["distance_meters"] = dist
+                            if dist <= max_dist:
+                                record["gps_conflict"] = False
+                            else:
+                                record["gps_conflict"] = True
+                        else:
+                            record["distance_meters"] = None
+                            record["gps_conflict"] = False
+                    else:
+                        record["distance_meters"] = None
+                        record["gps_conflict"] = False
+                        
+                    raw_candidates.append(record)
+                    
+            if has_query_gps:
+                within_range = [
+                    r for r in raw_candidates
+                    if r.get("distance_meters") is not None and r["distance_meters"] <= max_dist
+                ]
+                if within_range:
+                    within_range.sort(key=lambda r: r["vector_score"], reverse=True)
+                    return within_range[:top_k]
+                else:
+                    # Fallback to returning raw semantic top-k candidates, flagged with distance and gps_conflict=True
+                    raw_candidates.sort(key=lambda r: r["vector_score"], reverse=True)
+                    return raw_candidates[:top_k]
+            else:
+                raw_candidates.sort(key=lambda r: r["vector_score"], reverse=True)
+                return raw_candidates[:top_k]
+                
         except Exception as e:
             logger.error(f"Vector retrieval failed for query '{query_text}': {e}")
             return []

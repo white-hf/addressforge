@@ -1,10 +1,62 @@
 import os
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 from catboost import CatBoostClassifier
 from addressforge.core.features import get_feature_engine
 from addressforge.core.utils import logger
+
+def _is_same_base_address(cand: dict, anchor: dict) -> bool:
+    cand_base = str(cand.get("base_address_key") or "").strip()
+    anchor_base = str(anchor.get("base_address_key") or "").strip()
+    if cand_base and anchor_base and cand_base == anchor_base:
+        return True
+        
+    # Structural fallback
+    c_num = str(cand.get("street_number") or "").strip().upper()
+    a_num = str(anchor.get("street_number") or "").strip().upper()
+    if not c_num or c_num != a_num:
+        return False
+        
+    c_prov = str(cand.get("province") or "").strip().upper()
+    a_prov = str(anchor.get("province") or "").strip().upper()
+    if not c_prov or c_prov != a_prov:
+        return False
+        
+    c_city = str(cand.get("city") or "").strip().upper()
+    a_cities = [str(anchor.get(k) or "").strip().upper() for k in ["city", "municipality", "community"] if anchor.get(k)]
+    if not c_city or not any(c_city == ac or ac in c_city or c_city in ac for ac in a_cities):
+        return False
+        
+    c_street = str(cand.get("street_name") or "").strip().upper()
+    a_street = str(anchor.get("street_name") or "").strip().upper()
+    if not c_street or not a_street:
+        return False
+        
+    if c_street == a_street:
+        return True
+        
+    suffix_map = {
+        "ROAD": "RD", "RD": "RD",
+        "STREET": "ST", "ST": "ST",
+        "AVENUE": "AVE", "AVE": "AVE",
+        "BOULEVARD": "BLVD", "BLVD": "BLVD",
+        "LANE": "LN", "LN": "LN",
+        "DRIVE": "DR", "DR": "DR",
+        "COURT": "CRT", "CRT": "CRT",
+        "CIRCLE": "CIR", "CIR": "CIR",
+        "HIGHWAY": "HWY", "HWY": "HWY",
+        "TRAIL": "TRL", "TRL": "TRL",
+        "PLACE": "PL", "PL": "PL",
+        "TERRACE": "TER", "TER": "TER",
+    }
+    
+    def normalize_name(s: str) -> set[str]:
+        return {suffix_map.get(t, t) for t in s.split() if t}
+        
+    return normalize_name(c_street) == normalize_name(a_street)
+
 
 class RerankerService:
     def __init__(self, manifest: Dict[str, Any] | None = None):
@@ -85,12 +137,11 @@ class RerankerService:
                 # 第 13 阶段：如果锚点可用，计算语义对齐分
                 semantic_alignment = 0.0
                 if semantic_anchors:
-                    # Compare cand base key with top anchor base keys
-                    cand_base = str(parsed.get("base_address_key") or "")
+                    # Compare cand base key/structure with top anchor keys/structures
                     for anchor in semantic_anchors:
-                        anchor_base = str(anchor.get("base_address_key") or "")
-                        if cand_base == anchor_base:
-                            semantic_alignment = max(semantic_alignment, anchor.get("vector_score", 0.9))
+                        if _is_same_base_address(parsed, anchor):
+                            if not anchor.get("gps_conflict", False):
+                                semantic_alignment = max(semantic_alignment, anchor.get("vector_score", 0.9))
                 
                 # Extract features for this candidate
                 features = self.feature_extractor.extract_features(

@@ -547,10 +547,10 @@ async def reclean_top_review_opportunities(request: CleaningRequest):
     workspace = request.workspace_name or ADDRESSFORGE_WORKSPACE_NAME
     limit = max(1, min(int(request.opportunity_limit or 3), 20))
     items = _fetch_review_opportunity_items(workspace, request.source_name, limit)
+    selected_items = [item for item in items if item.get("source_name") and item.get("batch_id")]
     selected = [
         {"source_name": str(item.get("source_name") or ""), "batch_id": str(item.get("batch_id") or "")}
-        for item in items
-        if item.get("source_name") and item.get("batch_id")
+        for item in selected_items
     ]
     if not selected:
         return {
@@ -588,7 +588,7 @@ async def reclean_top_review_opportunities(request: CleaningRequest):
     
     # Calculate detailed batch-level preview summaries before actual mutation
     # 在实际变更之前，计算详细的批次级预估摘要
-    batch_summaries = _build_batch_recovery_summaries(workspace, selected, sample_limit)
+    batch_summaries = _build_batch_recovery_summaries(workspace, selected_items, sample_limit)
     
     # Calculate aggregate preview from batch summaries
     # 从批次摘要计算聚合预估
@@ -646,7 +646,7 @@ async def reclean_top_review_opportunities(request: CleaningRequest):
         "workspace_name": workspace,
         "source_name": request.source_name,
         "opportunity_limit": limit,
-        "preview_summary": preview,
+        "preview_summary": preview_summary,
         "processed_batches": selected,
         "affected_records": affected,
         "rolled_back_to": min_id,

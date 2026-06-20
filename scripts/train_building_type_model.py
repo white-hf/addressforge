@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from addressforge.core.common import fetch_all
 from addressforge.core.features import AddressFeatureExtractor
+from addressforge.api.server import AddressPlatformService, AddressRequest
 
 def train_building_type_model(workspace_name="default"):
     print(f"--- Phase 17: Training BuildingTypeModel for workspace: {workspace_name} ---")
@@ -18,25 +19,28 @@ def train_building_type_model(workspace_name="default"):
     query = """
         SELECT 
             g.label_json as gold_json,
-            r.raw_address_text,
-            c.parser_json,
-            c.validation_json,
-            c.reference_json
+            r.raw_address_text
         FROM gold_label g
+        JOIN (
+            SELECT source_id, MAX(gold_label_id) AS latest_gold_label_id
+            FROM gold_label
+            WHERE workspace_name = %s
+              AND review_status = 'accepted'
+            GROUP BY source_id
+        ) latest ON latest.latest_gold_label_id = g.gold_label_id
         JOIN raw_address_record r ON g.source_id = CAST(r.raw_id AS CHAR)
-        JOIN address_cleaning_result c ON r.raw_id = c.raw_id
         WHERE g.workspace_name = %s
-          AND g.review_status = 'accepted'
           AND g.source_id REGEXP '^[0-9]+$'
     """
-    rows = fetch_all(query, (workspace_name,))
+    rows = fetch_all(query, (workspace_name, workspace_name))
     
     if not rows:
         print("No gold labels found for BuildingType training.")
         return
 
-    print(f"Found {len(rows)} samples. Extracting features...")
+    print(f"Found {len(rows)} samples. Validating on-the-fly to extract latest features...")
     
+    service = AddressPlatformService()
     extractor = AddressFeatureExtractor()
     X_list = []
     y_list = []
@@ -45,7 +49,9 @@ def train_building_type_model(workspace_name="default"):
     # 0 = single_unit, 1 = multi_unit, 2 = commercial
     class_map = {"single_unit": 0, "multi_unit": 1, "commercial": 2}
     
-    for row in rows:
+    for i, row in enumerate(rows):
+        if i % 100 == 0:
+            print(f"Processing sample {i}/{len(rows)}...")
         raw_text = row["raw_address_text"]
         gold_json = json.loads(row["gold_json"]) if isinstance(row["gold_json"], str) else row["gold_json"]
         
@@ -55,19 +61,31 @@ def train_building_type_model(workspace_name="default"):
             
         target = class_map[building_type]
         
-        parser_json = json.loads(row["parser_json"]) if row.get("parser_json") else {}
-        parsed = parser_json.get("best_candidate", {}).get("parsed", {})
+        try:
+            val_res = service.validate(AddressRequest(
+                raw_address_text=raw_text,
+                city=gold_json.get("city"),
+                province=gold_json.get("province"),
+                postal_code=gold_json.get("postal_code"),
+            ))
+        except Exception as e:
+            print(f"Error validating on-the-fly: {e}")
+            continue
+            
+        best = val_res.get("best_candidate") or {}
+        parsed = best.get("parsed") or {}
         
-        validation_ctx = json.loads(row["validation_json"]) if row.get("validation_json") else {}
-        reference_ctx = json.loads(row["reference_json"]) if row.get("reference_json") else {}
-
-        # Semantic alignment simulation
-        semantic_alignment = 1.0 if reference_ctx.get("external_id") else 0.0
+        validation_ctx = {
+            "confidence": val_res.get("confidence", 0.5),
+            "hints": val_res.get("hints", {})
+        }
+        reference_ctx = val_res.get("reference") or {}
+        semantic_alignment = best.get("semantic_alignment", 0.0)
 
         features = extractor.extract_features(
             raw_text, 
             parsed, 
-            parser_name="hybrid",
+            parser_name=best.get("parser_name", "hybrid"),
             validation_context=validation_ctx,
             reference_context=reference_ctx,
             semantic_alignment=semantic_alignment

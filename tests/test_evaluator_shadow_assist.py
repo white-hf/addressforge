@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+from unittest.mock import MagicMock, patch
 import unittest
 
+from addressforge.learning.evaluator import run_baseline_evaluation
 from addressforge.learning.evaluator import (
     _building_type_assist_summary,
     _decision_assist_rollout_readiness,
@@ -142,6 +145,92 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
         thresholds = {item["threshold"] for item in proposal["recommended_changes"]}
         self.assertIn("assist_accept_score_threshold", thresholds)
         self.assertIn("reject_override", thresholds)
+
+    def test_run_baseline_evaluation_uses_runtime_bundle_validation(self):
+        fake_rows = [
+            {
+                "gold_label_id": 1,
+                "source_id": "1",
+                "label_json": '{"decision":"accept","building_type":"multi_unit","unit_number":"5"}',
+                "raw_address_text": "1200 Main St Apt 5 Halifax NS",
+                "city": "Halifax",
+                "province": "NS",
+                "postal_code": "B3H 0A1",
+                "country_code": "CA",
+                "decision": "accept",
+                "building_type": "multi_unit",
+                "suggested_unit_number": "5",
+            }
+        ]
+        model_service = MagicMock()
+        reranker_service = MagicMock()
+        model_service.describe_runtime.return_value = {"model_path": "runtime/models/default_canada_default_catboost_canada_default_v1.pkl"}
+        reranker_service.describe_runtime.return_value = {"model_path": "runtime/models/reranker.cbm"}
+        model_service.validate = MagicMock()
+        model_service.validate.return_value = {
+            "decision": "accept",
+            "building_type": "multi_unit",
+            "suggested_unit_number": "5",
+            "ml_decision": {"ml_decision": "accept", "ml_score": 0.93, "status": "success"},
+            "shadow_assist": {
+                "ml_building_type": "multi_unit",
+                "bt_confidence": 0.93,
+                "bt_assist_enabled": True,
+                "bt_allowed_transitions": [["single_unit", "multi_unit"], ["multi_unit", "single_unit"]],
+                "bt_override_applied": False,
+                "assist_policy_mode": "assist_trial",
+            },
+            "reranker_impact_detected": False,
+        }
+
+        with patch.dict(
+            "os.environ",
+            {
+                "ADDRESSFORGE_SKIP_CANADA_BENCHMARK": "1",
+                "ADDRESSFORGE_SKIP_REPLAY_ON_EVAL": "1",
+            },
+            clear=False,
+        ), patch(
+            "addressforge.learning.evaluator.create_run",
+            return_value=123,
+        ), patch(
+            "addressforge.learning.evaluator.finish_run",
+            return_value=None,
+        ), patch(
+            "addressforge.learning.evaluator.fetch_all",
+            side_effect=[[{"cnt": 1}], [{"cnt": 1}], fake_rows, [{"decision": "accept", "building_type": "multi_unit", "suggested_unit_number": "5"}]],
+        ), patch(
+            "addressforge.learning.evaluator.count_gold_labels", return_value=1
+        ), patch(
+            "addressforge.learning.evaluator.get_active_model",
+            return_value={"model_name": "canada_default", "model_version": "canada_default_v1", "metrics_json": {"release_benchmark": {"decision_f1": 0.5}}},
+        ), patch(
+            "addressforge.learning.evaluator.get_model",
+            return_value=None,
+        ), patch(
+            "addressforge.learning.evaluator.register_model_version",
+            return_value={"model_name": "canada_default", "model_version": "canada_default_v1"},
+        ), patch(
+            "addressforge.learning.evaluator._predict_gold_rows_with_runtime",
+            return_value=fake_rows,
+        ), patch(
+            "addressforge.learning.evaluator._resolve_model_runtime",
+            return_value={"ok": True, "profile": "base_canada", "parsers": ("simple_rule",), "decision_policy": {}, "model_service": model_service, "reranker_service": reranker_service, "manifest": {}},
+        ):
+            artifact = run_baseline_evaluation(workspace_name="default", model_name="canada_default", model_version="canada_default_v1", dataset_name="gold_v20260517")
+
+        self.assertEqual(artifact["metric_name"], "decision_f1")
+        self.assertEqual(artifact["metrics_json"]["runtime_identity"]["decision_model"]["model_path"], "runtime/models/default_canada_default_catboost_canada_default_v1.pkl")
+        self.assertEqual(model_service.describe_runtime.call_count, 1)
+        self.assertEqual(reranker_service.describe_runtime.call_count, 1)
+
+    def test_to_count_handles_list_mismatches(self):
+        from addressforge.learning.evaluator import _to_count
+
+        self.assertEqual(_to_count([{"raw_id": 1}, {"raw_id": 2}]), 2)
+        self.assertEqual(_to_count({"a": 1, "b": 2}), 2)
+        self.assertEqual(_to_count(None), 0)
+        self.assertEqual(_to_count("3"), 3)
 
 
 if __name__ == "__main__":

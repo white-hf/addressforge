@@ -132,7 +132,7 @@ class AddressFeatureExtractor:
 
         return features
 
-    def vectorize(self, feature_dict: Dict[str, Any]) -> List[float]:
+    def vectorize(self, feature_dict: Dict[str, Any]) -> List[Any]:
         """
         Converts feature dict to a strictly numerical list for ML consumption.
         将特征字典转换为供 ML 使用的纯数值列表。
@@ -148,7 +148,9 @@ class AddressFeatureExtractor:
             "confidence", "reference_score", "gps_conflict", "parser_disagreement",
             "parse_confidence", "score_delta", "semantic_alignment"
         ]
-        return [float(feature_dict.get(k, 0)) for k in ordered_keys]
+        # Keep types as they are (int or float) to support CatBoost categorical features.
+        # CatBoost 要求类别特征必须是整数或字符串，不能是浮点数 (如 4.0)。
+        return [feature_dict.get(k, 0) for k in ordered_keys]
 
 def get_feature_engine(workspace_name: str = "default") -> AddressFeatureExtractor:
     """

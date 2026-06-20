@@ -199,6 +199,7 @@ class ApiAdapterContext:
     source_name: str
     timeout: int
     token: str = ""
+    batch_list_override: str = ""
 
 
 class BaseApiSourceAdapter:
@@ -346,10 +347,7 @@ class LegacyBatchOrdersApiAdapter(BaseApiSourceAdapter):
         cursor_value: str | None,
         batch_size: int,
     ) -> IngestionPage:
-        import os
-        # Read directly from environ to support hot-reloading from .env.local
-        # 直接从环境读取以支持从 .env.local 进行热加载
-        manual_override = os.getenv("ADDRESSFORGE_INGESTION_BATCH_LIST_OVERRIDE", "")
+        manual_override = str(context.batch_list_override or "").strip()
         start_time = self._start_time(cursor_value)
 
         # --- STATIC BATCH OVERRIDE LOGIC ---

@@ -132,15 +132,33 @@ def rows_to_feature_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(frame_rows)
 
 
+def normalize_decision_feature_frame(
+    frame: pd.DataFrame,
+    *,
+    feature_names: list[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Coerce the runtime decision frame into the exact schema CatBoost expects.
+    将运行时决策特征表强制规整为 CatBoost 期望的精确 schema。
+    """
+    ordered_feature_names = list(feature_names or [*list(DECISION_NUMERIC_FEATURES), *list(DECISION_CATEGORICAL_FEATURES)])
+    normalized = frame.copy()
+    for feature_name in ordered_feature_names:
+        if feature_name not in normalized.columns:
+            normalized[feature_name] = 0.0 if feature_name in DECISION_NUMERIC_FEATURES else ""
+    for feature_name in DECISION_NUMERIC_FEATURES:
+        if feature_name in normalized.columns:
+            normalized[feature_name] = pd.to_numeric(normalized[feature_name], errors="coerce").fillna(0.0).astype(float)
+    for feature_name in DECISION_CATEGORICAL_FEATURES:
+        if feature_name in normalized.columns:
+            normalized[feature_name] = normalized[feature_name].fillna("").map(lambda value: str(value))
+    return normalized[ordered_feature_names]
+
+
 def build_decision_inference_frame(
     feature_row: dict[str, Any],
     *,
     feature_names: list[str] | None = None,
 ) -> pd.DataFrame:
     frame = rows_to_feature_frame([feature_row])
-    ordered_feature_names = list(feature_names or [*list(DECISION_NUMERIC_FEATURES), *list(DECISION_CATEGORICAL_FEATURES)])
-    for feature_name in ordered_feature_names:
-        if feature_name in frame.columns:
-            continue
-        frame[feature_name] = 0.0 if feature_name in DECISION_NUMERIC_FEATURES else ""
-    return frame[ordered_feature_names]
+    return normalize_decision_feature_frame(frame, feature_names=feature_names)

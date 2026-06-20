@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from addressforge.ingestion.providers import DatabaseIngestionProvider
+from addressforge.ingestion.providers import ApiIngestionProvider
 
 
 class TestDatabaseIngestionProvider(unittest.TestCase):
@@ -56,6 +57,27 @@ class TestDatabaseIngestionProvider(unittest.TestCase):
         self.assertEqual(page.next_cursor, json.dumps({"cursor": "2025-10-15 12:38:34", "tiebreaker": "A101"}, separators=(",", ":")))
         self.assertEqual(len(page.records), 2)
         self.assertEqual(page.records[0].external_id, "A100")
+
+
+class TestApiIngestionProvider(unittest.TestCase):
+    def test_api_provider_forwards_batch_list_override_from_runtime_config(self):
+        adapter = MagicMock()
+        adapter.fetch_page.return_value = MagicMock()
+
+        with patch("addressforge.ingestion.providers.resolve_api_source_adapter", return_value=adapter):
+            provider = ApiIngestionProvider(
+                api_url="https://example.com",
+                token="token",
+                timeout=10,
+                source_name="third_party",
+                batch_list_override="HASUB-202605150116",
+            )
+            provider.fetch_page(cursor_value=None, batch_size=100)
+
+        self.assertEqual(adapter.fetch_page.call_count, 1)
+        context = adapter.fetch_page.call_args.args[1]
+        self.assertEqual(context.batch_list_override, "HASUB-202605150116")
+        self.assertEqual(context.source_name, "third_party")
 
 
 if __name__ == "__main__":

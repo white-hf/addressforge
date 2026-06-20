@@ -8,6 +8,7 @@ from addressforge.core.decision_features import (
     DECISION_LABELS,
     build_decision_inference_feature_row,
     build_decision_inference_frame,
+    normalize_decision_feature_frame,
 )
 from addressforge.core.features import get_feature_engine
 from addressforge.core.utils import logger
@@ -245,6 +246,7 @@ class ModelService:
                     inference_row,
                     feature_names=self.feature_names or None,
                 )
+                frame = normalize_decision_feature_frame(frame, feature_names=self.feature_names or None)
                 probs = self.model.predict_proba(frame)[0]
                 pred_raw = self.model.predict(frame)
                 ml_decision_idx = int(pred_raw[0][0] if hasattr(pred_raw[0], "__len__") else pred_raw[0])

@@ -107,6 +107,43 @@ RUN_TYPE_ALIASES: dict[str, str] = {
     "reranking_train": "ml_train",
     "weak_supervision_gen": "ml_gold",
     "ml_active_learning_from_eval": "ml_active_learning",
+    "ml_active_learning_residual": "ml_active_learning",
+}
+
+_CANADA_PROVINCES = {
+    "NS", "NB", "PE", "NL", "QC", "ON", "MB", "SK", "AB", "BC", "YT", "NT", "NU"
+}
+
+_CANADA_POSTAL_RE = re.compile(
+    r"\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d\b",
+    re.IGNORECASE,
+)
+
+_UNIT_WORDS = {
+    "UNIT", "APT", "APT.", "APARTMENT", "SUITE", "STE", "ROOM", "RM",
+    "FLOOR", "FL", "BASEMENT", "LOWER", "UPPER",
+}
+
+_STREET_SUFFIX_WORDS = {
+    "ST", "STREET", "AVE", "AVENUE", "DR", "DRIVE", "RD", "ROAD", "BLVD", "BOULEVARD",
+    "PL", "PLACE", "LN", "LANE", "CRT", "COURT", "CRES", "CRESCENT", "WAY", "TERR",
+    "TERRACE", "CLOSE", "CL",
+}
+
+_PROVINCE_NAME_TO_CODE = {
+    "NOVA SCOTIA": "NS",
+    "NEW BRUNSWICK": "NB",
+    "PRINCE EDWARD ISLAND": "PE",
+    "NEWFOUNDLAND AND LABRADOR": "NL",
+    "QUEBEC": "QC",
+    "ONTARIO": "ON",
+    "MANITOBA": "MB",
+    "SASKATCHEWAN": "SK",
+    "ALBERTA": "AB",
+    "BRITISH COLUMBIA": "BC",
+    "YUKON": "YT",
+    "NORTHWEST TERRITORIES": "NT",
+    "NUNAVUT": "NU",
 }
 
 def _connect_with_retry():
@@ -234,6 +271,27 @@ def has_urban_street_suffix_signal(text: str | None) -> bool:
     if not normalized:
         return False
     return any(pattern.search(normalized) for pattern in URBAN_STREET_SUFFIX_PATTERNS)
+def ends_with_urban_street_suffix(text: str | None) -> bool:
+    normalized = normalize_space(text).upper()
+    if not normalized:
+        return False
+    tokens = normalized.split()
+    if not tokens:
+        return False
+    suffixes = {
+        "ST", "STREET", "AVE", "AVENUE", "DR", "DRIVE", "RD", "ROAD", "BLVD", "BOULEVARD",
+        "PL", "PLACE", "LN", "LANE", "CRT", "COURT", "CRES", "CRESCENT", "WAY", "TERR",
+        "TERRACE", "CLOSE", "CL"
+    }
+    directionals = {
+        "N", "NORTH", "S", "SOUTH", "E", "EAST", "W", "WEST",
+        "NE", "NORTHEAST", "NW", "NORTHWEST", "SE", "SOUTHEAST", "SW", "SOUTHWEST"
+    }
+    if tokens[-1] in suffixes:
+        return True
+    if len(tokens) > 1 and tokens[-1] in directionals and tokens[-2] in suffixes:
+        return True
+    return False
 
 
 def looks_like_bare_trailing_unit_city_pattern(
@@ -259,6 +317,9 @@ def looks_like_bare_trailing_unit_city_pattern(
         return False
     if u_num == s_num:
         return False
+    # Constrain bare trailing unit to <= 3 digits to avoid false unit extraction on double-number house addresses.
+    if len([ch for ch in u_num if ch.isdigit()]) > 3:
+        return False
     pattern = re.compile(
         rf"^\s*{re.escape(s_num)}\s+.+\s+{re.escape(u_num)}\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
         re.IGNORECASE,
@@ -278,7 +339,95 @@ def normalize_street_name(value: str | None) -> str | None:
     """Standardizes street names."""
     text = normalize_space(value)
     if not text: return None
-    return text.upper()
+    text = text.upper()
+    dir_expand = {
+        "S": "SOUTH",
+        "N": "NORTH",
+        "E": "EAST",
+        "W": "WEST",
+        "NE": "NORTHEAST",
+        "NW": "NORTHWEST",
+        "SE": "SOUTHEAST",
+        "SW": "SOUTHWEST",
+    }
+    tokens = text.split()
+    if tokens:
+        if tokens[0] in dir_expand:
+            tokens[0] = dir_expand[tokens[0]]
+        if len(tokens) > 1 and tokens[-1] in dir_expand:
+            tokens[-1] = dir_expand[tokens[-1]]
+    return " ".join(tokens)
+
+def _recover_city_without_province(tokens: list[str]) -> str | None:
+    if not tokens:
+        return None
+    idx = len(tokens) - 1
+    city_tokens: list[str] = []
+    while idx >= 0:
+        token = tokens[idx]
+        if (
+            any(ch.isdigit() for ch in token)
+            or token in _UNIT_WORDS
+            or token in _STREET_SUFFIX_WORDS
+            or token in {"CA", "CANADA"}
+        ):
+            break
+        city_tokens.append(token)
+        if len(city_tokens) >= 2:
+            break
+        idx -= 1
+    if not city_tokens:
+        return None
+    city_tokens.reverse()
+    return normalize_city(" ".join(city_tokens))
+
+def recover_locality_from_text(raw_address_text: str | None) -> tuple[str | None, str | None]:
+    text = normalize_space(raw_address_text)
+    if not text:
+        return None, None
+    upper_text = text.upper()
+    for province_name, province_code in _PROVINCE_NAME_TO_CODE.items():
+        upper_text = upper_text.replace(province_name, province_code)
+    comma_cleaned = _CANADA_POSTAL_RE.sub(" ", upper_text)
+    comma_cleaned = re.sub(r"\b(CA|CANADA)\b", " ", comma_cleaned)
+    segments = [normalize_space(segment) for segment in comma_cleaned.split(",") if normalize_space(segment)]
+    for idx in range(len(segments) - 1, -1, -1):
+        if segments[idx] in _CANADA_PROVINCES:
+            province = segments[idx]
+            if idx > 0:
+                candidate_city = normalize_city(segments[idx - 1])
+                if candidate_city and not any(ch.isdigit() for ch in candidate_city):
+                    return candidate_city, province
+            return None, province
+    cleaned = _CANADA_POSTAL_RE.sub(" ", upper_text)
+    cleaned = re.sub(r"\b(CA|CANADA)\b", " ", cleaned)
+    cleaned = re.sub(r"[,/()-]", " ", cleaned)
+    tokens = [token for token in cleaned.split() if token]
+    if not tokens:
+        return None, None
+    province_index = None
+    for idx in range(len(tokens) - 1, -1, -1):
+        if tokens[idx] in _CANADA_PROVINCES:
+            province_index = idx
+            break
+    if province_index is None:
+        return _recover_city_without_province(tokens), None
+    province = tokens[province_index]
+    city_tokens: list[str] = []
+    idx = province_index - 1
+    while idx >= 0:
+        token = tokens[idx]
+        if any(ch.isdigit() for ch in token) or token in _UNIT_WORDS or token in _STREET_SUFFIX_WORDS:
+            break
+        city_tokens.append(token)
+        if len(city_tokens) >= 3:
+            break
+        idx -= 1
+    if not city_tokens:
+        return _recover_city_without_province(tokens), province
+    city_tokens.reverse()
+    city = normalize_city(" ".join(city_tokens))
+    return city, province
 
 def build_base_address_key(street_number: str | None, street_name: str | None, city: str | None, province: str | None, postal_code: str | None) -> str:
     """Generates a stable building key."""
@@ -405,7 +554,7 @@ def infer_structure_type(raw_address_text: str, parsed_unit_number: str | None =
         return "commercial"
 
     if parsed_unit_number:
-        if has_strong_commercial_signal:
+        if has_strong_commercial_signal or (has_commercial_unit_hint and not has_residential_unit_hint):
             return "commercial"
         return "multi_unit"
 
@@ -465,10 +614,31 @@ def libpostal_parse_address(text: str, **kwargs) -> dict[str, Any]:
 
 def simple_parse_address(raw_address_text: str, profile: BaseCountryProfile, **kwargs) -> dict[str, Any]:
     """Basic address parsing."""
-    text = normalize_space(raw_address_text).upper()
-    match = re.search(r"(\d+)\s+([^,]+)", text)
+    text = normalize_unit_signal_text(raw_address_text)
+    
+    fallback_city = kwargs.get("fallback_city")
+    fallback_province = kwargs.get("fallback_province")
+    if (not fallback_city or not fallback_province) and raw_address_text:
+        recovered_city, recovered_province = recover_locality_from_text(raw_address_text)
+        fallback_city = fallback_city or recovered_city
+        fallback_province = fallback_province or recovered_province
+
+    normalized_fallback_city = normalize_city(fallback_city)
+    normalized_fallback_province = profile.normalize_province(fallback_province)
+    
+    text_without_city_tail = text
+    if normalized_fallback_city and normalized_fallback_province:
+        city_token = normalize_space(normalized_fallback_city).upper()
+        province_token = normalize_space(normalized_fallback_province).upper()
+        tail_pattern = re.compile(
+            rf"\s+{re.escape(city_token)}\s*,?\s*(?:{re.escape(province_token)})?\s*,?\s*(?:[A-Z]\d[A-Z]\s*\d[A-Z]\d)?\s*,?\s*(?:CA|CANADA)?\s*$",
+            re.IGNORECASE
+        )
+        text_without_city_tail = re.sub(tail_pattern, "", text).strip().rstrip(",").strip()
+
+    match = re.search(r"(\d+)\s+([^,]+)", text_without_city_tail)
     s_num, s_name = (match.group(1), match.group(2)) if match else (None, None)
-    return _finalize_parsed(s_num, s_name, None, kwargs.get("fallback_city"), kwargs.get("fallback_province"), profile.canonical_postal_code(text), text, "simple_rule", 0.3, 0.1, 0.5, profile=profile)
+    return _finalize_parsed(s_num, s_name, None, fallback_city, fallback_province, profile.canonical_postal_code(text), text, "simple_rule", 0.3, 0.1, 0.5, profile=profile)
 
 def _finalize_parsed(
     street_number: str | None, street_name: str | None, unit_number: str | None, 
@@ -478,6 +648,12 @@ def _finalize_parsed(
     profile: BaseCountryProfile, features: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Finalizes parsing output."""
+    recovered_city = None
+    recovered_province = None
+    if (not city or not province) and normalized_text:
+        recovered_city, recovered_province = recover_locality_from_text(normalized_text)
+        city = city or recovered_city
+        province = province or recovered_province
     canonical_unit = canonicalize_unit_number(unit_number)
     base_key = build_base_address_key(street_number, street_name, city, province, postal_code)
     full_key = build_full_address_key(base_key, canonical_unit)
@@ -528,10 +704,52 @@ def _finalize_parsed(
     return {
         "normalized_text": normalized_text, "street_number": street_number.upper() if street_number else None,
         "street_name": normalize_street_name(street_name), "unit_number": canonical_unit,
-        "city": normalize_city(city) or profile.default_city, "province": profile.normalize_province(province) or profile.default_province,
+        "city": normalize_city(city), "province": profile.normalize_province(province) or profile.default_province,
         "postal_code": postal_code, "base_address_key": base_key, "full_address_key": full_key, "unit_source": unit_source,
         "feature_vector": fv, "parse_confidence": parse_conf, "unit_confidence": unit_conf, "postal_confidence": postal_conf,
     }
+
+def standardize_unit_val(val: str | None) -> str | None:
+    if not val:
+        return None
+    v = val.strip().upper().replace(".", "")
+    if v in ("BSMT", "BASEMENT"):
+        return "BASEMENT"
+    if v in ("LWR", "LOWER"):
+        return "LWR" if "LWR" in val or val == "LWR" else "LOWER"
+    if v in ("UPR", "UPPER"):
+        return "UPR" if "UPR" in val or val == "UPR" else "UPPER"
+    if v in ("GF", "GROUND FLOOR"):
+        return "GF" if "GF" in val or val == "GF" else "GROUND FLOOR"
+    if v in ("MAIN FLR", "MAIN FLOOR"):
+        return "MAIN FLOOR"
+    
+    # Handle "LEVEL 2" or "LVL 2"
+    m_lvl = re.match(r"^(?:LEVEL|LVL)\s*([A-Z0-9-]+)$", v)
+    if m_lvl:
+        return f"LEVEL {m_lvl.group(1)}"
+        
+    # Handle "BUILDING A UNIT 5" or "BUILDING A" or "BLDG A"
+    m_bldg_unit = re.match(r"^(?:BUILDING|BLDG)\s*([A-Z0-9-]+)\s*(?:UNIT|APT|APARTMENT|SUITE|STE)\s*([A-Z0-9-]+)$", v)
+    if m_bldg_unit:
+        return f"{m_bldg_unit.group(1)}-{m_bldg_unit.group(2)}"
+    m_bldg = re.match(r"^(?:BUILDING|BLDG)\s*([A-Z0-9-]+)$", v)
+    if m_bldg:
+        return m_bldg.group(1)
+        
+    # Handle "DOOR 3" or "LOT 12"
+    m_door_lot = re.match(r"^(DOOR|LOT)\s*([A-Z0-9-]+)$", v)
+    if m_door_lot:
+        return f"{m_door_lot.group(1)} {m_door_lot.group(2)}"
+        
+    # Handle "PENTHOUSE 2" -> "PH 2"
+    if v == "PENTHOUSE":
+        return "PH"
+    m_ph = re.match(r"^(?:PENTHOUSE|PH)\s*([A-Z0-9-]+)$", v)
+    if m_ph:
+        return f"PH {m_ph.group(1)}"
+        
+    return v
 
 def hybrid_canadian_parse_address(
     raw_address_text: str, profile: BaseCountryProfile, 
@@ -539,10 +757,27 @@ def hybrid_canadian_parse_address(
 ) -> dict[str, Any]:
     """Hybrid address parser."""
     text = normalize_unit_signal_text(raw_address_text)
+    text_without_city_tail = text
+    
+    # Recover locality first if not provided to make manual matching block robust
+    if (not fallback_city or not fallback_province) and raw_address_text:
+        recovered_city, recovered_province = recover_locality_from_text(raw_address_text)
+        fallback_city = fallback_city or recovered_city
+        fallback_province = fallback_province or recovered_province
+
     postal_code = profile.canonical_postal_code(fallback_postal or text)
-    province_group = "|".join(sorted(profile.province_tokens))
+    province_group = r"\b(?:" + "|".join(sorted(profile.province_tokens)) + r")\b"
     normalized_fallback_city = normalize_city(fallback_city)
     normalized_fallback_province = profile.normalize_province(fallback_province)
+
+    # Expanded unit keywords for leading prefix patterns
+    LEADING_UNIT_KEYWORDS = (
+        r"(?:BASEMENT|BSMT|LOWER|LWR|UPPER|UPR|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|"
+        r"GF|GROUND\s+FLOOR|MAIN\s+FLOOR|MAIN\s+FLR|LEVEL(?:\s+[A-Z0-9-]+)?|LVL(?:\s+[A-Z0-9-]+)?|"
+        r"DOOR(?:\s+\d+)?|LOT(?:\s+\d+)?|\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FLR|FL)|"
+        r"(?:BUILDING|BLDG)\s+[A-Z0-9-]+(?:\s+(?:UNIT|APT|APARTMENT|SUITE|STE)\s+[A-Z0-9-]+)?|"
+        r"BUILDING|BLDG)"
+    )
 
     if normalized_fallback_city and normalized_fallback_province:
         city_token = normalize_space(normalized_fallback_city).upper()
@@ -554,10 +789,40 @@ def hybrid_canadian_parse_address(
         )
         if duplicate_city_prefix:
             text = duplicate_city_prefix.group(1) + f" {city_token} {province_token}"
-        tail_pattern = re.compile(rf"\s+{re.escape(city_token)}\s+{re.escape(province_token)}\s*$", re.IGNORECASE)
-        text_without_city_tail = re.sub(tail_pattern, "", text)
+        tail_pattern = re.compile(
+            rf"\s+{re.escape(city_token)}\s*,?\s*(?:{re.escape(province_token)})?\s*,?\s*(?:[A-Z]\d[A-Z]\s*\d[A-Z]\d)?\s*,?\s*(?:CA|CANADA)?\s*$",
+            re.IGNORECASE
+        )
+        text_without_city_tail = re.sub(tail_pattern, "", text).strip().rstrip(",").strip()
+        
+        leading_explicit_unit_glued_civic_before_known_city = re.match(
+            rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|RM\.?|ROOM|#)\s*([0-9]{{5,10}}[A-Z]?)\s+(.+?)\s*,?\s*{re.escape(city_token)}\s*,?\s*(?:{re.escape(province_token)})?(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if leading_explicit_unit_glued_civic_before_known_city:
+            glued_token, s_name = leading_explicit_unit_glued_civic_before_known_city.groups()
+            split_parts = split_glued_unit_and_civic_token(glued_token)
+            if split_parts and has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+                u_num, s_num = split_parts
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    u_num,
+                    normalized_fallback_city,
+                    normalized_fallback_province,
+                    postal_code,
+                    text,
+                    "leading_explicit_unit_glued_civic_before_known_city",
+                    0.93,
+                    0.92,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "leading_explicit_unit_glued_civic_before_known_city"},
+                )
+
         leading_explicit_unit_before_civic = re.match(
-            rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|#)\s*([A-Z0-9-]+)\s+(\d+[A-Z]?)\s+(.+?)\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
+            rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|RM\.?|ROOM|#)\s*([A-Z0-9-]+)\s+(\d+[A-Z]?)\s+(.+?)\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
             text,
             re.IGNORECASE,
         )
@@ -581,7 +846,7 @@ def hybrid_canadian_parse_address(
                 )
 
         leading_residential_keyword_before_civic = re.match(
-            rf"^\s*(BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR)\s*(\d+[A-Z]?)\s+(.+?)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
+            rf"^\s*({LEADING_UNIT_KEYWORDS})\s*(\d+[A-Z]?)\s+(.+?)\s*,?\s*{re.escape(city_token)}\s*,?\s*(?:{re.escape(province_token)})?(?:\b.*)?$",
             text,
             re.IGNORECASE,
         )
@@ -591,7 +856,7 @@ def hybrid_canadian_parse_address(
                 return _finalize_parsed(
                     s_num,
                     s_name,
-                    unit_keyword,
+                    standardize_unit_val(unit_keyword),
                     normalized_fallback_city,
                     normalized_fallback_province,
                     postal_code,
@@ -605,7 +870,7 @@ def hybrid_canadian_parse_address(
                 )
 
         leading_explicit_unit_hyphen_civic = re.match(
-            rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|#)\s*([A-Z0-9-]+)\s*-\s*(\d+[A-Z]?)\s+(.+?)\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
+            rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|RM\.?|ROOM|#)\s*([A-Z0-9-]+)\s*-\s*(\d+[A-Z]?)\s+(.+?)\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
             text,
             re.IGNORECASE,
         )
@@ -652,13 +917,29 @@ def hybrid_canadian_parse_address(
                 )
 
         explicit_unit_before_city_tail = re.match(
-            rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+(?:#\s*([A-Z0-9-]+)|(?:UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM|FLOOR|FL)\s*([A-Z0-9-]+))\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
+            rf"^\s*(\d+[A-Z]?)\s+([^,]+?)\s*,?\s*(?:\b(?:UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM|FLOOR|FL|LEVEL|LVL|BLDG|BUILDING|DOOR|LOT|PENTHOUSE|PH)\b\.?\s*)?(?:#\s*([A-Z0-9-]+)|\b(UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM|FLOOR|FL|LEVEL|LVL|BLDG|BUILDING|DOOR|LOT|PENTHOUSE|PH)\b\.?\s*([A-Z0-9-]+))\s*,?\s*{re.escape(city_token)}\s*,?\s*{re.escape(province_token)}(?:\b.*)?$",
             text,
             re.IGNORECASE,
         )
         if explicit_unit_before_city_tail:
-            s_num, s_name, hash_unit, keyword_unit = explicit_unit_before_city_tail.groups()
-            u_num = hash_unit or keyword_unit
+            s_num, s_name, hash_unit, unit_keyword, keyword_unit = explicit_unit_before_city_tail.groups()
+            u_num = None
+            if hash_unit:
+                u_num = hash_unit
+            elif unit_keyword and keyword_unit:
+                u_kw_upper = unit_keyword.upper()
+                if u_kw_upper in ("LEVEL", "LVL"):
+                    u_num = f"LEVEL {keyword_unit}"
+                elif u_kw_upper == "DOOR":
+                    u_num = f"DOOR {keyword_unit}"
+                elif u_kw_upper == "LOT":
+                    u_num = f"LOT {keyword_unit}"
+                elif u_kw_upper in ("PENTHOUSE", "PH"):
+                    u_num = f"PH {keyword_unit}"
+                elif u_kw_upper in ("BLDG", "BUILDING"):
+                    u_num = keyword_unit
+                else:
+                    u_num = keyword_unit
             return _finalize_parsed(
                 s_num,
                 s_name,
@@ -754,8 +1035,31 @@ def hybrid_canadian_parse_address(
                     features={"pattern": "repeated_leading_unit_before_known_city"},
                 )
 
+        trailing_bare_unit_before_known_city = re.match(
+            rf"^\s*(\d+[A-Z]?)\s+([^,]+?),\s*(\d{{1,5}}[A-Z]?)\s*,?\s*{re.escape(city_token)}\s*,?\s*(?:{re.escape(province_token)})?(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if trailing_bare_unit_before_known_city:
+            s_num, s_name, u_num = trailing_bare_unit_before_known_city.groups()
+            return _finalize_parsed(
+                s_num,
+                s_name,
+                u_num,
+                normalized_fallback_city,
+                normalized_fallback_province,
+                postal_code,
+                text,
+                "trailing_bare_unit_before_known_city",
+                0.94,
+                0.92,
+                0.90,
+                profile=profile,
+                features={"pattern": "trailing_bare_unit_before_known_city"},
+            )
+
         duplicate_or_noise_number_before_known_city = re.match(
-            rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+(\d{{1,5}}[A-Z]?)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
+            rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+(\d{{1,5}}[A-Z]?)\s*,?\s*{re.escape(city_token)}\s*,?\s*(?:{re.escape(province_token)})?(?:\b.*)?$",
             text,
             re.IGNORECASE,
         )
@@ -783,21 +1087,38 @@ def hybrid_canadian_parse_address(
                     features={"pattern": "duplicate_number_before_known_city"},
                 )
             if "," not in s_name and has_urban_street_suffix_signal(s_name):
-                return _finalize_parsed(
-                    s_num,
-                    s_name,
-                    noise_num,
-                    normalized_fallback_city,
-                    normalized_fallback_province,
-                    postal_code,
-                    text,
-                    "bare_trailing_unit_before_known_city",
-                    0.91,
-                    0.88,
-                    0.90,
-                    profile=profile,
-                    features={"pattern": "bare_trailing_unit_before_known_city"},
-                )
+                if len([ch for ch in noise_num if ch.isdigit()]) <= 3:
+                    return _finalize_parsed(
+                        s_num,
+                        s_name,
+                        noise_num,
+                        normalized_fallback_city,
+                        normalized_fallback_province,
+                        postal_code,
+                        text,
+                        "bare_trailing_unit_before_known_city",
+                        0.91,
+                        0.88,
+                        0.90,
+                        profile=profile,
+                        features={"pattern": "bare_trailing_unit_before_known_city"},
+                    )
+                else:
+                    return _finalize_parsed(
+                        s_num,
+                        s_name,
+                        None,
+                        normalized_fallback_city,
+                        normalized_fallback_province,
+                        postal_code,
+                        text,
+                        "duplicate_number_before_known_city",
+                        0.89,
+                        0.10,
+                        0.90,
+                        profile=profile,
+                        features={"pattern": "duplicate_number_before_known_city"},
+                    )
 
         trailing_keyword_after_bare_unit = re.match(
             rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+(\d{{1,5}}[A-Z]?)\s+(?:UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM|FLOOR|FL)\s+{re.escape(city_token)}\s+{re.escape(province_token)}(?:\b.*)?$",
@@ -821,6 +1142,130 @@ def hybrid_canadian_parse_address(
                 profile=profile,
                 features={"pattern": "trailing_bare_unit_keyword_before_known_city"},
             )
+
+        trailing_residential_keyword_before_known_city = re.match(
+            rf"^\s*(\d+[A-Z]?)\s+(.+?)\s*,?\s*({COMPOUND_RESIDENTIAL_UNIT_KEYWORD}|BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND\s+FLOOR|MAIN\s+FLOOR|MAIN\s+FLR|\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FLR|FL))\s*,?\s*{re.escape(city_token)}\s*,?\s*(?:{re.escape(province_token)})?(?:\b.*)?$",
+            text,
+            re.IGNORECASE,
+        )
+        if trailing_residential_keyword_before_known_city:
+            s_num, s_name, unit_keyword = trailing_residential_keyword_before_known_city.groups()
+            if has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    standardize_unit_val(unit_keyword),
+                    normalized_fallback_city,
+                    normalized_fallback_province,
+                    postal_code,
+                    text,
+                    "trailing_residential_keyword_before_known_city",
+                    0.93,
+                    0.92,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "trailing_residential_keyword_before_known_city"},
+                )
+
+        # Standard civic + street before city tail (without unit)
+        standard_civic_before_city_tail = re.match(
+            r"^\s*(\d+[A-Z]?)\s+(.+?)\s*$",
+            text_without_city_tail,
+            re.IGNORECASE,
+        )
+        if standard_civic_before_city_tail:
+            s_num, s_name = standard_civic_before_city_tail.groups()
+            if s_name.strip() and "," not in text_without_city_tail and not re.search(r"\s+\d+[A-Z]?$", text_without_city_tail):
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    None,
+                    normalized_fallback_city,
+                    normalized_fallback_province,
+                    postal_code,
+                    text,
+                    "standard_civic_before_city_tail",
+                    0.90,
+                    0.10,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "standard_civic_before_city_tail"},
+                )
+
+    # Commercial premise without civic number: Suite 500 Scotia Square
+    comm_no_civic_prefix = re.match(
+        rf"^\s*(UNIT|APT|APARTMENT|SUITE|STE|RM|ROOM|KIOSK)\s*([A-Z0-9-]+)\s+([A-Z][A-Z0-9 .'\-]+?)(?:\s*,?\s*([A-Z][A-Z .'\-]+?)\s*,?\s*({province_group}))?\s*$",
+        text,
+        re.IGNORECASE,
+    )
+    if comm_no_civic_prefix:
+        keyword, unit_val, s_name, city, province = comm_no_civic_prefix.groups()
+        # Only match if the premise name does NOT have an urban street suffix (which would indicate a real address)
+        if not ends_with_urban_street_suffix(s_name):
+            u_num = f"KIOSK {unit_val}" if keyword.upper() == "KIOSK" else unit_val
+            return _finalize_parsed(
+                None,
+                None,
+                u_num,
+                city or fallback_city,
+                province or fallback_province,
+                postal_code,
+                text,
+                "commercial_no_civic_prefix",
+                0.80,
+                0.85,
+                0.90,
+                profile=profile,
+                features={"pattern": "commercial_no_civic_prefix"},
+            )
+
+    comm_no_civic_suffix = re.match(
+        rf"^\s*([A-Z][A-Z0-9 .'\-]+?)\s+(UNIT|APT|APARTMENT|SUITE|STE|RM|ROOM|KIOSK)\s*([A-Z0-9-]+)(?:\s*,?\s*([A-Z][A-Z .'\-]+?)\s*,?\s*({province_group}))?\s*$",
+        text,
+        re.IGNORECASE,
+    )
+    if comm_no_civic_suffix:
+        s_name, keyword, unit_val, city, province = comm_no_civic_suffix.groups()
+        if not ends_with_urban_street_suffix(s_name):
+            u_num = f"KIOSK {unit_val}" if keyword.upper() == "KIOSK" else unit_val
+            return _finalize_parsed(
+                None,
+                None,
+                u_num,
+                city or fallback_city,
+                province or fallback_province,
+                postal_code,
+                text,
+                "commercial_no_civic_suffix",
+                0.80,
+                0.85,
+                0.90,
+                profile=profile,
+                features={"pattern": "commercial_no_civic_suffix"},
+            )
+
+    leading_residential_keyword_before_civic_no_fallback = re.match(
+        rf"^\s*({LEADING_UNIT_KEYWORDS})\s*(\d+[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s*,?\s*([A-Z][A-Z .'\-]+?)\s*,?\s*({province_group})(?:\b.*)?$",
+        text,
+        re.IGNORECASE,
+    )
+    if leading_residential_keyword_before_civic_no_fallback:
+        unit_keyword, s_num, s_name, city, province = leading_residential_keyword_before_civic_no_fallback.groups()
+        return _finalize_parsed(
+            s_num,
+            s_name,
+            standardize_unit_val(unit_keyword),
+            city,
+            province,
+            postal_code,
+            text,
+            "leading_residential_keyword_before_civic_no_fallback",
+            0.90,
+            0.86,
+            0.90,
+            profile=profile,
+            features={"pattern": "leading_residential_keyword_before_civic_no_fallback"},
+        )
 
     trailing_bare_unit_before_city = re.match(
         rf"^\s*(\d+[A-Z]?)\s+([^,]+?),\s*(\d{{1,5}}[A-Z]?)\s*,?\s*([A-Z][A-Z .'\-]+?)\s*,?\s*({province_group})(?:\b.*)?$",
@@ -846,7 +1291,7 @@ def hybrid_canadian_parse_address(
         )
 
     trailing_bare_unit_before_city_no_comma = re.match(
-        rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+(\d{{1,5}}[A-Z]?)\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+        rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+(\d{{1,5}}[A-Z]?)\s+([A-Z][A-Z .'\-]+?)(?:\s+({province_group}))?\s*$",
         text,
         re.IGNORECASE,
     )
@@ -857,13 +1302,14 @@ def hybrid_canadian_parse_address(
             and not has_numbered_road_signal(s_name)
             and not has_numbered_road_signal(text)
             and u_num != s_num
+            and len([ch for ch in u_num if ch.isdigit()]) <= 3
         ):
             return _finalize_parsed(
                 s_num,
                 s_name,
                 u_num,
                 city,
-                province,
+                province or fallback_province,
                 postal_code,
                 text,
                 "trailing_bare_unit_before_city_no_comma",
@@ -874,28 +1320,28 @@ def hybrid_canadian_parse_address(
                 features={"pattern": "trailing_bare_unit_before_city_no_comma"},
             )
 
-    trailing_residential_keyword_before_city_no_comma = re.match(
-        rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+({COMPOUND_RESIDENTIAL_UNIT_KEYWORD}|BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR)\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+    trailing_residential_keyword_before_city = re.match(
+        rf"^\s*(\d+[A-Z]?)\s+(.+?)\s*,?\s*({COMPOUND_RESIDENTIAL_UNIT_KEYWORD}|BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR|\d+(?:ST|ND|RD|TH)\s+(?:FLOOR|FLR|FL))\s*,?\s*([A-Z][A-Z .'\-]+?)\s*,?\s*({province_group})(?:\b.*)?$",
         text,
         re.IGNORECASE,
     )
-    if trailing_residential_keyword_before_city_no_comma:
-        s_num, s_name, unit_keyword, city, province = trailing_residential_keyword_before_city_no_comma.groups()
+    if trailing_residential_keyword_before_city:
+        s_num, s_name, unit_keyword, city, province = trailing_residential_keyword_before_city.groups()
         if has_urban_street_suffix_signal(s_name) and not has_numbered_road_signal(s_name):
             return _finalize_parsed(
                 s_num,
                 s_name,
-                unit_keyword,
+                standardize_unit_val(unit_keyword),
                 city,
                 province,
                 postal_code,
                 text,
-                "trailing_residential_keyword_before_city_no_comma",
+                "trailing_residential_keyword_before_city",
                 0.9,
                 0.86,
                 0.90,
                 profile=profile,
-                features={"pattern": "trailing_residential_keyword_before_city_no_comma"},
+                features={"pattern": "trailing_residential_keyword_before_city"},
             )
 
     trailing_bare_unit_suffix = re.match(
@@ -919,6 +1365,44 @@ def hybrid_canadian_parse_address(
             0.90,
             profile=profile,
             features={"pattern": "trailing_bare_unit_suffix"},
+        )
+
+    trailing_unit_at_end = re.match(
+        rf"^\s*(\d+[A-Z]?)\s+(.+?)\s+\b(UNIT|APT|APARTMENT|SUITE|STE|ROOM|RM|FLOOR|FL|LEVEL|LVL|BLDG|BUILDING|DOOR|LOT|PENTHOUSE|PH)\b\s*([A-Z0-9-]+)\s*$",
+        text,
+        re.IGNORECASE,
+    )
+    if trailing_unit_at_end:
+        s_num, s_name, unit_keyword, keyword_unit = trailing_unit_at_end.groups()
+        u_num = None
+        if unit_keyword and keyword_unit:
+            u_kw_upper = unit_keyword.upper()
+            if u_kw_upper in ("LEVEL", "LVL"):
+                u_num = f"LEVEL {keyword_unit}"
+            elif u_kw_upper == "DOOR":
+                u_num = f"DOOR {keyword_unit}"
+            elif u_kw_upper == "LOT":
+                u_num = f"LOT {keyword_unit}"
+            elif u_kw_upper in ("PENTHOUSE", "PH"):
+                u_num = f"PH {keyword_unit}"
+            elif u_kw_upper in ("BLDG", "BUILDING"):
+                u_num = keyword_unit
+            else:
+                u_num = keyword_unit
+        return _finalize_parsed(
+            s_num,
+            s_name,
+            u_num,
+            fallback_city,
+            fallback_province,
+            postal_code,
+            text,
+            "trailing_unit_at_end",
+            0.90,
+            0.90,
+            0.90,
+            profile=profile,
+            features={"pattern": "trailing_unit_at_end"},
         )
 
     route_only_before_city = re.match(
@@ -945,7 +1429,7 @@ def hybrid_canadian_parse_address(
         )
 
     leading_explicit_unit_before_civic_no_fallback = re.match(
-        rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|#)\s*([A-Z0-9-]+)\s+(\d+[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+        rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|RM\.?|ROOM|#)\s*([A-Z0-9-]+)\s+(\d+[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
         text,
         re.IGNORECASE,
     )
@@ -969,7 +1453,7 @@ def hybrid_canadian_parse_address(
             )
 
     leading_explicit_unit_glued_civic_no_fallback = re.match(
-        rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|#)\s*([0-9]{{5,10}}[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+        rf"^\s*(?:APT\.?|APARTMENT|UNIT|SUITE|STE|RM\.?|ROOM|#)\s*([0-9]{{5,10}}[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
         text,
         re.IGNORECASE,
     )
@@ -1019,7 +1503,7 @@ def hybrid_canadian_parse_address(
             )
 
     leading_residential_keyword_before_civic_no_fallback = re.match(
-        rf"^\s*(BASEMENT|LOWER|UPPER|REAR|FRONT|SIDE|PENTHOUSE(?:\s+\d+)?|PH(?:\s+[A-Z0-9-]+)?|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR)\s*(\d+[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+        rf"^\s*({LEADING_UNIT_KEYWORDS})\s*(\d+[A-Z]?)\s+([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE|CLOSE|CL))\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
         text,
         re.IGNORECASE,
     )
@@ -1029,7 +1513,7 @@ def hybrid_canadian_parse_address(
             return _finalize_parsed(
                 s_num,
                 s_name,
-                unit_keyword,
+                standardize_unit_val(unit_keyword),
                 city,
                 province,
                 postal_code,
@@ -1071,7 +1555,7 @@ def hybrid_canadian_parse_address(
             )
 
     reversed_civic_before_city = re.match(
-        rf"^\s*([A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE))\s+(\d+[A-Z]?)\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
+        rf"^\s*([A-Z][A-Z0-9 .'\-]+?(?:ST|STREET|AVE|AVENUE|DR|DRIVE|RD|ROAD|LN|LANE|PL|PLACE|CRT|COURT|CRES|CRESCENT|BLVD|BOULEVARD|WAY|TERR|TERRACE))\s+(\d+[A-Z]?)\s+([A-Z][A-Z .'\-]+?)\s+({province_group})(?:\b.*)?$",
         text,
         re.IGNORECASE,
     )
@@ -1105,6 +1589,27 @@ def hybrid_canadian_parse_address(
             normalize_space(prefix).upper() not in {normalize_space(s_name).upper(), normalize_space(city).upper()}
             and not has_numbered_road_signal(s_name)
         ):
+            # If the prefix starts with a unit keyword, do NOT treat it as noise prefix
+            prefix_upper = prefix.upper().strip()
+            unit_prefix_match = re.match(rf"^({LEADING_UNIT_KEYWORDS})(?:\s|$)", prefix_upper)
+            if unit_prefix_match:
+                # Set as unit instead of ignoring it
+                u_num = standardize_unit_val(prefix)
+                return _finalize_parsed(
+                    s_num,
+                    s_name,
+                    u_num,
+                    city,
+                    province,
+                    postal_code,
+                    text,
+                    "prefixed_unit_civic_before_city_special",
+                    0.80,
+                    0.85,
+                    0.90,
+                    profile=profile,
+                    features={"pattern": "prefixed_unit_civic_before_city_special"},
+                )
             return _finalize_parsed(
                 s_num,
                 s_name,
@@ -1145,33 +1650,46 @@ def hybrid_canadian_parse_address(
                 features={"pattern": "prefixed_unit_civic_before_city"},
             )
     for regex, source, p_conf, u_conf in profile.parsing_patterns:
-        match = regex.match(text)
+        match = regex.match(text_without_city_tail)
         if match:
             res = match.groups()
+            logger.debug("Parsing Match - Source: %s, Res: %s", source, res) # Debug log
             s_num, s_name, u_num = None, None, None
 
-            # Phase 2 Hotfix: Precise Regex Group Unpacking based on Pattern Source
-            # 阶段 2 热修复：基于模式来源的精确正则组解包
-            try:
-                if source in ("glued_comm_prefix", "comm_prefix_label", "level_prefix"):
-                    # 1=keyword, 2=unit, 3=s_num, 4=s_name
+            # Re-implement conditional unpacking with robust fallback
+            if source in {"glued_comm_prefix", "comm_prefix_label", "level_prefix"}:
+                # Expected: keyword, unit, s_num, s_name
+                if len(res) >= 4: 
                     u_num, s_num, s_name = res[1], res[2], res[3]
-                elif source in ("leading_hyphen", "hash_prefix"):
-                    # 1=unit, 2=s_num, 3=s_name
-                    u_num, s_num, s_name = res[0], res[1], res[2]
-                elif source == "trailing_unit":
-                    # 1=s_num, 2=s_name, 3=unit
-                    s_num, s_name, u_num = res[0], res[1], res[2]
-                elif source == "street_standard":
-                    # 1=s_num, 2=s_name
-                    s_num, s_name = res[0], res[1]
-                else:
-                    # Fallback for unknown extensions
-                    # 未知扩展的回退
-                    s_num, s_name, u_num = (res[-2], res[-1], res[0]) if len(res) >= 3 else (res[0], res[1], None)
+                    if source == "level_prefix":
+                        u_num = f"{res[0].upper()} {res[1]}"
+                elif len(res) == 3: 
+                    u_num, s_num = res[1], res[2]
+            elif source in {"leading_hyphen", "hash_prefix"}:
+                # Expected: unit, s_num, s_name
+                if len(res) >= 3: u_num, s_num, s_name = res[0], res[1], res[2]
+                elif len(res) == 2: u_num, s_num = res[0], res[1]
+            elif source == "trailing_unit":
+                # Expected: s_num, s_name, unit
+                if len(res) >= 3: s_num, s_name, u_num = res[0], res[1], res[2]
+                elif len(res) == 2: s_num, s_name = res[0], res[1]
+            elif source == "street_standard":
+                # Expected: s_num, s_name
+                if len(res) >= 2: s_num, s_name = res[0], res[1]
+                elif len(res) == 1: s_num = res[0]
+            elif source == "simple_rule": # New: Handle simple_rule patterns
+                # Expected: s_num, s_name
+                if len(res) >= 2: s_num, s_name = res[0], res[1]
+                elif len(res) == 1: s_num = res[0]
+            else:
+                # Fallback for other unknown patterns, assuming s_num, s_name, u_num from res
+                if len(res) == 3: s_num, s_name, u_num = res[0], res[1], res[2]
+                elif len(res) == 2: s_num, s_name = res[0], res[1]
+                elif len(res) == 1: s_num = res[0]
+            
+            # Additional check for missing s_name or s_num after unpacking
+            if not s_name and len(res) > 1: s_name = res[-1]
+            if not s_num and len(res) > 0: s_num = res[0]
 
-                return _finalize_parsed(s_num, s_name, u_num, fallback_city, fallback_province, postal_code, text, source, p_conf, u_conf, 0.90, profile=profile, features={"pattern": source})
-            except Exception as e:
-                logger.error("Error during profile-driven parsing for %s: %s", source, e)
-                continue
+            return _finalize_parsed(s_num, s_name, u_num, fallback_city, fallback_province, postal_code, text, source, p_conf, u_conf, 0.90, profile=profile, features={"pattern": source})
     return _finalize_parsed(None, None, None, fallback_city, fallback_province, postal_code, text, "fallback", 0.1, 0.1, 0.1, profile=profile)
