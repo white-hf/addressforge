@@ -52,6 +52,75 @@ graph TD
 
 ---
 
+## 🔰 5-Minute Quick Start Guide for Newcomers
+
+If you are an ML novice or a technical newcomer looking to clean your company's address data, AddressForge is designed to be extremely friendly. You don't need to know CatBoost ranking formulas or vector mathematics—you can operate it using a **Simple Command Line** or a **Web Console User Interface**.
+
+### 💡 Think of AddressForge as a Smart Mailman:
+1. **Input**: You feed it messy, handwriting-style raw address strings (Raw Address).
+2. **Dense Recall (Vector)**: The engine searches the database to find the closest matching buildings.
+3. **ML Decision (Calibration)**: The engine inspects units, formats, and GPS coordinates to decide if it's safe to accept, needs manual review, or should be rejected.
+4. **Output**: You get clean, canonical address records ready to be stored in your database.
+
+---
+
+### 🖥️ Option A: Managing via the User-Friendly Web Console (Zero-Code)
+
+The Web Console (Control Center) is the recommended interface for business operators and non-technical users to manage settings, load data, and handle reviews.
+
+1. **Configure Ingestion Sources**: Open your browser and navigate to `http://127.0.0.1:8011/settings` (Console port is `8011`). Enter your database connection details (host, table, cursor columns) directly in the GUI. Click **"Test Connection"** and save.
+2. **Trigger One-Click Sync & Clean**: Go to the Dashboard page and click the **"Run Ingestion Now"** button. The engine will import raw records and automatically chain-execute the incremental cleaning job.
+3. **Handle Reviews (Review Lab)**: Go to the **Review Queue** tab. Unresolved/ambiguous addresses are listed side-by-side. View pre-screened LLM drafts, make manual edits, and click **"Approve"** to save standard addresses (which also builds Gold training sets automatically).
+4. **Promote & Rollback Models**: On the **Model Registry** tab, review Decision F1 and review rate charts. Click **"Promote to Active"** to live-deploy a new candidate model, or click **"Rollback"** to instantly revert to the previous version.
+
+---
+
+### 🛠️ Option B: Managing via Command-Line (For Developers)
+
+If you prefer using scripts and terminals, you can run the same pipeline in three quick steps:
+
+#### Step 1: Import raw address data
+Add your raw address data in a CSV template and load it:
+```bash
+# Load your company raw address CSV file
+bash scripts/import_csv.sh path/to/your/company_addresses.csv
+```
+
+#### Step 2: Run the incremental cleaning pipeline
+Execute the spatial-vector dual retrieval and tri-model cleaning pipeline:
+```bash
+# Triggers incremental sync and updates canonical address records
+PYTHONPATH=src .venv/bin/python -c "from addressforge.services.fusion_service import run_reference_enrichment_pipeline; run_reference_enrichment_pipeline()"
+```
+
+#### Step 3: Extract cleaned structured outputs
+Query the MySQL database to retrieve the accepted, high-confidence structured addresses:
+```sql
+-- Query clean accepted addresses directly from your database
+SELECT raw_address_text, suggested_unit_number, base_address_key 
+FROM address_cleaning_result 
+WHERE decision = 'accept';
+```
+
+#### 1-Line Sandbox Playground
+Test any single address interactively by sending a cURL validation request to the local API (Port `8010`):
+```bash
+curl -X POST http://127.0.0.1:8010/api/v1/validate \
+     -H "Content-Type: application/json" \
+     -d '{"raw_address_text": "unit 4 - 47 Albro lake rd Halifax"}'
+```
+
+---
+
+### ❔ Newcomer Q&A
+
+* **Q: Do I need to train machine learning models to start?**
+  * *A*: No. AddressForge comes with a pre-trained baseline model that runs out-of-the-box.
+* **Q: How does the system improve itself over time?**
+  * *A*: Any manual changes approved in the Web Console are recorded as Gold labels. Running the evolution cycle (`bash scripts/run_evolution_cycle.sh`) will retrain the CatBoost models on these new corrections, making the engine smarter with zero hyperparameter tuning.
+
+---
+
 ## 🛠️ Project Structure
 
 ```text
