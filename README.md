@@ -1,30 +1,54 @@
-# AddressForge Core Engine
+# AddressForge: Next-Generation Address Intelligence Engine
 
-AddressForge is a next-generation address intelligence engine. It provides a modular framework for parsing, validating, and assetizing addresses, powered by a Human-in-the-loop ML ecosystem.
+AddressForge is a next-generation address intelligence and entity resolution engine. Moving beyond traditional regex string parsing (Parser-first), AddressForge shifts to a **Retrieval-First / Entity Resolution** paradigm, resolving raw address descriptions to unique physical geospatial entities.
 
-## 🏗️ Modern Architecture
+---
 
-AddressForge is built on four architectural pillars:
+## 🏗️ Core Architecture (v2.1 - v2.5 Evolution)
 
-### 1. Profile-Driven Extensibility
-The engine is decoupled from regional logic via the **Profile System** (`core/profiles/`).
-- **CanadaProfile**: Specialized for North American patterns (Basement, Units, Penthouse, etc.).
-- **Global Ready**: New countries can be added by implementing a `BaseCountryProfile` adapter.
+```mermaid
+graph TD
+    Input["Raw Address String (with GPS)"] --> Norm["Lightweight Normalization (core/utils)"]
+    Norm --> DualRetrieval["Dual Retrieval Gateway (core/retrieval)"]
+    DualRetrieval -->|BGE-Small dense vectors| VectorRet["FAISS Dense Semantic Retrieval"]
+    DualRetrieval -->|ST_DWithin equivalents| GpsFilter["GPS Spatial Filtering (250m Gate)"]
+    VectorRet & GpsFilter --> Merge["Candidate Pool Generation"]
+    Merge --> MLRank["ML Tri-Model & Reranking"]
+    MLRank -->|Pairwise match probability| Reranker["CatBoost Reranker Model"]
+    MLRank -->|Structure constraint| BTModel["BuildingType Model (Guarded Override)"]
+    Reranker & BTModel --> Decision["Confidence Calibration (DecisionModel)"]
+    Decision -->|Auto-Accept Assist| OutputAccept["Structured Address Asset (Accept)"]
+    Decision -->|Ambiguity Guard| OutputReview["Expert Review Queue (Review)"]
+    OutputReview -->|Ollama / Qwen-2.5| LlmRefiner["Local LLM Prescreen (Silver Labels)"]
+```
 
-### 2. Error-Driven Active Learning
-We don't just collect labels; we collect *the right labels*.
-- **Error Buckets**: Detailed attribution (Pattern Miss, Reference Gap, etc.).
-- **Smart Sampling**: The system automatically pulls samples from the most frequent "Error Buckets" into the expert review queue.
+---
 
-### 3. Address Assetization (Canonicalization)
-Moving beyond string parsing to stable data assets.
-- **Deduplication**: Maps multiple address variants to unique `Building ID` and `Unit ID`.
-- **Promotion**: High-confidence cleaning results are automatically promoted to the Canonical Asset Library.
+## 🚀 Key Features
 
-### 4. Release Gate & Guardrails
-Ensuring safety in model evolution.
-- **Historical Replay**: Reruns new models over historical batches to detect regressions.
-- **Release Gate**: Quantitative check (Delta analysis) required before promoting any candidate model to Active status.
+### 1. Dual Retrieval & Numerical Precision (v2.3)
+- **Vector Semantic Search**: Encodes input queries into 384-dimensional dense vectors using `bge-small-en-v1.5` embeddings, matched against the standard database via FAISS.
+- **GPS Spatial Constraint**: Filters and ranks candidates based on physical distance using the Haversine formula (within a $250\text{m}$ gate: `ADDRESSFORGE_GPS_CONFLICT_METERS`).
+- **GPS Conflict Guard**: Flags mismatched query-reference coordinates with `gps_conflict = True` to prevent vector similarity hallucinations and skip invalid ML reranker alignment.
+
+### 2. Tri-Model Orchestration & Guarded Overrides
+- **Reranker Model**: Pairwise learning comparing query-candidate features (edit distance, text alignment, postal matched, and semantic alignment).
+- **BuildingType Model**: Classifies single-unit vs multi-unit structures. When $\ge 0.85$ confidence for single-unit is met, a guarded override removes phantom unit numbers, preventing false alarms.
+- **Decision Model (Assist Mode)**: Evaluates confidence boundaries. In `assist_trial` mode, high-confidence model validations automatically skip manual queue backlogs.
+- **LLM Refiner**: Integrates local Ollama/Qwen for edge-case diagnostics, generating draft corrections and `silver_label` suggestions.
+
+### 3. Continuous Ingestion & Cleaning Pipeline (v2.1 - v2.2)
+- **Composite Cursor Pagination**: Database-driven ingestion uses `updated_at + external_id` cursors for safe incremental synchronization.
+- **Chained Trigger Processing**: Successful ingestion automatically chains to a `run_cleaning_once` job.
+- **Feature Flags Tagging**: Auto-tags flags like `has_double_number`, `is_numbered_road`, and `has_explicit_unit` on ingestion, serving as indices for Active Learning queue filters.
+
+### 4. Reference Fusion & Unit Mining (v2.4)
+- **Multi-Source Reference Fusion**: Groups and merges duplicate reference data (from OSM, GeoNova, manual sources) sharing the same base address, preserving provenance in JSON attributions.
+- **Delivery Unit Mining**: Mines valid unit numbers from highly successful historical transactions ($\ge 0.90$ confidence accepts) and dynamically backfills them into the canonical unit library to reduce future `enrich` gaps.
+
+### 5. Hardened Promotion & Rollback Consistency (v2.5)
+- **Consistency Gate**: Promote operations automatically verify physical artifact completeness (`.pkl`, `.json`, `.cbm`) of all three models on disk.
+- **Emergency Rollback**: Supports instant rollback to the last known stable manifest, invalidating runtime TTL caches.
 
 ---
 
@@ -32,35 +56,59 @@ Ensuring safety in model evolution.
 
 ```text
 src/addressforge/
-├── api/            # Public Address Intelligence APIs
-├── console/        # Control Center & Review Lab Web Server
-├── control/        # Background Job Management (Queue/Worker)
-├── core/           
-│   └── profiles/   # Country-specific adapters (Canada, etc.)
-├── learning/       # ML Logic: Evaluator, Trainer, Shadow Mode
-├── pipelines/      # Orchestrated workflows (Training, Export)
-└── services/       # Business Logic Layer (Assets, Replay, Review)
+├── api/            # Public Normalization, Parsing, Validation, and Admin APIs
+├── console/        # Control Center & Review Lab Web Application Server
+├── control/        # Background Worker and Distributed Job Queue Processors
+├── core/           # Core Engines: retrieval (FAISS), reference matcher, and normalization profiles
+│   └── profiles/   # Localization profiles (base_canada, etc.)
+├── learning/       # Model Trainer, Evaluator, and Active Learning features
+├── pipelines/      # Orchestrated pipeline scripts (exports, schemas, shadow runs)
+└── services/       # Business logic (asset management, model manifest reloading, replay, fusion)
 ```
 
 ---
 
-## 🚀 Operations SOP (Standard Operating Procedure)
+## 🚀 Operations SOP
 
-1.  **Ingestion**: Sync raw data via the Control Center.
-2.  **Cleaning**: Run the parsing pipeline to identify risks.
-3.  **Review**: Adjudicate "Uncertainty" samples in the 3-column Review Lab.
-4.  **Training**: Trigger the automated Training Pipeline using curated Gold labels.
-5.  **Evaluation**: Run Shadow metrics and check the "Release Gate" in the Report Center.
-6.  **Promotion**: Activate the new model version.
-7.  **Assetization**: Promote high-confidence results to the Canonical Asset Library.
+### 1. Vector Index Construction
+Build the FAISS dense retrieval indexes from active external reference databases:
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_vector_index.py
+```
+
+### 2. Run Reference Fusion & Unit Mining
+Perform multi-source building merging and backfill unit numbers from historical successes:
+```bash
+PYTHONPATH=src .venv/bin/python -c "from addressforge.services.fusion_service import run_reference_enrichment_pipeline; run_reference_enrichment_pipeline()"
+```
+
+### 3. Training & Evaluation Cycle
+Train the CatBoost tri-model set (Decision, Reranker, BuildingType) and evaluate against the benchmark:
+```bash
+# Run full training pipeline
+bash scripts/run_evolution_cycle.sh
+
+# Run model evaluation report
+PYTHONPATH=src .venv/bin/python scripts/run_latest_eval.py
+```
+
+### 4. Running the Test Suite
+Ensure zero regression on address validation logic:
+```bash
+PYTHONPATH=src .venv/bin/pytest tests/
+```
 
 ---
 
-## 📖 Deep Dives
+## 📖 Key Documentation
 
-- [Operation Subsystem Product Manual (ZH)](docs/zh/operations/operation-subsystem-guide.md)
-- [Operation Subsystem Product Manual (EN)](docs/en/operations/operation-subsystem-guide.md)
-- [Iteration Roadmap](docs/en/product/addressforge-version-plan.md)
+Detailed design specifications can be found under the `docs` folder:
+- **Retrieval-First Evolution**: [retrieval_first_evolution_spec.md](docs/zh/architecture/retrieval_first_evolution_spec.md)
+- **Ingestion & Cleaning Spec**: [ingestion_cleaning_evolution_spec.md](docs/zh/architecture/ingestion_cleaning_evolution_spec.md)
+- **Next-Gen Evolution Roadmap**: [next_generation_roadmap.md](docs/zh/architecture/next_generation_roadmap.md)
+- **Metrics Acceptance Gate**: [metrics_acceptance_framework.md](docs/zh/governance/metrics_acceptance_framework.md)
+- **Operation Product Manual (ZH)**: [operation-subsystem-guide.md](docs/zh/operations/operation-subsystem-guide.md)
+- **Operation Product Manual (EN)**: [operation-subsystem-guide.md](docs/en/operations/operation-subsystem-guide.md)
 
 ---
-*AddressForge: Turning messy strings into intelligent business assets.*
+*AddressForge: Resolving address strings to intelligent spatial assets.*
