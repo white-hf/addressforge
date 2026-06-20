@@ -177,6 +177,7 @@ Detailed design specifications can be found under the `docs` folder:
 - **Next-Gen Evolution Roadmap**: [next_generation_roadmap.md](docs/en/architecture/next_generation_roadmap.md) ([ZH](docs/zh/architecture/next_generation_roadmap.md))
 - **Metrics Acceptance Gate**: [metrics_acceptance_framework.md](docs/en/governance/metrics_acceptance_framework.md) ([ZH](docs/zh/governance/metrics_acceptance_framework.md))
 - **Operation Product Manual**: [operation-subsystem-guide.md](docs/en/operations/operation-subsystem-guide.md) ([ZH](docs/zh/operations/operation-subsystem-guide.md))
+- **ML Learning & Customization Guide**: [ml_learning_and_customization_guide.md](docs/en/getting-started/ml_learning_and_customization_guide.md) ([ZH](docs/zh/getting-started/ml_learning_and_customization_guide.md))
 
 ---
 *AddressForge: Resolving address strings to intelligent spatial assets.*
