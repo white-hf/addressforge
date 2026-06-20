@@ -103,12 +103,11 @@ PYTHONPATH=src .venv/bin/pytest tests/
 ## 📖 Key Documentation
 
 Detailed design specifications can be found under the `docs` folder:
-- **Retrieval-First Evolution**: [retrieval_first_evolution_spec.md](docs/zh/architecture/retrieval_first_evolution_spec.md)
-- **Ingestion & Cleaning Spec**: [ingestion_cleaning_evolution_spec.md](docs/zh/architecture/ingestion_cleaning_evolution_spec.md)
-- **Next-Gen Evolution Roadmap**: [next_generation_roadmap.md](docs/zh/architecture/next_generation_roadmap.md)
-- **Metrics Acceptance Gate**: [metrics_acceptance_framework.md](docs/zh/governance/metrics_acceptance_framework.md)
-- **Operation Product Manual (ZH)**: [operation-subsystem-guide.md](docs/zh/operations/operation-subsystem-guide.md)
-- **Operation Product Manual (EN)**: [operation-subsystem-guide.md](docs/en/operations/operation-subsystem-guide.md)
+- **Retrieval-First Evolution**: [retrieval_first_evolution_spec.md](docs/en/architecture/retrieval_first_evolution_spec.md) ([ZH](docs/zh/architecture/retrieval_first_evolution_spec.md))
+- **Ingestion & Cleaning Spec**: [ingestion_cleaning_evolution_spec.md](docs/en/architecture/ingestion_cleaning_evolution_spec.md) ([ZH](docs/zh/architecture/ingestion_cleaning_evolution_spec.md))
+- **Next-Gen Evolution Roadmap**: [next_generation_roadmap.md](docs/en/architecture/next_generation_roadmap.md) ([ZH](docs/zh/architecture/next_generation_roadmap.md))
+- **Metrics Acceptance Gate**: [metrics_acceptance_framework.md](docs/en/governance/metrics_acceptance_framework.md) ([ZH](docs/zh/governance/metrics_acceptance_framework.md))
+- **Operation Product Manual**: [operation-subsystem-guide.md](docs/en/operations/operation-subsystem-guide.md) ([ZH](docs/zh/operations/operation-subsystem-guide.md))
 
 ---
 *AddressForge: Resolving address strings to intelligent spatial assets.*
