@@ -14,10 +14,10 @@ from addressforge.core.config import (
     ADDRESSFORGE_WORKSPACE_NAME,
 )
 from addressforge.core.utils import logger
-from addressforge.models import get_active_model, get_model, get_workspace, register_model_version
+from addressforge.models import get_active_model, get_model, register_model_version
 from addressforge.learning.gold import count_gold_labels
 from addressforge.learning.reporter import generate_markdown_report
-from addressforge.services.model_service import build_model_service_from_manifest
+from addressforge.services.runtime_bundle import build_runtime_bundle_from_model_row
 
 
 @dataclass(frozen=True)
@@ -682,91 +682,15 @@ def _resolve_model_runtime(
     workspace_name: str,
     model_name: str,
     model_version: str,
-) -> tuple[str, tuple[str, ...], dict[str, Any] | None, Any]:
-    workspace = get_workspace(workspace_name) or {}
+) -> dict[str, Any]:
     target_model = get_model(workspace_name, model_name, model_version) or {}
-    metrics_json = _metrics_json_dict(target_model)
-    target_profile = (
-        target_model.get("default_profile")
-        or workspace.get("default_profile")
-        or "base_canada"
-    )
-    target_parsers: tuple[str, ...] = ("simple_rule", "hybrid_canada", "libpostal")
-    target_decision_policy: dict[str, Any] | None = None
-    decision_model_artifact: dict[str, Any] = {}
-    runtime_binding = metrics_json.get("runtime_binding") if isinstance(metrics_json.get("runtime_binding"), dict) else {}
-    if runtime_binding:
-        runtime_profile = runtime_binding.get("profile")
-        runtime_parsers = runtime_binding.get("parsers")
-        runtime_policy = runtime_binding.get("decision_policy")
-        if isinstance(runtime_profile, str) and runtime_profile.strip():
-            target_profile = runtime_profile.strip()
-        if isinstance(runtime_parsers, list) and runtime_parsers:
-            target_parsers = tuple(str(item) for item in runtime_parsers if str(item).strip())
-        if isinstance(runtime_policy, dict):
-            target_decision_policy = runtime_policy
-    # Extract manifests for sub-services
-    # 提取子服务的清单
-    decision_model_artifact = (
-        metrics_json.get("decision_model_artifact")
-        if isinstance(metrics_json.get("decision_model_artifact"), dict)
-        else {}
-    )
-    reranker_model_artifact = (
-        metrics_json.get("reranker_model_artifact")
-        if isinstance(metrics_json.get("reranker_model_artifact"), dict)
-        else {}
-    )
-    building_type_model_artifact = (
-        metrics_json.get("building_type_model_artifact")
-        if isinstance(metrics_json.get("building_type_model_artifact"), dict)
-        else {}
-    )
-
-    target_artifact_path = target_model.get("artifact_path")
-    artifact_payload = {}
-    if target_artifact_path:
-        try:
-            artifact_payload = json.loads(Path(target_artifact_path).read_text(encoding="utf-8"))
-            artifact_profile = artifact_payload.get("profile")
-            artifact_parsers = artifact_payload.get("parsers")
-            artifact_decision_policy = artifact_payload.get("decision_policy")
-            if isinstance(artifact_profile, str) and artifact_profile.strip():
-                target_profile = artifact_profile.strip()
-            if isinstance(artifact_parsers, list) and artifact_parsers:
-                target_parsers = tuple(str(item) for item in artifact_parsers if str(item).strip())
-            if isinstance(artifact_decision_policy, dict):
-                target_decision_policy = artifact_decision_policy
-            
-            # Fill missing artifacts from artifact file
-            if not decision_model_artifact and isinstance(artifact_payload.get("decision_model_artifact"), dict):
-                decision_model_artifact = artifact_payload["decision_model_artifact"]
-            if not reranker_model_artifact and isinstance(artifact_payload.get("reranker_model_artifact"), dict):
-                reranker_model_artifact = artifact_payload["reranker_model_artifact"]
-            if not building_type_model_artifact and isinstance(artifact_payload.get("building_type_model_artifact"), dict):
-                building_type_model_artifact = artifact_payload["building_type_model_artifact"]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to load target model artifact for runtime binding: %s", exc)
-            
-    # Build unified manifest
-    full_manifest = {
-        **artifact_payload,
-        "decision_model_artifact": decision_model_artifact,
-        "reranker_model_artifact": reranker_model_artifact,
-        "building_type_model_artifact": building_type_model_artifact
-    }
-    
-    from addressforge.services.model_service import build_model_service_from_manifest
-    from addressforge.services.reranker_service import build_reranker_service_from_manifest
-    
-    return {
-        "profile": target_profile,
-        "parsers": target_parsers,
-        "decision_policy": target_decision_policy,
-        "model_service": build_model_service_from_manifest(full_manifest),
-        "reranker_service": build_reranker_service_from_manifest(full_manifest),
-        "manifest": full_manifest
-    }
+    if not target_model:
+        return {
+            "ok": False,
+            "reason": "model_not_found",
+            "detail": f"Model not found: {workspace_name}/{model_name}:{model_version}",
+        }
+    return build_runtime_bundle_from_model_row(target_model, mode="governed")
 
 
 def _predict_gold_rows_with_runtime(
@@ -784,12 +708,18 @@ def _predict_gold_rows_with_runtime(
         model_name,
         model_version,
     )
+    if not target_runtime.get("ok"):
+        raise ValueError(
+            "governed runtime unavailable for evaluation: "
+            f"{target_runtime.get('reason')} - {target_runtime.get('detail')}"
+        )
     service = AddressPlatformService(
         default_profile=target_runtime["profile"],
         default_parsers=target_runtime["parsers"],
         decision_policy=target_runtime["decision_policy"],
         model_service=target_runtime["model_service"],
         reranker_service=target_runtime["reranker_service"],
+        allow_local_policy_override=False,
     )
     predicted_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -1023,6 +953,11 @@ def run_baseline_evaluation(
             model_name,
             model_version,
         )
+        if not target_runtime.get("ok"):
+            raise ValueError(
+                "governed runtime unavailable for evaluation: "
+                f"{target_runtime.get('reason')} - {target_runtime.get('detail')}"
+            )
         if gold_rows:
             gold_rows = _predict_gold_rows_with_runtime(workspace_name, model_name, model_version, gold_rows)
         decision_metrics = _field_metrics(gold_rows, "decision") if gold_rows else None
@@ -1132,10 +1067,18 @@ def run_baseline_evaluation(
             "disagreement_rate": _to_float((replay_result or {}).get("disagreement_rate")),
             "active_current_match_rate": _to_float((replay_result or {}).get("active_current_match_rate")),
             "candidate_current_match_rate": _to_float((replay_result or {}).get("candidate_current_match_rate")),
-            "mismatches": _to_count((replay_result or {}).get("mismatches")),
+            "mismatches": _to_count(
+                (replay_result or {}).get("mismatch_count")
+                if (replay_result or {}).get("mismatch_count") is not None
+                else (replay_result or {}).get("mismatches")
+            ),
             "failures": _to_count((replay_result or {}).get("failures")),
             "regression_detected": _to_float((replay_result or {}).get("disagreement_rate")),
-            "status": "failed" if replay_error else "completed",
+            "status": (
+                "failed"
+                if replay_error
+                else str((replay_result or {}).get("status") or "completed")
+            ),
             "error": replay_error,
         }
 
@@ -1174,7 +1117,6 @@ def run_baseline_evaluation(
         # Save Markdown Report
         artifact_dir = _artifact_dir()
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        markdown_report = generate_markdown_report(metrics_json, locale=os.getenv("ADDRESSFORGE_LOCALE", "en"))
         # Add runtime identity to metrics for transparency
         # 将运行时标识添加到指标中以提高透明度
         total_eval = len(gold_rows)
@@ -1208,6 +1150,20 @@ def run_baseline_evaluation(
             "profile": target_runtime["profile"]
         }
 
+        # Evaluation artifacts must remain self-contained after artifact_path
+        # moves from the training artifact to the evaluation artifact.
+        existing_model = get_model(workspace_name, model_name, model_version)
+        existing_metrics = _metrics_json_dict(existing_model)
+        metrics_json = {
+            **existing_metrics,
+            "metric_name": metric_name,
+            "metric_value": metric_value,
+            **metrics_json,
+        }
+        markdown_report = generate_markdown_report(
+            metrics_json,
+            locale=os.getenv("ADDRESSFORGE_LOCALE", "en"),
+        )
         report_path = artifact_dir / f"{model_name}_{model_version}_eval.md"
         report_path.write_text(markdown_report, encoding="utf-8")
         
@@ -1231,8 +1187,6 @@ def run_baseline_evaluation(
         artifact_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifact_dir / f"{model_name}_{model_version}_eval.json"
         artifact_path.write_text(json.dumps(asdict(artifact), ensure_ascii=False, indent=2), encoding="utf-8")
-        existing_model = get_model(workspace_name, model_name, model_version)
-        existing_metrics = _metrics_json_dict(existing_model)
         registry_row = register_model_version(
             workspace_name=workspace_name,
             model_name=model_name,
@@ -1243,13 +1197,13 @@ def run_baseline_evaluation(
             evaluation_run_id=run_id,
             artifact_path=str(artifact_path),
             metrics_json={
-                **existing_metrics,
                 "metric_name": artifact.metric_name,
                 "metric_value": metric_value,
                 **metrics_json,
             },
             notes=f"Evaluation completed for model={model_name}/{model_version} on dataset={dataset_name}. {metric_name}={metric_value:.4f}",
-            is_default=0,
+            # Evaluation updates evidence, not activation state.
+            is_default=None,
         )
         # 7. Final Artifact Creation & Markdown Reporting
         # 7. 最终产物创建与 Markdown 报告生成

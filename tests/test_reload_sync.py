@@ -1,61 +1,126 @@
 import unittest
-import json
-import os
-from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
 from addressforge.api.server import AddressPlatformService
-from addressforge.services.model_service import ModelService
-from addressforge.services.reranker_service import RerankerService
+
 
 class TestReloadSync(unittest.TestCase):
+    @patch("addressforge.api.server.build_runtime_bundle_from_model_row")
+    @patch("addressforge.api.server.get_active_model")
+    def test_startup_uses_governed_bundle_without_compatibility_reload(
+        self,
+        mock_get_active_model,
+        mock_build_bundle,
+    ):
+        active_model = {
+            "model_id": 51,
+            "model_version": "v_contract",
+            "artifact_path": "must-not-be-read.json",
+        }
+        model_service = MagicMock()
+        reranker_service = MagicMock()
+        mock_get_active_model.return_value = active_model
+        mock_build_bundle.return_value = {
+            "ok": True,
+            "profile": "governed_profile",
+            "parsers": ("simple_rule",),
+            "decision_policy": {"policy_source": "manifest"},
+            "model_service": model_service,
+            "reranker_service": reranker_service,
+            "runtime_identity": {"mode": "governed", "contract": {"ok": True}},
+        }
+
+        service = AddressPlatformService(
+            workspace_name="isolated_workspace",
+            allow_local_policy_override=False,
+        )
+
+        runtime = service.describe_runtime()
+        self.assertEqual(runtime["workspace_name"], "isolated_workspace")
+        self.assertEqual(runtime["default_profile"], "governed_profile")
+        self.assertEqual(runtime["runtime_bundle"]["mode"], "governed")
+        self.assertIs(service._model_service, model_service)
+        self.assertIs(service._reranker_service, reranker_service)
+        mock_get_active_model.assert_called_once_with("isolated_workspace")
+        mock_build_bundle.assert_called_once_with(active_model, mode="governed")
+
     @patch("addressforge.api.server.get_workspace.clear_cache")
     @patch("addressforge.api.server.get_active_model.clear_cache")
-    def test_reload_synchronizes_binding(self, mock_clear_active_cache, mock_clear_workspace_cache):
-        # 1. Setup a fake manifest with distinct settings
-        custom_policy = {"custom_key": 99.9}
-        manifest = {
-            "runtime_binding": {
-                "profile": "custom_profile",
-                "parsers": ["simple_rule"],
-                "decision_policy": custom_policy
-            },
-            "decision_model_artifact": {"model_path": "runtime/models/decision_catboost_v1.cbm"},
-            "reranker_model_artifact": {"model_path": "runtime/models/reranker_catboost_v1.cbm"}
+    @patch("addressforge.api.server.build_runtime_bundle_from_model_row")
+    @patch("addressforge.api.server.get_active_model")
+    def test_reload_synchronizes_governed_bundle(
+        self,
+        mock_get_active_model,
+        mock_build_bundle,
+        mock_clear_active_cache,
+        mock_clear_workspace_cache,
+    ):
+        active_model = {"model_id": 51, "model_version": "v_contract"}
+        model_service = MagicMock()
+        reranker_service = MagicMock()
+        mock_get_active_model.return_value = active_model
+        mock_build_bundle.return_value = {
+            "ok": True,
+            "profile": "custom_profile",
+            "parsers": ("simple_rule",),
+            "decision_policy": {"custom_key": 99.9},
+            "model_service": model_service,
+            "reranker_service": reranker_service,
+            "runtime_identity": {"mode": "governed", "contract": {"ok": True}},
         }
-        
-        # Create artifact file for reload to find
-        artifact_path = Path("runtime/models/test_reload_manifest.json")
-        artifact_path.write_text(json.dumps(manifest))
-        
-        try:
-            # 2. Mock bootstrap_default_registry to return our test manifest
-            import addressforge.api.server as server
-            original_bootstrap = server.bootstrap_default_registry
-            server.bootstrap_default_registry = lambda: {
-                "workspace": {"workspace_name": "default"},
-                "model": {"artifact_path": str(artifact_path), "model_version": "test_v1"}
-            }
-            
-            service = AddressPlatformService()
-            
-            # 3. Trigger reload
+        service = AddressPlatformService(
+            model_service=MagicMock(),
+            reranker_service=MagicMock(),
+            workspace_name="reload_workspace",
+            allow_local_policy_override=False,
+        )
+        service._vector_engine = MagicMock()
+
+        service.reload_models()
+
+        runtime = service.describe_runtime()
+        self.assertEqual(runtime["default_profile"], "custom_profile")
+        self.assertEqual(runtime["default_parsers"], ["simple_rule"])
+        self.assertIn("custom_key", runtime["decision_policy_keys"])
+        self.assertEqual(runtime["runtime_bundle"]["mode"], "governed")
+        self.assertIs(service._model_service, model_service)
+        self.assertIs(service._reranker_service, reranker_service)
+        mock_build_bundle.assert_called_once_with(active_model, mode="governed")
+        mock_get_active_model.assert_called_once_with("reload_workspace")
+        mock_clear_active_cache.assert_called_once()
+        mock_clear_workspace_cache.assert_called_once()
+
+    @patch("addressforge.api.server.get_workspace.clear_cache")
+    @patch("addressforge.api.server.get_active_model.clear_cache")
+    @patch("addressforge.api.server.build_runtime_bundle_from_model_row")
+    @patch("addressforge.api.server.get_active_model")
+    def test_reload_preserves_current_services_when_contract_is_invalid(
+        self,
+        mock_get_active_model,
+        mock_build_bundle,
+        _mock_clear_active_cache,
+        _mock_clear_workspace_cache,
+    ):
+        mock_get_active_model.return_value = {"model_id": 1, "model_version": "legacy"}
+        mock_build_bundle.return_value = {
+            "ok": False,
+            "reason": "runtime_manifest_invalid",
+            "detail": "hash missing",
+        }
+        current_model_service = MagicMock()
+        current_reranker_service = MagicMock()
+        service = AddressPlatformService(
+            model_service=current_model_service,
+            reranker_service=current_reranker_service,
+            allow_local_policy_override=False,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "runtime_manifest_invalid"):
             service.reload_models()
-            
-            # 4. Verify sync
-            runtime = service.describe_runtime()
-            self.assertEqual(runtime["default_profile"], "custom_profile")
-            self.assertIn("simple_rule", runtime["default_parsers"])
-            self.assertEqual(len(runtime["default_parsers"]), 1)
-            self.assertIn("custom_key", runtime["decision_policy_keys"])
-            mock_clear_active_cache.assert_called_once()
-            mock_clear_workspace_cache.assert_called_once()
-            
-            # Restore
-            server.bootstrap_default_registry = original_bootstrap
-            
-        finally:
-            if artifact_path.exists():
-                artifact_path.unlink()
+
+        self.assertIs(service._model_service, current_model_service)
+        self.assertIs(service._reranker_service, current_reranker_service)
+
 
 if __name__ == "__main__":
     unittest.main()

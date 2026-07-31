@@ -48,7 +48,7 @@ from addressforge.learning.gold import freeze_gold_set, seed_active_learning_que
 from addressforge.learning.shadow import run_baseline_shadow
 from addressforge.learning.trainer import run_baseline_training
 from addressforge.pipelines.export_snapshot import export_workspace_snapshot
-from addressforge.models import bootstrap_default_registry, promote_model
+from addressforge.models import bootstrap_default_registry, get_active_model, promote_model
 
 
 CONTROL_JOB_KINDS = (
@@ -1374,11 +1374,18 @@ def _run_shadow_job(job: dict[str, Any]) -> dict[str, Any]:
     min_delta = float(get_setting(workspace_name, "pipeline.auto_promote.min_delta", 0.0) or 0.0)
     shadow_recommended = bool(result.get("promote_recommended"))
     if _truthy_setting(auto_promote_enabled) and shadow_recommended and float(result.get("score_delta") or 0.0) >= min_delta:
+        active_before_promotion = get_active_model(workspace_name)
         promotion_result = promote_model(
             workspace_name=workspace_name,
             model_name=model_name,
             model_version=model_version,
             notes=f"auto-promoted after shadow delta={result.get('score_delta')}",
+            expected_active_model_id=(
+                int(active_before_promotion["model_id"])
+                if active_before_promotion
+                and active_before_promotion.get("model_id") is not None
+                else None
+            ),
         )
     return {
         "job_kind": job["job_kind"],
@@ -1579,34 +1586,30 @@ def _run_reload_models_job(job: dict[str, Any]) -> dict[str, Any]:
     Instructs the worker to reload all models in memory.
     指示 worker 重载内存中的所有模型。
     """
-    from pathlib import Path
-
     logger.info("Worker is hot-reloading models...")
-    from addressforge.models import bootstrap_default_registry
-    from addressforge.services.model_service import get_model_service
-    from addressforge.services.reranker_service import get_reranker_service
+    from addressforge.models import get_active_model
+    from addressforge.services.runtime_bundle import build_runtime_bundle_from_model_row
     from addressforge.core.retrieval import get_vector_engine
 
-    snapshot = bootstrap_default_registry()
-    active_model = snapshot.get("model") if isinstance(snapshot, dict) else None
-    manifest = None
-    if active_model and active_model.get("artifact_path"):
-        artifact_path = Path(active_model["artifact_path"])
-        if artifact_path.exists():
-            try:
-                import json
-
-                manifest = json.loads(artifact_path.read_text(encoding="utf-8"))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to load active manifest during worker reload: %s", exc)
-
-    get_model_service(manifest=manifest).reload_models(manifest=manifest)
-    get_reranker_service(manifest=manifest).reload_models(manifest=manifest)
+    try:
+        get_active_model.clear_cache()
+    except Exception:
+        pass
+    active_model = get_active_model(str(job.get("workspace_name") or ADDRESSFORGE_WORKSPACE_NAME))
+    if not active_model:
+        raise ValueError("Worker reload blocked: no active model")
+    runtime = build_runtime_bundle_from_model_row(active_model, mode="governed")
+    if not runtime.get("ok"):
+        raise ValueError(
+            "Worker reload blocked by runtime contract: "
+            f"{runtime.get('reason')} - {runtime.get('detail')}"
+        )
     get_vector_engine().reload_models()
     
     return {
         "status": "success",
-        "message": "Models reloaded in worker process."
+        "message": "Governed runtime bundle validated and worker indexes reloaded.",
+        "runtime_identity": runtime["runtime_identity"],
     }
 
 def run_job(job: dict[str, Any]) -> dict[str, Any]:

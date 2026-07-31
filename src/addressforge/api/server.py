@@ -32,7 +32,6 @@ from addressforge.core.utils import logger
 from addressforge.core.reference import GeoNovaReferenceMatcher
 from addressforge.core.config import ADDRESSFORGE_MODEL_FAMILY, ADDRESSFORGE_WORKSPACE_NAME
 from addressforge.models import (
-    bootstrap_default_registry,
     get_active_model,
     get_workspace,
     get_model,
@@ -54,6 +53,7 @@ from addressforge.learning import (
 from addressforge.services.model_service import get_model_service
 from addressforge.services.model_service import ModelService
 from addressforge.services.reranker_service import get_reranker_service
+from addressforge.services.runtime_bundle import build_runtime_bundle_from_model_row
 from addressforge.core.retrieval import get_vector_engine
 
 
@@ -813,21 +813,61 @@ class AddressPlatformService:
         model_service: ModelService | None = None,
         reranker_service: RerankerService | None = None,
         workspace_name: str | None = None,
+        allow_local_policy_override: bool = True,
     ) -> None:
+        self._workspace_name = workspace_name or ADDRESSFORGE_WORKSPACE_NAME
         self._reference_matcher = GeoNovaReferenceMatcher()
         self._default_profile = default_profile or DEFAULT_MODEL_PROFILE
         self._default_parsers = default_parsers or DEFAULT_PARSERS
         self._decision_policy = decision_policy or {}
         self._vector_engine = None
+        self._runtime_bundle_identity: dict[str, Any] = {
+            "mode": "explicit_services" if model_service and reranker_service else "compatibility",
+            "contract": None,
+        }
         
         # Phase 18: Load active manifest if services not provided
         # 第 18 阶段：如果未提供服务，则加载活动清单
         manifest = None
         if model_service is None or reranker_service is None:
             try:
-                ws_name = workspace_name or ADDRESSFORGE_WORKSPACE_NAME
-                active_model = get_active_model(ws_name)
-                if active_model and active_model.get("artifact_path"):
+                active_model = get_active_model(self._workspace_name)
+                governed_runtime = (
+                    build_runtime_bundle_from_model_row(active_model, mode="governed")
+                    if active_model
+                    else {"ok": False, "reason": "model_not_found"}
+                )
+                if (
+                    model_service is None
+                    and reranker_service is None
+                    and governed_runtime.get("ok")
+                ):
+                    model_service = governed_runtime["model_service"]
+                    reranker_service = governed_runtime["reranker_service"]
+                    self._runtime_bundle_identity = governed_runtime["runtime_identity"]
+                    if not default_profile:
+                        self._default_profile = governed_runtime["profile"]
+                    if not default_parsers:
+                        self._default_parsers = governed_runtime["parsers"]
+                    if not decision_policy:
+                        self._decision_policy = governed_runtime["decision_policy"]
+                    allow_local_policy_override = False
+                    logger.info(
+                        "Service initialized with governed runtime bundle: %s",
+                        active_model.get("model_version"),
+                    )
+                elif active_model:
+                    self._runtime_bundle_identity = {
+                        **(governed_runtime.get("runtime_identity") or {}),
+                        "mode": "compatibility",
+                        "governed_load_reason": governed_runtime.get("reason"),
+                        "governed_load_detail": governed_runtime.get("detail"),
+                    }
+                if (
+                    not governed_runtime.get("ok")
+                    and active_model
+                    and active_model.get("artifact_path")
+                ):
                     artifact_path = Path(active_model["artifact_path"])
                     if artifact_path.exists():
                         manifest = json.loads(artifact_path.read_text(encoding="utf-8"))
@@ -843,10 +883,11 @@ class AddressPlatformService:
             except Exception as e:
                 logger.warning("Failed to load active manifest during Service init: %s", e)
 
-        # Always try to load a local decision_policy.json if it exists, overriding previous loads
-        # 如果存在本地 decision_policy.json，则始终尝试加载它，覆盖之前的加载
+        # Compatibility-only local policy override. Governed runtime bundles pass
+        # allow_local_policy_override=False so their manifest policy stays immutable.
+        # 仅用于兼容模式的本地策略覆盖。受治理运行时会关闭此选项，保持 manifest 策略不可变。
         local_policy_path = Path("runtime/models/decision_policy.json")
-        if local_policy_path.exists():
+        if allow_local_policy_override and local_policy_path.exists():
             try:
                 local_policy = json.loads(local_policy_path.read_text(encoding="utf-8"))
                 self._decision_policy.update(local_policy)
@@ -909,33 +950,26 @@ class AddressPlatformService:
         except Exception:
             pass
 
-        manifest = None
         try:
-            snapshot = bootstrap_default_registry()
-            active_model = snapshot.get("model")
-            if active_model and active_model.get("artifact_path"):
-                artifact_path = Path(active_model["artifact_path"])
-                if artifact_path.exists():
-                    manifest = json.loads(artifact_path.read_text(encoding="utf-8"))
-                    logger.info("Fetched manifest for model version: %s", active_model.get("model_version"))
-                    
-                    # Phase 18: Sync runtime settings from manifest
-                    # 第 18 阶段：从清单同步运行时设置
-                    binding = manifest.get("runtime_binding") or {}
-                    if binding.get("profile"):
-                        self._default_profile = str(binding["profile"])
-                    if binding.get("parsers"):
-                        self._default_parsers = tuple(str(p) for p in binding["parsers"])
-                    if binding.get("decision_policy"):
-                        self._decision_policy = dict(binding["decision_policy"])
-                        logger.info("Runtime settings synchronized from manifest.")
+            active_model = get_active_model(self._workspace_name)
+            if not active_model:
+                raise RuntimeError("No active model is available for reload")
+            runtime = build_runtime_bundle_from_model_row(active_model, mode="governed")
+            if not runtime.get("ok"):
+                raise RuntimeError(
+                    "Governed runtime reload blocked: "
+                    f"{runtime.get('reason')} - {runtime.get('detail')}"
+                )
         except Exception as e:
-            logger.warning("Failed to fetch manifest from registry during reload: %s", e)
+            logger.error("AddressPlatformService reload failed closed: %s", e)
+            raise
 
-        # Create NEW instances with the updated manifest
-        # 使用更新后的清单创建新实例
-        self._model_service = get_model_service(manifest=manifest)
-        self._reranker_service = get_reranker_service(manifest=manifest)
+        self._default_profile = runtime["profile"]
+        self._default_parsers = runtime["parsers"]
+        self._decision_policy = runtime["decision_policy"]
+        self._model_service = runtime["model_service"]
+        self._reranker_service = runtime["reranker_service"]
+        self._runtime_bundle_identity = runtime["runtime_identity"]
         
         engine = self._get_vector_engine()
         if engine:
@@ -948,11 +982,13 @@ class AddressPlatformService:
         返回当前运行时配置和模型版本的详细摘要。
         """
         return {
+            "workspace_name": self._workspace_name,
             "default_profile": self._default_profile,
             "default_parsers": list(self._default_parsers),
             "decision_policy_keys": list(self._decision_policy.keys()),
             "decision_model": self._model_service.describe_runtime() if self._model_service else None,
             "reranker_model": self._reranker_service.describe_runtime() if self._reranker_service else None,
+            "runtime_bundle": self._runtime_bundle_identity,
         }
 
     def _shadow_assist_recommendation(
@@ -1165,18 +1201,12 @@ class AddressPlatformService:
         active_model = None
         model_count = 0
         try:
-            snapshot = bootstrap_default_registry()
-            workspace = snapshot.get("workspace")
-            active_model = snapshot.get("model")
+            workspace = get_workspace(workspace_name)
+            active_model = get_active_model(workspace_name)
             workspace_name = str(workspace.get("workspace_name") or workspace_name) if workspace else workspace_name
             model_count = len(list_models(workspace_name))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Model registry unavailable: %s", exc)
-            try:
-                active_model = get_active_model(workspace_name)
-                model_count = len(list_models(workspace_name))
-            except Exception as inner_exc:  # noqa: BLE001
-                logger.warning("Model registry fallback unavailable: %s", inner_exc)
         return {
             "platform_version": PLATFORM_VERSION,
             "api_version": API_VERSION,
@@ -1888,7 +1918,15 @@ async def rollback_models(request: dict) -> dict[str, Any]:
     将活动模型回滚到上一个提升的版本。
     """
     try:
-        model = rollback_model(request.get("workspace_name", ADDRESSFORGE_WORKSPACE_NAME), request.get("notes"))
+        model = rollback_model(
+            request.get("workspace_name", ADDRESSFORGE_WORKSPACE_NAME),
+            request.get("notes"),
+            target_model_id=request.get("target_model_id"),
+            expected_active_model_id=request.get("expected_active_model_id"),
+            dry_run=bool(request.get("dry_run")),
+        )
+        if model.get("status") != "rolled_back":
+            return {"status": model.get("status"), "model": model}
         # After database rollback, trigger a reload in memory
         # 数据库回滚后，触发内存中的重载
         service.reload_models()
@@ -1901,28 +1939,23 @@ async def rollback_models(request: dict) -> dict[str, Any]:
 async def models(workspace_name: str | None = None) -> dict[str, Any]:
     target_workspace = workspace_name or ADDRESSFORGE_WORKSPACE_NAME
     try:
-        snapshot = bootstrap_default_registry()
-        ws_name = snapshot["workspace"].get("workspace_name", target_workspace)
-        if workspace_name and workspace_name != ws_name:
-            ws_name = workspace_name
-        models_list = list_models(ws_name)
+        models_list = list_models(target_workspace)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Model list registry unavailable: %s", exc)
-        ws_name = target_workspace
         models_list = []
     return {
-        "workspace_name": ws_name,
+        "workspace_name": target_workspace,
         "models": models_list,
     }
 
 
 @app.get("/api/v1/workspaces")
 async def workspaces() -> dict[str, Any]:
-    snapshot = bootstrap_default_registry()
+    default_workspace = get_workspace(ADDRESSFORGE_WORKSPACE_NAME)
     return {
         "workspaces": list_workspaces(),
-        "default_workspace": snapshot["workspace"],
-        "active_model": snapshot["model"],
+        "default_workspace": default_workspace,
+        "active_model": get_active_model(ADDRESSFORGE_WORKSPACE_NAME),
     }
 
 

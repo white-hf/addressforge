@@ -38,6 +38,12 @@ class ModelService:
     ):
         # Removed Singleton guard for Phase 16/17 version alignment
         # 移除单例守卫以实现第 16/17 阶段的版本对齐
+        self._decision_manifest_bound = bool(
+            manifest and manifest.get("decision_model_artifact")
+        )
+        self._building_type_manifest_bound = bool(
+            manifest and manifest.get("building_type_model_artifact")
+        )
         self.model_path = _path_or_none(model_path) or Path(
             os.getenv("ADDRESSFORGE_DECISION_MODEL_PKL_PATH", "runtime/models/decision_catboost_v1.pkl")
         )
@@ -93,7 +99,9 @@ class ModelService:
                 )
                 self.present_labels = list(self.metadata.get("present_labels") or self.model_payload.get("present_labels") or list(DECISION_LABELS))
                 self._legacy_mode = False
-                self._artifact_source = "manifest"
+                self._artifact_source = (
+                    "manifest" if self._decision_manifest_bound else "configured_path"
+                )
                 logger.info(
                     "Decision model loaded from %s with metadata %s",
                     self.model_path,
@@ -145,12 +153,14 @@ class ModelService:
             # Phase 17/18: Support version-aware BuildingType and Decision models
             # 第 17/18 阶段：支持识别版本的 BuildingType 和 Decision 模型
             if manifest.get("decision_model_artifact"):
+                self._decision_manifest_bound = True
                 dma = manifest["decision_model_artifact"]
                 self.metadata_path = Path(dma.get("metadata_path") or self.metadata_path)
                 self.model_path = Path(dma.get("model_path") or self.model_path)
                 self.legacy_model_path = Path(dma.get("legacy_model_path") or self.legacy_model_path)
             
             if manifest.get("building_type_model_artifact"):
+                self._building_type_manifest_bound = True
                 btma = manifest["building_type_model_artifact"]
                 self.bt_model_path = Path(btma.get("model_path") or "runtime/models/building_type_catboost_v1.cbm")
             else:
@@ -168,6 +178,15 @@ class ModelService:
             "legacy_mode": self._legacy_mode,
             "present_labels": list(self.present_labels),
             "feature_names": list(self.feature_names),
+            "building_type_model": {
+                "model_path": str(self.bt_model_path),
+                "artifact_source": (
+                    "manifest"
+                    if self._building_type_manifest_bound
+                    else "configured_path"
+                ),
+                "loaded": self.bt_model is not None,
+            },
         }
 
     def predict_building_type(

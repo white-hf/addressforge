@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +15,11 @@ from addressforge.core.config import (
     ADDRESSFORGE_WORKSPACE_NAME,
 )
 from addressforge.core.utils import logger, ttl_cache
+from addressforge.models.runtime_manifest import (
+    resolve_runtime_manifest,
+    summarize_validation_failure,
+    validate_runtime_manifest,
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,36 @@ class ModelRecord:
 
 def _first_or_none(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return rows[0] if rows else None
+
+
+_MODEL_LIFECYCLE_ORDER = {
+    "draft": 0,
+    "trained": 10,
+    "evaluated": 20,
+    "promoted": 30,
+    "deprecated": 40,
+}
+
+
+def _forward_only_lifecycle_status(
+    existing_status: str | None,
+    requested_status: str | None,
+) -> str | None:
+    """
+    Ordinary artifact/metric registration may advance lifecycle state, but it
+    must never demote a promoted or deprecated immutable version.
+    """
+    if requested_status is None:
+        return existing_status
+    existing = str(existing_status or "").strip().lower()
+    requested = str(requested_status).strip().lower()
+    if existing not in _MODEL_LIFECYCLE_ORDER:
+        return requested
+    if requested not in _MODEL_LIFECYCLE_ORDER:
+        return requested
+    if _MODEL_LIFECYCLE_ORDER[requested] < _MODEL_LIFECYCLE_ORDER[existing]:
+        return existing
+    return requested
 
 
 @ttl_cache(seconds=600)
@@ -180,7 +214,10 @@ def register_model_version(
     existing = get_model(workspace_name, model_name, model_version)
     payload = {
         "model_family": model_family,
-        "status": status,
+        "status": _forward_only_lifecycle_status(
+            existing.get("status") if existing else None,
+            status,
+        ),
         "default_profile": default_profile or workspace.get("default_profile") or ADDRESSFORGE_DEFAULT_PROFILE,
         "dataset_name": dataset_name,
         "training_run_id": training_run_id,
@@ -248,47 +285,13 @@ def register_model_version(
     return get_model(workspace_name, model_name, model_version) or {}
 
 
-def _load_runtime_artifacts_from_metrics(target_row: dict[str, Any], metrics: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """
-    Helper to extract all versioned model artifacts from metrics or artifact file.
-    辅助函数，用于从指标或构件文件中提取所有版本化的模型构件。
-    """
-    artifact_payload = {}
-    artifact_path = target_row.get("artifact_path")
-    if artifact_path:
-        try:
-            ap = Path(str(artifact_path))
-            if ap.exists():
-                artifact_payload = json.loads(ap.read_text(encoding="utf-8"))
-        except Exception:
-            artifact_payload = {}
-
-    def _extract(key):
-        val = metrics.get(key)
-        if isinstance(val, dict): return val
-        val = artifact_payload.get(key)
-        if isinstance(val, dict): return val
-        return {}
-
-    return {
-        "decision": _extract("decision_model_artifact"),
-        "reranker": _extract("reranker_model_artifact"),
-        "building_type": _extract("building_type_model_artifact"),
-    }
-
-
-def promote_model(
-    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
-    model_id: int | None = None,
-    model_name: str | None = None,
-    model_version: str | None = None,
-    notes: str | None = None,
-    force: bool = False
-) -> dict[str, Any]:
-    """
-    Promotes a model version to 'active' status while enforcing the consolidated Release Gate.
-    将模型版本提升为“活动 (active)”状态，同时强制执行统一的发布准入。
-    """
+def _find_registry_model(
+    *,
+    workspace_name: str,
+    model_id: int | None,
+    model_name: str | None,
+    model_version: str | None,
+) -> dict[str, Any] | None:
     if model_id is not None:
         rows = fetch_all(
             "SELECT * FROM model_registry WHERE workspace_name = %s AND model_id = %s LIMIT 1",
@@ -307,127 +310,388 @@ def promote_model(
             """,
             (workspace_name, model_name, model_version),
         )
-    target = _first_or_none(rows)
+    return _first_or_none(rows)
+
+
+def build_release_readiness_report(
+    target: dict[str, Any],
+    *,
+    bypass_for_bootstrap: bool = False,
+) -> dict[str, Any]:
+    """Build a complete, read-only release readiness report for one immutable version."""
+    checks: list[dict[str, Any]] = []
+
+    def add_check(
+        code: str,
+        passed: bool,
+        message: str,
+        **evidence: Any,
+    ) -> None:
+        checks.append(
+            {
+                "code": code,
+                "passed": bool(passed),
+                "message": message,
+                **evidence,
+            }
+        )
+
+    identity = {
+        "model_id": target.get("model_id"),
+        "workspace_name": target.get("workspace_name"),
+        "model_name": target.get("model_name"),
+        "model_version": target.get("model_version"),
+    }
+    if bypass_for_bootstrap:
+        return {
+            "status": "ready",
+            "ready": True,
+            "reason": "Release Gate bypassed for explicit registry bootstrap.",
+            "target": identity,
+            "checks": [
+                {
+                    "code": "explicit_bootstrap_bypass",
+                    "passed": True,
+                    "message": "Explicit bootstrap bypass requested.",
+                }
+            ],
+            "blockers": [],
+            "final_f1": 0.0,
+            "bypassed": True,
+        }
+
+    try:
+        raw_metrics = target.get("metrics_json")
+        if isinstance(raw_metrics, dict):
+            metrics = raw_metrics
+        elif raw_metrics:
+            metrics = json.loads(str(raw_metrics))
+        else:
+            metrics = {}
+        metrics_ok = bool(metrics)
+        add_check(
+            "evaluation_metrics_present",
+            metrics_ok,
+            (
+                "Mandatory evaluation metrics are present."
+                if metrics_ok
+                else "Mandatory evaluation metrics missing. 缺少强制评测指标。"
+            ),
+        )
+
+        benchmark = metrics.get("release_benchmark")
+        comparison = metrics.get("release_comparison")
+        replay_m = metrics.get("replay_metrics")
+        assist_readiness = metrics.get("decision_assist_rollout_readiness")
+        shadow_m = metrics.get("decision_shadow_assist")
+
+        for name, value in (
+            ("release_benchmark", benchmark),
+            ("release_comparison", comparison),
+            ("replay_metrics", replay_m),
+            ("decision_assist_rollout_readiness", assist_readiness),
+            ("decision_shadow_assist", shadow_m),
+        ):
+            add_check(
+                f"{name}_present",
+                isinstance(value, dict),
+                (
+                    f"{name} evidence is present."
+                    if isinstance(value, dict)
+                    else f"Mandatory {name} evidence missing."
+                ),
+            )
+
+        benchmark = benchmark if isinstance(benchmark, dict) else {}
+        comparison = comparison if isinstance(comparison, dict) else {}
+        replay_m = replay_m if isinstance(replay_m, dict) else {}
+        assist_readiness = (
+            assist_readiness if isinstance(assist_readiness, dict) else {}
+        )
+        shadow_m = shadow_m if isinstance(shadow_m, dict) else {}
+
+        required_benchmark_thresholds = {
+            "decision_f1": 0.60,
+            "building_type_f1": 0.80,
+            "unit_number_f1": 0.80,
+            "unit_recall": 0.70,
+            "commercial_f1": 0.15,
+        }
+        required_distribution_caps = {
+            "review_rate": 0.35,
+            "reject_rate": 0.10,
+        }
+        final_f1 = 0.0
+        for metric_name, threshold in required_benchmark_thresholds.items():
+            present = metric_name in benchmark
+            value = float(benchmark.get(metric_name, 0.0))
+            if metric_name == "decision_f1":
+                final_f1 = value
+            add_check(
+                f"benchmark_{metric_name}",
+                present and value >= threshold,
+                (
+                    f"Accuracy Gate passed: {metric_name}={value}."
+                    if present and value >= threshold
+                    else f"Accuracy Gate Failed: {metric_name} ({value}) < {threshold}"
+                ),
+                observed=value,
+                minimum=threshold,
+            )
+        for metric_name, cap in required_distribution_caps.items():
+            present = metric_name in benchmark
+            value = float(benchmark.get(metric_name, 0.0))
+            add_check(
+                f"distribution_{metric_name}",
+                present and value <= cap,
+                (
+                    f"Distribution Gate passed: {metric_name}={value}."
+                    if present and value <= cap
+                    else f"Distribution Gate Failed: {metric_name} ({value}) > {cap}"
+                ),
+                observed=value,
+                maximum=cap,
+            )
+
+        comparison_checks = comparison.get("gate_checks")
+        comparison_checks = comparison_checks if isinstance(comparison_checks, list) else []
+        failed_comparisons = [
+            str(item.get("metric") or "unknown")
+            for item in comparison_checks
+            if isinstance(item, dict) and not bool(item.get("passed"))
+        ]
+        add_check(
+            "candidate_not_worse_than_active",
+            bool(comparison.get("active_available"))
+            and bool(comparison_checks)
+            and not failed_comparisons
+            and bool(comparison.get("promote_recommended")),
+            (
+                "Candidate is not worse than active on required release metrics."
+                if comparison_checks
+                and not failed_comparisons
+                and bool(comparison.get("promote_recommended"))
+                else "Candidate vs active Gate Failed: "
+                + (
+                    ", ".join(failed_comparisons)
+                    if failed_comparisons
+                    else "complete active comparison is missing"
+                )
+            ),
+            failed_metrics=failed_comparisons,
+        )
+
+        risk = float(comparison.get("regression_risk", 1.0))
+        add_check(
+            "replay_regression_risk",
+            risk <= 0.05,
+            (
+                f"Replay regression risk passed: {risk}."
+                if risk <= 0.05
+                else f"Stability Gate Failed: Regression Risk ({risk}) > 0.05"
+            ),
+            observed=risk,
+            maximum=0.05,
+        )
+        failures = int(replay_m.get("failures", 0))
+        processed = int(replay_m.get("processed_samples", 0))
+        add_check(
+            "replay_reliability",
+            failures == 0 and processed > 0 and replay_m.get("status") != "failed",
+            (
+                f"Replay Gate passed with {processed} samples and no failures."
+                if failures == 0 and processed > 0 and replay_m.get("status") != "failed"
+                else "Replay Gate Failed: no successful replay evidence or unhandled failures detected."
+            ),
+            processed_samples=processed,
+            failures=failures,
+            replay_status=replay_m.get("status"),
+        )
+
+        assist_status = assist_readiness.get("status")
+        assist_checks = assist_readiness.get("checks")
+        assist_checks = assist_checks if isinstance(assist_checks, dict) else {}
+        failed_assist_checks = [
+            name for name, passed in assist_checks.items() if not bool(passed)
+        ]
+        assist_passed = (
+            assist_status == "ready_for_assist_trial"
+            and bool(assist_checks)
+            and not failed_assist_checks
+        )
+        add_check(
+            "shadow_assist_readiness",
+            assist_passed,
+            (
+                "Shadow/Assist readiness passed."
+                if assist_passed
+                else (
+                    f"Shadow Gate Failed: Sub-checks failed: {', '.join(failed_assist_checks)}"
+                    if failed_assist_checks
+                    else f"Shadow Gate Failed: Status is {assist_status}, expected ready_for_assist_trial."
+                )
+            ),
+            readiness_status=assist_status,
+            failed_checks=failed_assist_checks,
+        )
+
+        shadow_advantage = float(shadow_m.get("shadow_advantage", -1.0))
+        disagreement_rate = float(shadow_m.get("disagreement_rate", 1.0))
+        add_check(
+            "shadow_quality",
+            shadow_advantage >= 0.0 and disagreement_rate <= 0.15,
+            (
+                "Shadow quality Gate passed."
+                if shadow_advantage >= 0.0 and disagreement_rate <= 0.15
+                else "Shadow Gate Failed: shadow_advantage must be >= 0 and disagreement_rate <= 0.15"
+            ),
+            shadow_advantage=shadow_advantage,
+            disagreement_rate=disagreement_rate,
+        )
+
+        resolved_manifest = resolve_runtime_manifest(target)
+        manifest_validation = validate_runtime_manifest(
+            resolved_manifest,
+            model_row=target,
+            require_hashes=True,
+            check_files=True,
+        )
+        add_check(
+            "runtime_manifest",
+            manifest_validation.ok,
+            (
+                "Runtime manifest contract passed."
+                if manifest_validation.ok
+                else "Consistency Gate Failed: "
+                f"{summarize_validation_failure(manifest_validation)}"
+            ),
+            validation=manifest_validation.to_dict(),
+        )
+    except Exception as exc:
+        logger.error(
+            "Release gate error for model %s: %s",
+            target.get("model_version"),
+            exc,
+        )
+        add_check("gate_execution", False, f"Gate error: {exc}")
+        final_f1 = 0.0
+
+    blockers = [item for item in checks if not item["passed"]]
+    return {
+        "status": "ready" if not blockers else "blocked",
+        "ready": not blockers,
+        "reason": (
+            "All release gates passed."
+            if not blockers
+            else str(blockers[0]["message"])
+        ),
+        "target": identity,
+        "checks": checks,
+        "blockers": blockers,
+        "final_f1": final_f1,
+        "bypassed": False,
+    }
+
+
+def model_release_readiness(
+    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
+    model_id: int | None = None,
+    model_name: str | None = None,
+    model_version: str | None = None,
+) -> dict[str, Any]:
+    """Resolve one registry version and return its read-only release report."""
+    target = _find_registry_model(
+        workspace_name=workspace_name,
+        model_id=model_id,
+        model_name=model_name,
+        model_version=model_version,
+    )
     if not target:
         raise ValueError("Model version not found in registry.")
-    
-    # --- HARD RELEASE GATE (Iteration 12 hardening) ---
-    # --- 硬核发布准入 (迭代 12 加固) ---
-    final_f1 = 0.0
-    if not force:
-        try:
-            m_str = target.get("metrics_json")
-            if not m_str:
-                return {"status": "blocked", "reason": "Mandatory evaluation metrics missing. 缺少强制评测指标。"}
-            
-            metrics = json.loads(m_str)
-            benchmark = metrics.get("release_benchmark")
-            comparison = metrics.get("release_comparison")
-            replay_m = metrics.get("replay_metrics")
-            
-            # Phase 18: Update to use new shadow assist readiness metrics
-            # 第 18 阶段：更新以使用新的 shadow assist 准备就绪指标
-            assist_readiness = metrics.get("decision_assist_rollout_readiness")
-            shadow_m = metrics.get("decision_shadow_assist")
+    return build_release_readiness_report(target)
 
-            # 1. Existence Check
-            # 1. 完整性检查
-            if not isinstance(benchmark, dict) or not isinstance(comparison, dict) or not isinstance(replay_m, dict):
-                return {"status": "blocked", "reason": "Incomplete Release Gate data (benchmark/comparison/replay missing). 准入数据不完整。"}
-            if not isinstance(assist_readiness, dict) or not isinstance(shadow_m, dict):
-                return {"status": "blocked", "reason": "Mandatory shadow/assist result missing. 缺少 shadow/assist 结果。"}
 
-            # Load versioned artifacts for consistency check
-            # 加载版本化的构件以便进行一致性检查
-            artifacts = _load_runtime_artifacts_from_metrics(target, metrics)
-            decision_model_artifact = artifacts["decision"]
-            reranker_model_artifact = artifacts["reranker"]
-            building_type_model_artifact = artifacts["building_type"]
+def promote_model(
+    workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
+    model_id: int | None = None,
+    model_name: str | None = None,
+    model_version: str | None = None,
+    notes: str | None = None,
+    force: bool = False,
+    dry_run: bool = False,
+    expected_active_model_id: int | None = None,
+) -> dict[str, Any]:
+    """
+    Promote one immutable model version after a complete, read-only readiness report.
+    """
+    target = _find_registry_model(
+        workspace_name=workspace_name,
+        model_id=model_id,
+        model_name=model_name,
+        model_version=model_version,
+    )
+    if not target:
+        raise ValueError("Model version not found in registry.")
 
-            required_benchmark_thresholds = {
-                "decision_f1": 0.60, # Relaxed for 3-class model
-                "building_type_f1": 0.80,
-                "unit_number_f1": 0.80,
-                "unit_recall": 0.70,
-                "commercial_f1": 0.15,
-            }
-            required_distribution_caps = {
-                "review_rate": 0.35,
-                "reject_rate": 0.10,
-            }
-            for metric_name, threshold in required_benchmark_thresholds.items():
-                if metric_name not in benchmark:
-                    return {"status": "blocked", "reason": f"Missing required benchmark metric: {metric_name}"}
-                metric_value = float(benchmark.get(metric_name, 0.0))
-                if metric_value < threshold:
-                    return {
-                        "status": "blocked",
-                        "reason": f"Accuracy Gate Failed: {metric_name} ({metric_value}) < {threshold}",
-                    }
-                if metric_name == "decision_f1":
-                    final_f1 = metric_value
-
-            for metric_name, threshold in required_distribution_caps.items():
-                if metric_name not in benchmark:
-                    return {"status": "blocked", "reason": f"Missing required distribution metric: {metric_name}"}
-                metric_value = float(benchmark.get(metric_name, 0.0))
-                if metric_value > threshold:
-                    return {
-                        "status": "blocked",
-                        "reason": f"Distribution Gate Failed: {metric_name} ({metric_value}) > {threshold}",
-                    }
-
-            # 3. Stability Gate (Replay + Comparison)
-            # 3. 稳定性准入 (重放 + 对比)
-            # Relaxing regression risk slightly for structural changes
-            # 为了结构变化略微放宽回归风险
-            risk = float(comparison.get("regression_risk", 1.0))
-            if risk > 0.05:
-                return {"status": "blocked", "reason": f"Stability Gate Failed: Regression Risk ({risk}) > 0.05"}
-            if int(replay_m.get("failures", 0)) > 0:
-                return {"status": "blocked", "reason": "Reliability Gate Failed: Unhandled failures detected in replay."}
-            if int(replay_m.get("processed_samples", 0)) <= 0:
-                return {"status": "blocked", "reason": "Replay Gate Failed: no replay samples processed."}
-
-            # 4. Shadow Gate must pass together with replay
-            # 4. Shadow 与 replay 必须同时通过
-            status = assist_readiness.get("status")
-            checks = assist_readiness.get("checks") or {}
-            
-            if status != "ready_for_assist_trial":
-                return {"status": "blocked", "reason": f"Shadow Gate Failed: Status is {status}, expected ready_for_assist_trial."}
-                
-            if not all(bool(v) for v in checks.values()):
-                failed_checks = [k for k, v in checks.items() if not v]
-                return {"status": "blocked", "reason": f"Shadow Gate Failed: Sub-checks failed: {', '.join(failed_checks)}"}
-
-            if float(shadow_m.get("shadow_advantage", -1.0)) < 0.0:
-                return {"status": "blocked", "reason": "Shadow Gate Failed: shadow_advantage < 0"}
-            if float(shadow_m.get("disagreement_rate", 1.0)) > 0.15:
-                return {"status": "blocked", "reason": "Shadow Gate Failed: disagreement_rate > 0.15"}
-                
-            # 5. Consistency Gate (Physical File Check)
-            # 5. 一致性准入 (物理文件检查)
-            check_paths = []
-            if decision_model_artifact.get("model_path"):
-                check_paths.append(Path(decision_model_artifact["model_path"]))
-            if decision_model_artifact.get("metadata_path"):
-                check_paths.append(Path(decision_model_artifact["metadata_path"]))
-            if reranker_model_artifact.get("model_path"):
-                check_paths.append(Path(reranker_model_artifact["model_path"]))
-            if building_type_model_artifact.get("model_path"):
-                check_paths.append(Path(building_type_model_artifact["model_path"]))
-                
-            for p in check_paths:
-                if not p.exists():
-                    return {"status": "blocked", "reason": f"Consistency Gate Failed: Physical artifact missing at {p}"}
-
-        except Exception as e:
-            logger.error("Release gate error for model %s: %s", target.get("model_version"), e)
-            return {"status": "blocked", "reason": f"Gate error: {str(e)}"}
+    readiness = build_release_readiness_report(
+        target,
+        bypass_for_bootstrap=force,
+    )
+    if dry_run or not readiness["ready"]:
+        return readiness
+    final_f1 = float(readiness.get("final_f1") or 0.0)
 
     # --- EXECUTION: Promoting the model ---
     with db_cursor() as (conn, cursor):
+        cursor.execute(
+            """
+            SELECT default_model_id
+            FROM workspace_registry
+            WHERE workspace_name = %s
+            FOR UPDATE
+            """,
+            (workspace_name,),
+        )
+        locked_workspace = cursor.fetchone()
+        if not locked_workspace:
+            conn.rollback()
+            return {
+                "status": "blocked",
+                "ready": False,
+                "reason": f"Activation blocked: workspace not found: {workspace_name}",
+                "blockers": [
+                    {
+                        "code": "workspace_missing",
+                        "passed": False,
+                        "message": f"Workspace not found: {workspace_name}",
+                    }
+                ],
+                "readiness": readiness,
+            }
+        current_model_id = locked_workspace.get("default_model_id")
+        if (
+            expected_active_model_id is not None
+            and current_model_id != expected_active_model_id
+        ):
+            conn.rollback()
+            return {
+                "status": "blocked",
+                "ready": False,
+                "reason": (
+                    "Activation compare-and-swap failed: active model changed "
+                    f"from expected {expected_active_model_id} to {current_model_id}."
+                ),
+                "blockers": [
+                    {
+                        "code": "active_model_changed",
+                        "passed": False,
+                        "message": "Active model changed after readiness evaluation.",
+                        "expected_active_model_id": expected_active_model_id,
+                        "current_active_model_id": current_model_id,
+                    }
+                ],
+                "readiness": readiness,
+            }
         # Reset defaults for this workspace
         cursor.execute("UPDATE model_registry SET is_default = 0 WHERE workspace_name = %s", (workspace_name,))
         # Promote candidate
@@ -435,9 +699,13 @@ def promote_model(
             """
             UPDATE model_registry
             SET is_default = 1, status = 'promoted', promoted_at = NOW(), notes = COALESCE(%s, notes)
-            WHERE model_id = %s
+            WHERE model_id = %s AND workspace_name = %s
             """,
-            (notes or f"Promoted via hardened Release Gate. F1={final_f1}", target["model_id"]),
+            (
+                notes or f"Promoted via hardened Release Gate. F1={final_f1}",
+                target["model_id"],
+                workspace_name,
+            ),
         )
         # Synchronize workspace default
         cursor.execute(
@@ -466,7 +734,13 @@ def promote_model(
         pass
         
     logger.info("Hardened Release Gate passed for model %s", target["model_version"])
-    return {"status": "promoted", "model_id": target["model_id"], "final_f1": final_f1}
+    return {
+        "status": "promoted",
+        "model_id": target["model_id"],
+        "final_f1": final_f1,
+        "previous_model_id": current_model_id,
+        "readiness": readiness,
+    }
 
 
 
@@ -562,73 +836,221 @@ def ensure_default_model(
 
 def rollback_model(
     workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
-    notes: str | None = None
+    notes: str | None = None,
+    *,
+    target_model_id: int | None = None,
+    expected_active_model_id: int | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """
-    Rolls back to the previously promoted model.
-    回滚到上一个提升（promoted）的模型。
+    Roll back transactionally to one explicit immutable, contract-valid version.
     """
-    # 1. Find the current active model
-    # 1. 查找当前活动的模型
-    active_rows = fetch_all(
-        "SELECT model_id FROM model_registry WHERE workspace_name = %s AND is_default = 1",
-        (workspace_name,)
+    active = get_active_model(workspace_name)
+    active_id = int(active["model_id"]) if active and active.get("model_id") is not None else None
+    expected_id = (
+        expected_active_model_id
+        if expected_active_model_id is not None
+        else active_id
     )
-    active_id = active_rows[0]["model_id"] if active_rows else None
-    
-    # 2. Find the last promoted model that is NOT the current active one
-    # 2. 查找最近一个被提升且不是当前活动模型的模型
-    prev_rows = fetch_all(
-        """
-        SELECT model_id 
-        FROM model_registry 
-        WHERE workspace_name = %s 
-          AND status IN ('promoted', 'deprecated') 
-          AND (model_id != %s OR %s IS NULL)
-        ORDER BY promoted_at DESC 
-        LIMIT 1
-        """,
-        (workspace_name, active_id, active_id)
-    )
-    
-    if not prev_rows:
+
+    if target_model_id is not None:
+        target_rows = fetch_all(
+            """
+            SELECT *
+            FROM model_registry
+            WHERE workspace_name = %s
+              AND model_id = %s
+              AND status IN ('promoted', 'deprecated')
+            LIMIT 1
+            """,
+            (workspace_name, target_model_id),
+        )
+    else:
+        target_rows = fetch_all(
+            """
+            SELECT *
+            FROM model_registry
+            WHERE workspace_name = %s
+              AND status IN ('promoted', 'deprecated')
+              AND (model_id != %s OR %s IS NULL)
+            ORDER BY promoted_at DESC
+            LIMIT 1
+            """,
+            (workspace_name, active_id, active_id),
+        )
+    target = _first_or_none(target_rows)
+    if not target:
         raise ValueError("No previous model found for rollback. 找不到可用于回滚的先前模型。")
-        
-    target_id = prev_rows[0]["model_id"]
-    
-    # 3. Demote current active and promote the previous one
-    # 3. 降级当前活动模型并提升前一个模型
-    if active_id:
-        deprecate_model(workspace_name=workspace_name, model_id=active_id, notes="Deprecated due to rollback.")
-        
-    return promote_model(workspace_name=workspace_name, model_id=target_id, notes=notes or "Emergency rollback.", force=True)
+
+    manifest_validation = validate_runtime_manifest(
+        resolve_runtime_manifest(target),
+        model_row=target,
+        require_hashes=True,
+        check_files=True,
+    )
+    rollback_readiness = {
+        "status": "ready" if manifest_validation.ok else "blocked",
+        "ready": manifest_validation.ok,
+        "target_model_id": target.get("model_id"),
+        "current_active_model_id": active_id,
+        "runtime_manifest_validation": manifest_validation.to_dict(),
+        "reason": (
+            "Rollback target runtime contract passed."
+            if manifest_validation.ok
+            else "Rollback blocked by runtime contract: "
+            f"{summarize_validation_failure(manifest_validation)}"
+        ),
+    }
+    if dry_run or not manifest_validation.ok:
+        return rollback_readiness
+
+    with db_cursor() as (conn, cursor):
+        cursor.execute(
+            """
+            SELECT default_model_id
+            FROM workspace_registry
+            WHERE workspace_name = %s
+            FOR UPDATE
+            """,
+            (workspace_name,),
+        )
+        locked_workspace = cursor.fetchone()
+        current_locked_id = (
+            locked_workspace.get("default_model_id")
+            if locked_workspace
+            else None
+        )
+        if not locked_workspace or current_locked_id != expected_id:
+            conn.rollback()
+            return {
+                "status": "blocked",
+                "ready": False,
+                "reason": (
+                    "Rollback compare-and-swap failed: active model changed "
+                    f"from expected {expected_id} to {current_locked_id}."
+                ),
+                "target_model_id": target.get("model_id"),
+                "current_active_model_id": current_locked_id,
+            }
+
+        cursor.execute(
+            """
+            UPDATE model_registry
+            SET is_default = 0,
+                status = CASE WHEN model_id = %s THEN 'deprecated' ELSE status END
+            WHERE workspace_name = %s
+            """,
+            (active_id, workspace_name),
+        )
+        cursor.execute(
+            """
+            UPDATE model_registry
+            SET is_default = 1,
+                status = 'promoted',
+                promoted_at = NOW(),
+                notes = COALESCE(%s, notes)
+            WHERE workspace_name = %s AND model_id = %s
+            """,
+            (
+                notes or f"Rolled back from model_id={active_id}.",
+                workspace_name,
+                target["model_id"],
+            ),
+        )
+        cursor.execute(
+            """
+            UPDATE workspace_registry
+            SET default_model_id = %s,
+                default_profile = %s,
+                default_reference_version = %s
+            WHERE workspace_name = %s
+            """,
+            (
+                target["model_id"],
+                target.get("default_profile") or ADDRESSFORGE_DEFAULT_PROFILE,
+                target.get("reference_version") or ADDRESSFORGE_REFERENCE_VERSION,
+                workspace_name,
+            ),
+        )
+        conn.commit()
+
+    try:
+        get_active_model.clear_cache()
+        get_workspace.clear_cache()
+    except Exception:
+        pass
+    return {
+        "status": "rolled_back",
+        "model_id": target["model_id"],
+        "previous_model_id": active_id,
+        "readiness": rollback_readiness,
+    }
 
 
 @ttl_cache(seconds=60)
 def get_active_model(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME) -> dict[str, Any] | None:
+    workspace = get_workspace(workspace_name)
+    if not workspace:
+        return None
+
+    pointer_model_id = workspace.get("default_model_id")
+    if pointer_model_id is not None:
+        rows = fetch_all(
+            """
+            SELECT *
+            FROM model_registry
+            WHERE workspace_name = %s AND model_id = %s
+            LIMIT 1
+            """,
+            (workspace_name, pointer_model_id),
+        )
+        target = _first_or_none(rows)
+        if not target:
+            logger.error(
+                "Workspace %s points to missing model_id=%s; active resolution failed closed.",
+                workspace_name,
+                pointer_model_id,
+            )
+            return None
+        return {
+            **target,
+            "_active_source": "workspace_default_model_id",
+            "_registry_consistency": {
+                "workspace_pointer_matches": True,
+                "is_default_matches": int(target.get("is_default") or 0) == 1,
+                "status_matches": str(target.get("status") or "") == "promoted",
+            },
+        }
+
+    # Compatibility bridge for workspaces created before default_model_id.
+    # A unique default flag is accepted and reported; arbitrary "latest model"
+    # fallback is intentionally forbidden.
     rows = fetch_all(
         """
         SELECT *
         FROM model_registry
         WHERE workspace_name = %s AND is_default = 1
         ORDER BY promoted_at DESC, updated_at DESC, created_at DESC
-        LIMIT 1
+        LIMIT 2
         """,
         (workspace_name,),
     )
-    if rows:
-        return _first_or_none(rows)
-    rows = fetch_all(
-        """
-        SELECT *
-        FROM model_registry
-        WHERE workspace_name = %s
-        ORDER BY promoted_at DESC, updated_at DESC, created_at DESC
-        LIMIT 1
-        """,
-        (workspace_name,),
-    )
-    return _first_or_none(rows)
+    if len(rows) != 1:
+        if rows:
+            logger.error(
+                "Workspace %s has multiple is_default models and no pointer; active resolution failed closed.",
+                workspace_name,
+            )
+        return None
+    return {
+        **rows[0],
+        "_active_source": "legacy_unique_is_default",
+        "_registry_consistency": {
+            "workspace_pointer_matches": False,
+            "is_default_matches": True,
+            "status_matches": str(rows[0].get("status") or "") == "promoted",
+        },
+    }
 
 
 def bootstrap_default_registry() -> dict[str, Any]:

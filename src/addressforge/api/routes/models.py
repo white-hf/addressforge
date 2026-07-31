@@ -18,7 +18,15 @@ async def register(request: ModelRequest):
 
 @router.post("/promote")
 async def promote_m(request: dict):
-    return {"status": "ok", "model": promote(request.get("workspace_name"), request.get("model_id"), request.get("notes"))}
+    return {
+        "status": "ok",
+        "model": promote(
+            workspace_name=request.get("workspace_name") or "default",
+            model_id=request.get("model_id"),
+            notes=request.get("notes"),
+            expected_active_model_id=request.get("expected_active_model_id"),
+        ),
+    }
 
 @router.post("/rollback")
 async def rollback_m(request: dict):
@@ -27,7 +35,13 @@ async def rollback_m(request: dict):
     将活动模型回滚到上一个提升的版本。
     """
     try:
-        model = rollback_model(request.get("workspace_name", "default"), request.get("notes"))
+        model = rollback_model(
+            request.get("workspace_name", "default"),
+            request.get("notes"),
+            target_model_id=request.get("target_model_id"),
+            expected_active_model_id=request.get("expected_active_model_id"),
+            dry_run=bool(request.get("dry_run")),
+        )
         return {"status": "ok", "model": model}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

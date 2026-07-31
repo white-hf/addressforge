@@ -84,7 +84,21 @@ AddressForge 当前固定追踪 8 个核心指标：
 
 ## 4. 什么时候允许发布
 
-建议采用如下门槛：
+发布必须同时满足绝对安全下限和相对 active 门槛。
+
+绝对安全下限：
+
+- `decision_f1 ≥ 0.60`
+- `building_type_f1 ≥ 0.80`
+- `unit_number_f1 ≥ 0.80`
+- `unit_recall ≥ 0.70`
+- `commercial_f1 ≥ 0.15`
+- `review_rate ≤ 0.35`
+- `reject_rate ≤ 0.10`
+
+这些数值是阻止明显不可用候选进入生产的最低安全线，不是项目最终质量目标。Phase 26-27 的质量完成标准更高。
+
+相对 active 门槛：
 
 - `decision_f1` 不低于当前 active
 - `building_type_f1` 不低于当前 active
@@ -93,6 +107,15 @@ AddressForge 当前固定追踪 8 个核心指标：
 - `commercial_f1` 不退化
 - `review_rate` 不异常升高
 - `reject_rate` 不异常升高
+
+此外还必须满足：
+
+- Replay 有成功处理样本、无未处理失败、回归风险不高于 `0.05`
+- Shadow advantage 不低于 `0`
+- Shadow disagreement rate 不高于 `0.15`
+- Assist readiness 为 `ready_for_assist_trial`，且所有子检查通过
+- Runtime manifest、三类模型物理文件、sidecar 和 SHA256 全部通过
+- Promote 前先生成结构化 dry-run readiness report
 
 ## 5. 当前 evaluator 的输出
 
@@ -116,4 +139,3 @@ AddressForge 当前固定追踪 8 个核心指标：
 5. 运行 shadow
 6. 对比 active 与 candidate
 7. 满足门槛后 promote
-

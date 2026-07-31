@@ -22,6 +22,7 @@ from addressforge.core.config import (
 from addressforge.core.utils import logger
 from addressforge.learning.canada_benchmark import run_canada_address_benchmark
 from addressforge.models import get_active_model, get_model, get_workspace, register_model_version
+from addressforge.models.runtime_manifest import apply_runtime_manifest_contract
 
 _APARTMENT_UNIT_HINT_RE = re.compile(
     r"(?:\b(?:APT|APART|SUITE|STE|UNIT|ROOM|RM|FLOOR|FL|BASEMENT|BSMT|LOWER|UPPER|PENTHOUSE|PH|GF|GROUND FLOOR|MAIN FLOOR|MAIN FLR|REAR|FRONT|SIDE)\b|#\s*[A-Z0-9]+)",
@@ -1225,6 +1226,10 @@ def run_baseline_training(
             "canada_benchmark": benchmark_summary,
             "notes": "baseline training artifact with learned decision policy",
         }
+        artifact_payload = apply_runtime_manifest_contract(artifact_payload)
+        decision_model_artifact = artifact_payload["decision_model_artifact"]
+        reranker_model_artifact = artifact_payload["reranker_model_artifact"]
+        building_type_model_artifact = artifact_payload["building_type_model_artifact"]
 
         # Add runtime identity for traceability (Phase 24)
         # 添加运行时标识以实现可追溯性
@@ -1252,6 +1257,9 @@ def run_baseline_training(
             training_run_id=run_id,
             artifact_path=str(artifact_path),
             metrics_json={
+                "manifest_schema_version": artifact_payload["manifest_schema_version"],
+                "runtime_bundle_id": artifact_payload["runtime_bundle_id"],
+                "artifact_hash_algorithm": artifact_payload["artifact_hash_algorithm"],
                 "training_dataset": dataset_name,
                 "sample_count": sample_count,
                 "gold_count": gold_count,

@@ -78,14 +78,16 @@ def run_baseline_shadow(
             default_parsers=candidate_runtime["parsers"],
             decision_policy=candidate_runtime["decision_policy"],
             model_service=candidate_runtime["model_service"],
-            reranker_service=candidate_runtime["reranker_service"]
+            reranker_service=candidate_runtime["reranker_service"],
+            allow_local_policy_override=False,
         )
         active_service = AddressPlatformService(
             default_profile=active_runtime["profile"],
             default_parsers=active_runtime["parsers"],
             decision_policy=active_runtime["decision_policy"],
             model_service=active_runtime["model_service"],
-            reranker_service=active_runtime["reranker_service"]
+            reranker_service=active_runtime["reranker_service"],
+            allow_local_policy_override=False,
         )
 
         shadow_rows = fetch_all(
@@ -310,7 +312,8 @@ def run_baseline_shadow(
                 },
             },
             notes=f"Shadow evaluation completed for {model_name}/{model_version}. Advantage={shadow_advantage:+.4f}, Recommendation={decision}",
-            is_default=int(candidate_model.get("is_default") or 0),
+            # Shadow updates evidence, not activation state.
+            is_default=None,
         )
 
         result = {

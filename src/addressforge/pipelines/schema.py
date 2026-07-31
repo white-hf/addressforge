@@ -134,8 +134,51 @@ def _ensure_workspace_scoped_tables() -> None:
 
 
 def _ensure_historical_replay_tables() -> None:
-    # Tables are created by schema SQL. This hook is reserved for forward migrations.
-    return None
+    run_columns = {
+        "candidate_model_id": "BIGINT DEFAULT NULL",
+        "active_model_id": "BIGINT DEFAULT NULL",
+        "requested_count": "INT NOT NULL DEFAULT 0",
+        "failure_count": "INT NOT NULL DEFAULT 0",
+        "disagreement_count": "INT NOT NULL DEFAULT 0",
+        "status": "VARCHAR(24) NOT NULL DEFAULT 'completed'",
+        "error_text": "TEXT DEFAULT NULL",
+        "candidate_runtime_identity_json": "JSON DEFAULT NULL",
+        "active_runtime_identity_json": "JSON DEFAULT NULL",
+        "completed_at": "TIMESTAMP NULL DEFAULT NULL",
+    }
+    result_columns = {
+        "candidate_vs_current_different": "BOOLEAN NOT NULL DEFAULT 0",
+        "active_vs_current_different": "BOOLEAN NOT NULL DEFAULT 0",
+        "processing_status": "VARCHAR(24) NOT NULL DEFAULT 'success'",
+        "error_text": "TEXT DEFAULT NULL",
+        "current_output_json": "JSON DEFAULT NULL",
+        "candidate_output_json": "JSON DEFAULT NULL",
+        "active_output_json": "JSON DEFAULT NULL",
+    }
+    with db_cursor() as (conn, cursor):
+        for column_name, definition in run_columns.items():
+            if not _column_exists("historical_replay_run", column_name):
+                cursor.execute(
+                    f"ALTER TABLE historical_replay_run ADD COLUMN {column_name} {definition}"
+                )
+        for column_name, definition in result_columns.items():
+            if not _column_exists("historical_replay_result", column_name):
+                cursor.execute(
+                    f"ALTER TABLE historical_replay_result ADD COLUMN {column_name} {definition}"
+                )
+        if not _index_exists(
+            "historical_replay_result",
+            "idx_historical_replay_result_status",
+        ):
+            cursor.execute(
+                """
+                ALTER TABLE historical_replay_result
+                ADD KEY idx_historical_replay_result_status (
+                    workspace_name, run_id, processing_status
+                )
+                """
+            )
+        conn.commit()
 
 
 def _ensure_review_prescreen_table() -> None:

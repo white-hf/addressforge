@@ -1,60 +1,63 @@
-from __future__ import annotations
-
-import json
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from addressforge.control.jobs import _run_reload_models_job
 
 
 class TestControlJobs(unittest.TestCase):
-    def test_run_reload_models_job_passes_active_manifest(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            artifact_path = Path(tmpdir) / "artifact.json"
-            artifact_path.write_text(
-                json.dumps(
-                    {
-                        "decision_model_artifact": {
-                            "model_path": "runtime/models/decision.pkl",
-                            "metadata_path": "runtime/models/decision.json",
-                        },
-                        "reranker_model_artifact": {
-                            "model_path": "runtime/models/reranker.cbm",
-                        },
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+    def test_run_reload_models_job_validates_governed_bundle(self) -> None:
+        active_model = {"model_id": 51, "model_version": "v_contract"}
+        vector_engine_instance = MagicMock()
+        runtime_identity = {
+            "mode": "governed",
+            "registry": {"model_id": 51},
+            "contract": {"ok": True},
+        }
+
+        with (
+            patch("addressforge.models.get_active_model", return_value=active_model) as mock_get_active,
+            patch(
+                "addressforge.services.runtime_bundle.build_runtime_bundle_from_model_row",
+                return_value={"ok": True, "runtime_identity": runtime_identity},
+            ) as mock_build_bundle,
+            patch(
+                "addressforge.core.retrieval.get_vector_engine",
+                return_value=vector_engine_instance,
+            ),
+        ):
+            result = _run_reload_models_job(
+                {"job_id": 123, "workspace_name": "worker_workspace"}
             )
-            snapshot = {
-                "model": {
-                    "artifact_path": str(artifact_path),
-                    "model_version": "v_test",
-                }
-            }
 
-            model_service_instance = MagicMock()
-            reranker_service_instance = MagicMock()
-            vector_engine_instance = MagicMock()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["runtime_identity"], runtime_identity)
+        mock_get_active.assert_called_once_with("worker_workspace")
+        mock_build_bundle.assert_called_once_with(active_model, mode="governed")
+        vector_engine_instance.reload_models.assert_called_once_with()
 
-            with (
-                patch("addressforge.models.bootstrap_default_registry", return_value=snapshot),
-                patch("addressforge.services.model_service.get_model_service", return_value=model_service_instance) as mock_get_model_service,
-                patch("addressforge.services.reranker_service.get_reranker_service", return_value=reranker_service_instance) as mock_get_reranker_service,
-                patch("addressforge.core.retrieval.get_vector_engine", return_value=vector_engine_instance),
-            ):
-                result = _run_reload_models_job({"job_id": 123})
+    def test_run_reload_models_job_fails_closed_before_index_reload(self) -> None:
+        active_model = {"model_id": 1, "model_version": "legacy"}
+        vector_engine_instance = MagicMock()
 
-            self.assertEqual(result["status"], "success")
-            mock_get_model_service.assert_called_once()
-            mock_get_reranker_service.assert_called_once()
-            model_service_instance.reload_models.assert_called_once()
-            reranker_service_instance.reload_models.assert_called_once()
-            self.assertTrue(model_service_instance.reload_models.call_args.kwargs["manifest"])
-            self.assertTrue(reranker_service_instance.reload_models.call_args.kwargs["manifest"])
-            self.assertIn("decision_model_artifact", model_service_instance.reload_models.call_args.kwargs["manifest"])
+        with (
+            patch("addressforge.models.get_active_model", return_value=active_model),
+            patch(
+                "addressforge.services.runtime_bundle.build_runtime_bundle_from_model_row",
+                return_value={
+                    "ok": False,
+                    "reason": "runtime_manifest_invalid",
+                    "detail": "artifact hash missing",
+                },
+            ),
+            patch(
+                "addressforge.core.retrieval.get_vector_engine",
+                return_value=vector_engine_instance,
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "runtime_manifest_invalid"):
+                _run_reload_models_job({"job_id": 124})
+
+        vector_engine_instance.reload_models.assert_not_called()
 
 
 if __name__ == "__main__":

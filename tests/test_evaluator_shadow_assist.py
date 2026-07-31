@@ -206,7 +206,12 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
             return_value={"model_name": "canada_default", "model_version": "canada_default_v1", "metrics_json": {"release_benchmark": {"decision_f1": 0.5}}},
         ), patch(
             "addressforge.learning.evaluator.get_model",
-            return_value=None,
+            return_value={
+                "metrics_json": {
+                    "manifest_schema_version": "1.0",
+                    "runtime_bundle_id": "default:canada_default:canada_default_v1",
+                }
+            },
         ), patch(
             "addressforge.learning.evaluator.register_model_version",
             return_value={"model_name": "canada_default", "model_version": "canada_default_v1"},
@@ -220,6 +225,7 @@ class TestEvaluatorShadowAssist(unittest.TestCase):
             artifact = run_baseline_evaluation(workspace_name="default", model_name="canada_default", model_version="canada_default_v1", dataset_name="gold_v20260517")
 
         self.assertEqual(artifact["metric_name"], "decision_f1")
+        self.assertEqual(artifact["metrics_json"]["manifest_schema_version"], "1.0")
         self.assertEqual(artifact["metrics_json"]["runtime_identity"]["decision_model"]["model_path"], "runtime/models/default_canada_default_catboost_canada_default_v1.pkl")
         self.assertEqual(model_service.describe_runtime.call_count, 1)
         self.assertEqual(reranker_service.describe_runtime.call_count, 1)

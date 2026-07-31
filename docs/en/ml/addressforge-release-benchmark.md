@@ -85,7 +85,21 @@ Measures how often the system rejects an address.
 
 ## 4. Release gate recommendation
 
-Suggested release conditions:
+A release must pass both absolute safety floors and relative active-model gates.
+
+Absolute safety floors:
+
+- `decision_f1 ≥ 0.60`
+- `building_type_f1 ≥ 0.80`
+- `unit_number_f1 ≥ 0.80`
+- `unit_recall ≥ 0.70`
+- `commercial_f1 ≥ 0.15`
+- `review_rate ≤ 0.35`
+- `reject_rate ≤ 0.10`
+
+These values reject clearly unusable candidates; they are not the final project quality targets. Phase 26-27 completion targets are higher.
+
+Relative active-model gates:
 
 - `decision_f1` must not be lower than active
 - `building_type_f1` must not be lower than active
@@ -94,6 +108,15 @@ Suggested release conditions:
 - `commercial_f1` must not regress
 - `review_rate` must not spike unexpectedly
 - `reject_rate` must not spike unexpectedly
+
+A release must also have:
+
+- successful Replay samples, no unhandled failures, and regression risk no higher than `0.05`
+- Shadow advantage at least `0`
+- Shadow disagreement rate no higher than `0.15`
+- `ready_for_assist_trial` Assist readiness with every sub-check passing
+- a complete Runtime manifest, all three model artifacts, sidecars, and valid SHA256 values
+- a structured dry-run readiness report before Promote
 
 ## 5. Evaluator output
 
@@ -117,4 +140,3 @@ The `release_benchmark` block is the fixed summary that should be used for relea
 5. run shadow
 6. compare active vs candidate
 7. promote only if the release gate is satisfied
-

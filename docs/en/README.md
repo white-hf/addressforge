@@ -37,6 +37,12 @@ The English docs are now organized into professional delivery categories:
 
 - [Iteration Plans](./delivery/plans/)
 - [Iteration Summaries](./delivery/summaries/)
+- [Phase 22-29 Production Convergence Plan](./delivery/plans/addressforge-iteration-execution-plan-2026-07-30-phase22-29-production-convergence.md)
+- [Phase 22R-1 Runtime Contract Execution Summary](./delivery/summaries/addressforge-phase22r-runtime-contract-iteration1-summary-2026-07-30.md)
+- [Phase 22R-2 Governed Runtime Execution Summary](./delivery/summaries/addressforge-phase22r-runtime-contract-iteration2-summary-2026-07-30.md)
+- [Phase 22R-3 API / Worker Runtime Contract Execution Summary](./delivery/summaries/addressforge-phase22r-runtime-contract-iteration3-summary-2026-07-30.md)
+- [Phase 23R Registry / Release / Rollback Execution Summary](./delivery/summaries/addressforge-phase23r-registry-release-iteration-summary-2026-07-30.md)
+- [Phase 24R Row-level Replay Evidence Execution Summary](./delivery/summaries/addressforge-phase24r-replay-evidence-iteration-summary-2026-07-30.md)
 
 ## Operations
 

@@ -41,6 +41,12 @@ AddressForge 是一个开源、自部署的地址智能平台，默认提供加�
 - [迭代计划目录](./delivery/plans/)
 - [迭代总结目录](./delivery/summaries/)
 - [Phase 14-18 总计划](./delivery/plans/addressforge-iteration-execution-plan-2026-05-12-phase14-18-nextgen-ml.md)
+- [Phase 22-29 生产收口迭代计划](./delivery/plans/addressforge-iteration-execution-plan-2026-07-30-phase22-29-production-convergence.md)
+- [Phase 22R-1 Runtime Contract 执行总结](./delivery/summaries/addressforge-phase22r-runtime-contract-iteration1-summary-2026-07-30.md)
+- [Phase 22R-2 Governed Runtime 执行总结](./delivery/summaries/addressforge-phase22r-runtime-contract-iteration2-summary-2026-07-30.md)
+- [Phase 22R-3 API / Worker Runtime Contract 执行总结](./delivery/summaries/addressforge-phase22r-runtime-contract-iteration3-summary-2026-07-30.md)
+- [Phase 23R Registry / Release / Rollback 执行总结](./delivery/summaries/addressforge-phase23r-registry-release-iteration-summary-2026-07-30.md)
+- [Phase 24R Replay 逐条证据执行总结](./delivery/summaries/addressforge-phase24r-replay-evidence-iteration-summary-2026-07-30.md)
 
 ## 运行与控制
 
@@ -51,6 +57,7 @@ AddressForge 是一个开源、自部署的地址智能平台，默认提供加�
 
 - [项目结构规范](./governance/addressforge-project-structure.md)
 - [开发对齐提示词](./governance/addressforge-development-alignment-prompts.md)
+- [证据驱动的循环开发方法论](./governance/evidence-driven-iterative-development-methodology.md)
 
 ## 阅读建议
 

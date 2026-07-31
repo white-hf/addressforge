@@ -239,11 +239,21 @@ CREATE TABLE IF NOT EXISTS historical_replay_run (
     run_id BIGINT NOT NULL,
     model_name VARCHAR(128) NOT NULL,
     model_version VARCHAR(64) NOT NULL,
+    candidate_model_id BIGINT DEFAULT NULL,
+    active_model_id BIGINT DEFAULT NULL,
+    requested_count INT NOT NULL DEFAULT 0,
     processed_count INT NOT NULL DEFAULT 0,
+    failure_count INT NOT NULL DEFAULT 0,
+    disagreement_count INT NOT NULL DEFAULT 0,
     decision_match_rate DECIMAL(6,4) NOT NULL DEFAULT 0.0000,
     building_type_match_rate DECIMAL(6,4) NOT NULL DEFAULT 0.0000,
     unit_number_match_rate DECIMAL(6,4) NOT NULL DEFAULT 0.0000,
+    status VARCHAR(24) NOT NULL DEFAULT 'completed',
+    error_text TEXT DEFAULT NULL,
+    candidate_runtime_identity_json JSON DEFAULT NULL,
+    active_runtime_identity_json JSON DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL DEFAULT NULL,
     UNIQUE KEY uq_historical_replay_run (workspace_name, run_id),
     KEY idx_historical_replay_workspace_created (workspace_name, created_at)
 ) COMMENT='历史重跑实验表，用于衡量模型迭代的线上收益';
@@ -268,10 +278,18 @@ CREATE TABLE IF NOT EXISTS historical_replay_result (
     building_type_match BOOLEAN NOT NULL DEFAULT 0,
     unit_number_match BOOLEAN NOT NULL DEFAULT 0,
     candidate_vs_active_different BOOLEAN NOT NULL DEFAULT 0,
+    candidate_vs_current_different BOOLEAN NOT NULL DEFAULT 0,
+    active_vs_current_different BOOLEAN NOT NULL DEFAULT 0,
+    processing_status VARCHAR(24) NOT NULL DEFAULT 'success',
+    error_text TEXT DEFAULT NULL,
+    current_output_json JSON DEFAULT NULL,
+    candidate_output_json JSON DEFAULT NULL,
+    active_output_json JSON DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_historical_replay_result (workspace_name, run_id, raw_id),
     KEY idx_historical_replay_result_workspace_run (workspace_name, run_id),
-    KEY idx_historical_replay_result_different (workspace_name, run_id, candidate_vs_active_different)
+    KEY idx_historical_replay_result_different (workspace_name, run_id, candidate_vs_active_different),
+    KEY idx_historical_replay_result_status (workspace_name, run_id, processing_status)
 ) COMMENT='历史重跑结果表，详细记录新旧模型对同一地址的决策差异';
 
 -- 表 15: raw_address_record

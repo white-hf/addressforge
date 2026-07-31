@@ -2,6 +2,7 @@ import unittest
 import json
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 from addressforge.api.server import AddressPlatformService
 from addressforge.services.reranker_service import RerankerService
 
@@ -55,6 +56,21 @@ class TestRerankerIsolation(unittest.TestCase):
         identity = service.describe_runtime()
         self.assertEqual(identity["reranker_model"]["model_path"], "runtime/models/custom_reranker.cbm")
         self.assertEqual(identity["decision_model"]["model_path"], "runtime/models/custom_decision.pkl")
+
+    def test_governed_service_does_not_apply_mutable_local_policy_override(self):
+        model_service = MagicMock()
+        reranker_service = MagicMock()
+        service = AddressPlatformService(
+            decision_policy={"manifest_only_threshold": 0.91},
+            model_service=model_service,
+            reranker_service=reranker_service,
+            allow_local_policy_override=False,
+        )
+
+        self.assertEqual(
+            service._decision_policy,
+            {"manifest_only_threshold": 0.91},
+        )
 
 if __name__ == "__main__":
     unittest.main()

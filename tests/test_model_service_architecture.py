@@ -28,5 +28,16 @@ class TestModelServiceIndependence(unittest.TestCase):
         self.assertEqual(str(svc.model_path), dummy_path)
         self.assertEqual(str(svc.bt_model_path), "runtime/models/dummy_bt.cbm")
 
+    def test_default_paths_are_reported_as_configured_not_manifest_bound(self):
+        svc = ModelService()
+
+        runtime = svc.describe_runtime()
+
+        self.assertEqual(runtime["artifact_source"], "configured_path")
+        self.assertEqual(
+            runtime["building_type_model"]["artifact_source"],
+            "configured_path",
+        )
+
 if __name__ == "__main__":
     unittest.main()

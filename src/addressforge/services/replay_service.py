@@ -1,28 +1,20 @@
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Iterable
+from typing import Any, Dict, List
 
-from addressforge.core.common import create_run, db_cursor, fetch_all, finish_run, dumps_payload, canonicalize_unit_number, normalize_street_name
+from addressforge.core.common import (
+    create_run,
+    db_cursor,
+    dumps_payload,
+    fetch_all,
+    finish_run,
+)
 from addressforge.core.config import ADDRESSFORGE_WORKSPACE_NAME
-from addressforge.models import get_active_model
-from addressforge.services.model_service import build_model_service_from_manifest
-from addressforge.services.reranker_service import build_reranker_service_from_manifest
+from addressforge.models import build_release_readiness_report, get_active_model
+from addressforge.services.runtime_bundle import build_runtime_bundle_from_model_row
 
 logger = logging.getLogger(__name__)
-
-def _json_dict(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-    try:
-        data = json.loads(str(value))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
 
 def _load_model_runtime(workspace_name: str, model_version: str) -> dict[str, Any]:
     """
@@ -48,83 +40,139 @@ def _load_model_runtime(workspace_name: str, model_version: str) -> dict[str, An
     
     if not model_row:
         return {"ok": False, "reason": "model_not_found"}
-        
-    metrics_json = _json_dict(model_row.get("metrics_json"))
-    artifact_path = model_row.get("artifact_path")
-    artifact_payload: dict[str, Any] = {}
-    if artifact_path:
-        artifact_file = Path(str(artifact_path))
-        try:
-            if artifact_file.exists():
-                with open(artifact_file, "r", encoding="utf-8") as handle:
-                    artifact_payload = json.load(handle)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to load model artifact for runtime %s: %s", model_version, exc)
-            
-    runtime_binding = metrics_json.get("runtime_binding") if isinstance(metrics_json.get("runtime_binding"), dict) else {}
-    profile = (
-        runtime_binding.get("profile")
-        or artifact_payload.get("profile")
-        or model_row.get("default_profile")
-        or "base_canada"
-    )
-    parsers = tuple(
-        runtime_binding.get("parsers")
-        or artifact_payload.get("parsers")
-        or ("simple_rule", "hybrid_canada", "libpostal")
-    )
-    decision_policy = (
-        runtime_binding.get("decision_policy")
-        if isinstance(runtime_binding.get("decision_policy"), dict)
-        else artifact_payload.get("decision_policy")
-        if isinstance(artifact_payload.get("decision_policy"), dict)
-        else {}
-    )
-    
-    # Extract manifests for sub-services
-    # 提取子服务的清单
-    decision_model_artifact = (
-        metrics_json.get("decision_model_artifact")
-        if isinstance(metrics_json.get("decision_model_artifact"), dict)
-        else artifact_payload.get("decision_model_artifact")
-        if isinstance(artifact_payload.get("decision_model_artifact"), dict)
-        else {}
-    )
-    
-    reranker_model_artifact = (
-        metrics_json.get("reranker_model_artifact")
-        if isinstance(metrics_json.get("reranker_model_artifact"), dict)
-        else artifact_payload.get("reranker_model_artifact")
-        if isinstance(artifact_payload.get("reranker_model_artifact"), dict)
-        else {}
-    )
-    
-    building_type_model_artifact = (
-        metrics_json.get("building_type_model_artifact")
-        if isinstance(metrics_json.get("building_type_model_artifact"), dict)
-        else artifact_payload.get("building_type_model_artifact")
-        if isinstance(artifact_payload.get("building_type_model_artifact"), dict)
-        else {}
-    )
-    
-    # Build a unified manifest for constructors
-    # 为构造函数构建统一的清单
-    full_manifest = {
-        **artifact_payload,
-        "decision_model_artifact": decision_model_artifact,
-        "reranker_model_artifact": reranker_model_artifact,
-        "building_type_model_artifact": building_type_model_artifact
-    }
-    
-    return {
-        "ok": True,
-        "profile": profile,
-        "parsers": parsers,
-        "decision_policy": decision_policy,
-        "model_service": build_model_service_from_manifest(full_manifest),
-        "reranker_service": build_reranker_service_from_manifest(full_manifest),
-        "manifest": full_manifest
-    }
+
+    return build_runtime_bundle_from_model_row(model_row, mode="governed")
+
+
+def _persist_replay_evidence(
+    *,
+    workspace_name: str,
+    run_id: int,
+    candidate_model: dict[str, Any],
+    active_model: dict[str, Any],
+    requested_count: int,
+    processed_count: int,
+    failure_count: int,
+    disagreement_count: int,
+    decision_match_rate: float,
+    building_type_match_rate: float,
+    unit_number_match_rate: float,
+    status: str,
+    runtime_identity: dict[str, Any],
+    evidence_rows: list[tuple[Any, ...]],
+) -> int:
+    """Persist the replay summary and every row-level success/failure atomically."""
+    with db_cursor() as (conn, cursor):
+        cursor.execute(
+            """
+            INSERT INTO historical_replay_run (
+                workspace_name, run_id, model_name, model_version,
+                candidate_model_id, active_model_id,
+                requested_count, processed_count, failure_count, disagreement_count,
+                decision_match_rate, building_type_match_rate, unit_number_match_rate,
+                status, error_text,
+                candidate_runtime_identity_json, active_runtime_identity_json,
+                completed_at
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s,
+                %s, %s,
+                NOW()
+            ) AS new_run
+            ON DUPLICATE KEY UPDATE
+                replay_id = LAST_INSERT_ID(replay_id),
+                model_name = new_run.model_name,
+                model_version = new_run.model_version,
+                candidate_model_id = new_run.candidate_model_id,
+                active_model_id = new_run.active_model_id,
+                requested_count = new_run.requested_count,
+                processed_count = new_run.processed_count,
+                failure_count = new_run.failure_count,
+                disagreement_count = new_run.disagreement_count,
+                decision_match_rate = new_run.decision_match_rate,
+                building_type_match_rate = new_run.building_type_match_rate,
+                unit_number_match_rate = new_run.unit_number_match_rate,
+                status = new_run.status,
+                error_text = new_run.error_text,
+                candidate_runtime_identity_json = new_run.candidate_runtime_identity_json,
+                active_runtime_identity_json = new_run.active_runtime_identity_json,
+                completed_at = NOW()
+            """,
+            (
+                workspace_name,
+                run_id,
+                candidate_model.get("model_name") or "candidate",
+                candidate_model.get("model_version"),
+                candidate_model.get("model_id"),
+                active_model.get("model_id"),
+                requested_count,
+                processed_count,
+                failure_count,
+                disagreement_count,
+                decision_match_rate,
+                building_type_match_rate,
+                unit_number_match_rate,
+                status,
+                None,
+                dumps_payload(runtime_identity.get("candidate")),
+                dumps_payload(runtime_identity.get("active")),
+            ),
+        )
+        replay_id = int(cursor.lastrowid or 0)
+        if evidence_rows:
+            cursor.executemany(
+                """
+                INSERT INTO historical_replay_result (
+                    workspace_name, run_id, raw_id,
+                    current_decision, current_building_type, current_unit_number,
+                    candidate_decision, candidate_building_type, candidate_unit_number,
+                    active_decision, active_building_type, active_unit_number,
+                    decision_match, building_type_match, unit_number_match,
+                    candidate_vs_active_different,
+                    candidate_vs_current_different, active_vs_current_different,
+                    processing_status, error_text,
+                    current_output_json, candidate_output_json, active_output_json
+                ) VALUES (
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s,
+                    %s, %s,
+                    %s, %s,
+                    %s, %s, %s
+                ) AS new_result
+                ON DUPLICATE KEY UPDATE
+                    current_decision = new_result.current_decision,
+                    current_building_type = new_result.current_building_type,
+                    current_unit_number = new_result.current_unit_number,
+                    candidate_decision = new_result.candidate_decision,
+                    candidate_building_type = new_result.candidate_building_type,
+                    candidate_unit_number = new_result.candidate_unit_number,
+                    active_decision = new_result.active_decision,
+                    active_building_type = new_result.active_building_type,
+                    active_unit_number = new_result.active_unit_number,
+                    decision_match = new_result.decision_match,
+                    building_type_match = new_result.building_type_match,
+                    unit_number_match = new_result.unit_number_match,
+                    candidate_vs_active_different = new_result.candidate_vs_active_different,
+                    candidate_vs_current_different = new_result.candidate_vs_current_different,
+                    active_vs_current_different = new_result.active_vs_current_different,
+                    processing_status = new_result.processing_status,
+                    error_text = new_result.error_text,
+                    current_output_json = new_result.current_output_json,
+                    candidate_output_json = new_result.candidate_output_json,
+                    active_output_json = new_result.active_output_json
+                """,
+                evidence_rows,
+            )
+        conn.commit()
+    return replay_id
+
 
 def run_historical_replay(
     workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME,
@@ -166,15 +214,33 @@ def run_historical_replay(
             default_parsers=candidate_runtime["parsers"],
             decision_policy=candidate_runtime["decision_policy"],
             model_service=candidate_runtime["model_service"],
-            reranker_service=candidate_runtime["reranker_service"]
+            reranker_service=candidate_runtime["reranker_service"],
+            allow_local_policy_override=False,
         )
         active_service = AddressPlatformService(
             default_profile=active_runtime["profile"],
             default_parsers=active_runtime["parsers"],
             decision_policy=active_runtime["decision_policy"],
             model_service=active_runtime["model_service"],
-            reranker_service=active_runtime["reranker_service"]
+            reranker_service=active_runtime["reranker_service"],
+            allow_local_policy_override=False,
         )
+        runtime_identity = {
+            "candidate": candidate_runtime.get("runtime_identity")
+            or {
+                "decision_model": candidate_runtime["model_service"].describe_runtime(),
+                "reranker_model": candidate_runtime["reranker_service"].describe_runtime(),
+                "profile": candidate_runtime["profile"],
+                "parsers": list(candidate_runtime["parsers"]),
+            },
+            "active": active_runtime.get("runtime_identity")
+            or {
+                "decision_model": active_runtime["model_service"].describe_runtime(),
+                "reranker_model": active_runtime["reranker_service"].describe_runtime(),
+                "profile": active_runtime["profile"],
+                "parsers": list(active_runtime["parsers"]),
+            },
+        }
 
         # 2. Fetch historical records
         # 2. 获取历史记录
@@ -209,7 +275,9 @@ def run_historical_replay(
         active_current_matches = 0
         candidate_current_matches = 0
         
-        mismatches = []
+        mismatches: list[dict[str, Any]] = []
+        failure_samples: list[dict[str, Any]] = []
+        evidence_rows: list[tuple[Any, ...]] = []
         
         for row in records:
             raw_id = row["raw_id"]
@@ -237,6 +305,16 @@ def run_historical_replay(
                 act_un_res = act_res.get("suggested_unit_number")
                 
                 is_diff = (cand_dec != act_dec or cand_bt != act_bt or cand_un_res != act_un_res)
+                candidate_vs_current = (
+                    cand_dec != current_dec
+                    or cand_bt != current_bt
+                    or cand_un_res != current_un
+                )
+                active_vs_current = (
+                    act_dec != current_dec
+                    or act_bt != current_bt
+                    or act_un_res != current_un
+                )
                 if is_diff:
                     candidate_vs_active_diffs += 1
                     if len(mismatches) < 50:
@@ -256,14 +334,98 @@ def run_historical_replay(
                 candidate_current_matches += int(cand_dec == current_dec)
                 
                 total_processed += 1
+                current_output = {
+                    "decision": current_dec,
+                    "building_type": current_bt,
+                    "unit_number": current_un,
+                }
+                candidate_output = {
+                    "decision": cand_dec,
+                    "building_type": cand_bt,
+                    "unit_number": cand_un_res,
+                }
+                active_output = {
+                    "decision": act_dec,
+                    "building_type": act_bt,
+                    "unit_number": act_un_res,
+                }
+                evidence_rows.append(
+                    (
+                        workspace_name,
+                        run_id,
+                        raw_id,
+                        current_dec,
+                        current_bt,
+                        current_un,
+                        cand_dec,
+                        cand_bt,
+                        cand_un_res,
+                        act_dec,
+                        act_bt,
+                        act_un_res,
+                        int(cand_dec == act_dec),
+                        int(cand_bt == act_bt),
+                        int(cand_un_res == act_un_res),
+                        int(is_diff),
+                        int(candidate_vs_current),
+                        int(active_vs_current),
+                        "success",
+                        None,
+                        dumps_payload(current_output),
+                        dumps_payload(candidate_output),
+                        dumps_payload(active_output),
+                    )
+                )
                 
             except Exception as e:
                 logger.error("Replay failure on raw_id %d: %s", raw_id, e)
                 failures += 1
+                error_text = str(e)
+                if len(failure_samples) < 50:
+                    failure_samples.append(
+                        {
+                            "raw_id": raw_id,
+                            "raw_text": raw_text,
+                            "error": error_text,
+                        }
+                    )
+                evidence_rows.append(
+                    (
+                        workspace_name,
+                        run_id,
+                        raw_id,
+                        current_dec,
+                        current_bt,
+                        current_un,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        0,
+                        0,
+                        0,
+                        1,
+                        0,
+                        0,
+                        "failed",
+                        error_text[:65535],
+                        dumps_payload(
+                            {
+                                "decision": current_dec,
+                                "building_type": current_bt,
+                                "unit_number": current_un,
+                            }
+                        ),
+                        None,
+                        None,
+                    )
+                )
                 
         # 3. Finalize and Save Metrics
         # 3. 完成并保存指标
-        consistency_score = round(decision_matches / total_processed, 4) if total_processed > 0 else 1.0
+        consistency_score = round(decision_matches / total_processed, 4) if total_processed > 0 else 0.0
         decision_match_rate = round(decision_matches / total_processed, 4) if total_processed > 0 else 0.0
         building_type_match_rate = round(building_type_matches / total_processed, 4) if total_processed > 0 else 0.0
         unit_number_match_rate = round(unit_number_matches / total_processed, 4) if total_processed > 0 else 0.0
@@ -272,52 +434,36 @@ def run_historical_replay(
         active_current_match_rate = round(active_current_matches / total_processed, 4) if total_processed > 0 else 0.0
         candidate_current_match_rate = round(candidate_current_matches / total_processed, 4) if total_processed > 0 else 0.0
         
-        replay_id = 0
-        with db_cursor() as (conn, cursor):
-            cursor.execute(
-                """
-                INSERT INTO historical_replay_run (
-                    workspace_name, run_id, model_name, model_version, 
-                    processed_count, decision_match_rate, building_type_match_rate, unit_number_match_rate
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) AS new_run
-                ON DUPLICATE KEY UPDATE
-                    model_name = new_run.model_name,
-                    model_version = new_run.model_version,
-                    processed_count = new_run.processed_count,
-                    decision_match_rate = new_run.decision_match_rate,
-                    building_type_match_rate = new_run.building_type_match_rate,
-                    unit_number_match_rate = new_run.unit_number_match_rate
-                """,
-                (
-                    workspace_name, run_id, 
-                    (candidate_model or {}).get("model_name", "candidate"),
-                    candidate_version,
-                    total_processed, decision_match_rate, building_type_match_rate, unit_number_match_rate,
-                ),
-            )
-            replay_id = cursor.lastrowid
-            conn.commit()
-        
-        # Add runtime identity for transparency
-        # 添加运行时标识以提高透明度
-        runtime_identity = {
-            "candidate": {
-                "decision_model": candidate_runtime["model_service"].describe_runtime(),
-                "reranker_model": candidate_runtime["reranker_service"].describe_runtime(),
-                "profile": candidate_runtime["profile"],
-                "parsers": list(candidate_runtime["parsers"]),
-            },
-            "active": {
-                "decision_model": active_runtime["model_service"].describe_runtime(),
-                "reranker_model": active_runtime["reranker_service"].describe_runtime(),
-                "profile": active_runtime["profile"],
-                "parsers": list(active_runtime["parsers"]),
-            }
-        }
+        replay_status = (
+            "completed_empty"
+            if not records
+            else "completed_with_failures"
+            if failures
+            else "completed"
+        )
+        replay_id = _persist_replay_evidence(
+            workspace_name=workspace_name,
+            run_id=run_id,
+            candidate_model=candidate_model or {},
+            active_model=active_model or {},
+            requested_count=len(records),
+            processed_count=total_processed,
+            failure_count=failures,
+            disagreement_count=candidate_vs_active_diffs,
+            decision_match_rate=decision_match_rate,
+            building_type_match_rate=building_type_match_rate,
+            unit_number_match_rate=unit_number_match_rate,
+            status=replay_status,
+            runtime_identity=runtime_identity,
+            evidence_rows=evidence_rows,
+        )
 
         metadata = {
             "replay_id": replay_id,
+            "requested_count": len(records),
             "processed_count": total_processed,
+            "failure_count": failures,
+            "disagreement_count": candidate_vs_active_diffs,
             "consistency_score": consistency_score,
             "decision_match_rate": decision_match_rate,
             "building_type_match_rate": building_type_match_rate,
@@ -328,15 +474,19 @@ def run_historical_replay(
             "active_model_version": (active_model or {}).get("model_version"),
             "candidate_version": candidate_version,
             "runtime_identity": runtime_identity,
+            "status": replay_status,
         }
         
         finish_run(run_id, "completed", notes=dumps_payload(metadata))
         logger.info("True Replay finished. Consistency: %f, Failures: %d", consistency_score, failures)
         
         return {
-            "status": "success",
+            "status": replay_status,
             "run_id": run_id,
             "processed": total_processed,
+            "requested": len(records),
+            "failures": failures,
+            "mismatch_count": candidate_vs_active_diffs,
             "consistency_score": consistency_score,
             "decision_match_rate": decision_match_rate,
             "building_type_match_rate": building_type_match_rate,
@@ -345,6 +495,7 @@ def run_historical_replay(
             "active_current_match_rate": active_current_match_rate,
             "candidate_current_match_rate": candidate_current_match_rate,
             "mismatches": mismatches,
+            "failure_samples": failure_samples,
             "active_model_version": (active_model or {}).get("model_version"),
             "candidate_version": candidate_version,
             "runtime_identity": runtime_identity
@@ -355,42 +506,23 @@ def run_historical_replay(
         raise
 
 def get_release_readiness_report(workspace_name: str = ADDRESSFORGE_WORKSPACE_NAME) -> dict[str, Any]:
-    """
-    Generates a summarized report comparing the candidate model against the active one.
-    生成候选模型与当前活跃模型的对比摘要报告。
-    """
+    """Return the same governed release report used by Promote."""
     latest_eval = fetch_all(
         """
-        SELECT metrics_json, created_at 
-        FROM model_registry 
-        WHERE workspace_name = %s AND status = 'evaluated'
-        ORDER BY created_at DESC LIMIT 1
+        SELECT *
+        FROM model_registry
+        WHERE workspace_name = %s
+          AND status IN ('evaluated', 'trained')
+          AND is_default = 0
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
         """,
         (workspace_name,)
     )
     
     if not latest_eval:
         return {"ready": False, "reason": "No evaluation data found"}
-        
-    metrics = json.loads(latest_eval[0]["metrics_json"] or "{}")
-    comparison = metrics.get("release_comparison", {}) if isinstance(metrics, dict) else {}
-    benchmark = metrics.get("release_benchmark", {}) if isinstance(metrics, dict) else {}
-    replay = metrics.get("replay_metrics", {}) if isinstance(metrics, dict) else {}
-    shadow = metrics.get("shadow", {}) if isinstance(metrics, dict) else {}
-    
-    # Phase 18: Simplified readiness check for now
-    is_ready = (
-        float(benchmark.get("decision_f1", 0.0)) >= 0.60
-        and float(benchmark.get("building_type_f1", 0.0)) >= 0.80
-        and float(comparison.get("regression_risk", 1.0)) <= 0.05
-    )
-    
-    return {
-        "ready": is_ready,
-        "metrics": benchmark,
-        "gate_checks": comparison.get("gate_checks", []),
-        "timestamp": latest_eval[0].get("created_at")
-    }
+    return build_release_readiness_report(latest_eval[0])
 
 def get_mismatch_samples(run_id: int, limit: int = 50) -> List[Dict[str, Any]]:
     """
@@ -400,8 +532,28 @@ def get_mismatch_samples(run_id: int, limit: int = 50) -> List[Dict[str, Any]]:
     query = """
         SELECT hrr.*, r.raw_address_text
         FROM historical_replay_result hrr
-        JOIN raw_address_record r ON hrr.raw_id = r.raw_id
+        JOIN raw_address_record r
+          ON hrr.workspace_name = r.workspace_name
+         AND hrr.raw_id = r.raw_id
         WHERE hrr.run_id = %s AND hrr.candidate_vs_active_different = 1
+        ORDER BY hrr.replay_result_id ASC
         LIMIT %s
     """
     return fetch_all(query, (run_id, limit))
+
+
+def get_replay_failure_samples(run_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+    """Return persisted row-level replay failures instead of treating them as success."""
+    return fetch_all(
+        """
+        SELECT hrr.*, r.raw_address_text
+        FROM historical_replay_result hrr
+        JOIN raw_address_record r
+          ON hrr.workspace_name = r.workspace_name
+         AND hrr.raw_id = r.raw_id
+        WHERE hrr.run_id = %s AND hrr.processing_status = 'failed'
+        ORDER BY hrr.replay_result_id ASC
+        LIMIT %s
+        """,
+        (run_id, limit),
+    )
